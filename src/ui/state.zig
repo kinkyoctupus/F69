@@ -5,6 +5,7 @@ const std = @import("std");
 const library = @import("library");
 const dvui = @import("dvui");
 const buf_mod = @import("buf.zig");
+const owned = @import("owned.zig");
 pub const MessageBuf = buf_mod.MessageBuf;
 
 pub const Screen = enum { library, detail, settings, import, downloads, diagnostics, recipe_editor, mods_for_game };
@@ -586,12 +587,10 @@ pub const State = struct {
     /// slider takes effect immediately. Persisted to
     /// Rebuilt once per library-screen render: every f95_thread_id
     /// that has at least one install row. Used by the grid/list-view
-    /// installed indicator and the `installed` filter. Held as
-    /// anyopaque so state.zig doesn't pull in std.AutoHashMap's
-    /// allocator dance — `actions.installedSet` owns the cast. Reset
-    /// each frame the library screen rebuilds it; never referenced
-    /// off the library-screen render path.
-    installed_set: ?*anyopaque = null,
+    /// installed indicator and the `installed` filter. Reset each
+    /// frame the library screen rebuilds it; never referenced off
+    /// the library-screen render path.
+    installed_set: ?*owned.InstalledSet = null,
     /// `<data_root>/ui_scale`.
     ui_scale: f32 = 1.25,
     /// Tracks the last persisted value so we don't rewrite the file
@@ -643,15 +642,13 @@ pub const State = struct {
     /// Mirrors `pending_rpdl_download` for the Tier-1 donor-DDL flow:
     /// POST `/sam/dddl.php` → grab signed URL → enqueue via aria2.
     pending_donor_download: ?*anyopaque = null,
-    /// `HashMap(u64 download_job_id → u64 thread_id)`. Tracks which
-    /// in-flight aria2 jobs originated from a donor-DDL signed URL
-    /// so the failure handler knows it can POST for a fresh URL and
-    /// re-enqueue (handles signed-URL TTL expiry).
-    donor_jobs: ?*anyopaque = null,
-    /// `HashMap(u64 thread_id → u8 retries)`. Bounds the auto-retry
-    /// loop on signed-URL expiry — without it a permanently dead URL
-    /// would just spin forever.
-    donor_retries: ?*anyopaque = null,
+    /// Tracks which in-flight aria2 jobs originated from a donor-DDL
+    /// signed URL so the failure handler knows it can POST for a fresh
+    /// URL and re-enqueue (handles signed-URL TTL expiry).
+    donor_jobs: ?*owned.DonorJobsMap = null,
+    /// Bounds the auto-retry loop on signed-URL expiry — without it a
+    /// permanently dead URL would just spin forever.
+    donor_retries: ?*owned.DonorRetriesMap = null,
     /// `HashMap(u64 job_id → DonorTickState)` — per-job rolling
     /// telemetry for donor downloads (last log timestamp, last
     /// observed byte count, stall-since timestamp, last seen aria2
@@ -816,13 +813,12 @@ pub const State = struct {
     bookmarks_progress_total: u32 = 0,
     /// Job ids whose terminal status (.done OR .failed) has been
     /// processed by the post-install / fallback drainer. Lazy-init
-    /// on first use (anyopaque so state.zig doesn't pull in
-    /// std.AutoHashMap's allocator dance — `actions.zig` owns the cast).
-    post_installed: ?*anyopaque = null,
+    /// on first use.
+    post_installed: ?*owned.PostInstalledSet = null,
     /// Per-game F95-thread-id → index into `recipe.sources[]` we're
     /// currently downloading. Bumped on each `.failed` to point at the
     /// next mirror. Lazy-init like `post_installed`.
-    download_attempts: ?*anyopaque = null,
+    download_attempts: ?*owned.AttemptsMap = null,
     /// "Auto-convert new installs" toggle. When true, the post-
     /// install pipeline runs Convert immediately after an extract
     /// finishes (for games that have a recipe with `convert_linux`).
@@ -849,7 +845,7 @@ pub const State = struct {
     /// the detail screen (Launch ↔ Stop button swap). Pruned each
     /// frame by `drainRunningGames` via `kill(pid, 0)` probe. Lazy-
     /// init.
-    running_games: ?*anyopaque = null,
+    running_games: ?*owned.RunningGamesMap = null,
     /// Active toast notifications, newest at index 0. Three separate
     /// `launch_msg` / `convert_msg` / `download_msg` buffers used to
     /// fight for a single status-line slot — now they all push to
@@ -873,10 +869,8 @@ pub const State = struct {
     /// tab open + after Add / Scan / Delete actions. Null when not
     /// loaded; empty slice means "loaded, no entries yet."
     modfile_cache_thread: ?u64 = null,
-    /// Heap-allocated list of Modfile records. The pointer here is an
-    /// `*anyopaque` because `state.zig` shouldn't pull installer types
-    /// in directly; `actions.zig` owns the cast both ways. Lazy-init.
-    modfile_cache: ?*anyopaque = null,
+    /// Heap-allocated list of Modfile records. Lazy-init.
+    modfile_cache: ?*owned.ModfileCache = null,
 
     /// Per-game cache of the parsed game.zon + parsed mod.zon list +
     /// per-mod install/archive flags + computed tab counts shown on
@@ -894,7 +888,7 @@ pub const State = struct {
     /// install context — happens when no installs exist for the game).
     mods_page_cache_install_id_buf: [64]u8 = [_]u8{0} ** 64,
     mods_page_cache_install_id_len: usize = 0,
-    mods_page_cache: ?*anyopaque = null,
+    mods_page_cache: ?*owned.ModsPageCache = null,
     /// Scan in flight — UI greys the Scan button + shows a status row.
     modfile_scan_busy: bool = false,
     /// Last scan summary message ("Added N, skipped M, …") shown after
@@ -915,10 +909,8 @@ pub const State = struct {
 
     /// Cached `recipe.MergedPresetSet`. Filled lazily on first access
     /// via `getMergedPresets`; invalidated by `invalidatePresetCache`
-    /// after any write to `<data_root>/mod-presets/`. `*anyopaque` to
-    /// keep recipe-module types out of state.zig — the screen / actions
-    /// modules cast on access. `null` = unloaded.
-    preset_cache: ?*anyopaque = null,
+    /// after any write to `<data_root>/mod-presets/`. `null` = unloaded.
+    preset_cache: ?*owned.MergedPresetSet = null,
 
     /// In-flight `TestInstallJob` for the wizard's Review-step "Test
     /// install (real)" button. `*anyopaque` for the same reason as

@@ -30,9 +30,23 @@ const mod_job_queue = @import("mod_job_queue.zig");
 const import_job = @import("import_job.zig");
 const importers_mod = @import("importers");
 const file_picker = @import("util_file_picker");
+const owned_types = @import("owned.zig");
 
 const Frame = types.Frame;
 const State = types.State;
+
+// Type aliases for heap-state slots that live in `owned.zig` so
+// `state.zig` and `actions.zig` agree on the concrete type without
+// cycling on each other's imports. See `src/ui/owned.zig` for the
+// type definitions and the rationale. The import is named
+// `owned_types` (not `owned`) because the file already uses `owned`
+// as a local variable name for owned-slice handoffs.
+const InstalledSet = owned_types.InstalledSet;
+const PostInstalledSet = owned_types.PostInstalledSet;
+const AttemptsMap = owned_types.AttemptsMap;
+const RunningGamesMap = owned_types.RunningGamesMap;
+const DonorJobsMap = owned_types.DonorJobsMap;
+const DonorRetriesMap = owned_types.DonorRetriesMap;
 
 // ============================================================
 //  sync-batch recap — end-of-run "what changed" popup
@@ -1903,11 +1917,12 @@ pub const DonorDownloadJob = struct {
     err_name: ?[]const u8 = null,
 };
 
-const DonorJobsMap = std.AutoHashMap(u64, u64); // download_job_id → thread_id
-const DonorRetriesMap = std.AutoHashMap(u64, u8); // thread_id → retries used
+// `DonorJobsMap` / `DonorRetriesMap` aliased from `owned.zig` at the
+// top of the file. See module-doc comment in `src/ui/owned.zig` for
+// the type-shape rationale.
 
 fn donorJobsMap(frame: *Frame) *DonorJobsMap {
-    if (frame.state.donor_jobs) |p| return @ptrCast(@alignCast(p));
+    if (frame.state.donor_jobs) |p| return p;
     const m = frame.lib.alloc.create(DonorJobsMap) catch unreachable;
     m.* = DonorJobsMap.init(frame.lib.alloc);
     frame.state.donor_jobs = m;
@@ -1915,7 +1930,7 @@ fn donorJobsMap(frame: *Frame) *DonorJobsMap {
 }
 
 fn donorRetriesMap(frame: *Frame) *DonorRetriesMap {
-    if (frame.state.donor_retries) |p| return @ptrCast(@alignCast(p));
+    if (frame.state.donor_retries) |p| return p;
     const m = frame.lib.alloc.create(DonorRetriesMap) catch unreachable;
     m.* = DonorRetriesMap.init(frame.lib.alloc);
     frame.state.donor_retries = m;
@@ -1923,14 +1938,12 @@ fn donorRetriesMap(frame: *Frame) *DonorRetriesMap {
 }
 
 pub fn freeDonorTables(state: *State, alloc: std.mem.Allocator) void {
-    if (state.donor_jobs) |p| {
-        const m: *DonorJobsMap = @ptrCast(@alignCast(p));
+    if (state.donor_jobs) |m| {
         m.deinit();
         alloc.destroy(m);
         state.donor_jobs = null;
     }
-    if (state.donor_retries) |p| {
-        const m: *DonorRetriesMap = @ptrCast(@alignCast(p));
+    if (state.donor_retries) |m| {
         m.deinit();
         alloc.destroy(m);
         state.donor_retries = null;
@@ -5597,17 +5610,12 @@ pub fn findRegisteredModArchive(frame: *Frame, parent_game: *const library.Game,
 //  Modfiles tab — per-game modfile store management
 // ============================================================
 //
-// State.modfile_cache is an opaque pointer to a heap-allocated
-// `ModfileCache` struct that owns the loaded list. We use `*anyopaque`
-// in state.zig to avoid pulling installer types into that file.
+// `state.modfile_cache` is a typed pointer to a heap-allocated
+// `owned.ModfileCache` (see `src/ui/owned.zig`) that owns the loaded
+// list. The struct lives in `owned.zig` so `state.zig` can hold a
+// concrete `?*ModfileCache` instead of `?*anyopaque`.
 
-const ModfileCache = struct {
-    mods: []installer_mod.mod_archives.Modfile,
-};
-
-fn castModfileCache(p: *anyopaque) *ModfileCache {
-    return @ptrCast(@alignCast(p));
-}
+const ModfileCache = owned_types.ModfileCache;
 
 /// Free + null the cached modfile list, if any.
 pub fn dropModfileCache(frame: *Frame) void {
@@ -5617,8 +5625,7 @@ pub fn dropModfileCache(frame: *Frame) void {
 /// State-only variant used by the shutdown teardown path (where no
 /// Frame is constructed). Idempotent.
 pub fn freeModfileCacheState(state: *State, alloc: std.mem.Allocator) void {
-    if (state.modfile_cache) |p| {
-        const cache = castModfileCache(p);
+    if (state.modfile_cache) |cache| {
         installer_mod.mod_archives.freeModfileList(alloc, cache.mods);
         alloc.destroy(cache);
         state.modfile_cache = null;
@@ -5636,42 +5643,18 @@ pub fn freeModfileCacheState(state: *State, alloc: std.mem.Allocator) void {
 // until a mutating action drops it. Lets the mouse-move-driven
 // rerenders skip the full recipes-dir scan + per-mod tracker load.
 
-pub const ModsTabCounts = struct {
-    installed: usize = 0,
-    ready: usize = 0,
-    needs_archive: usize = 0,
-    needs_recipe: usize = 0,
-};
-
-pub const ModsPageCache = struct {
-    /// nullable: null when no `.game.zon` exists for this thread_id.
-    game_parsed: ?recipe.ParsedGame,
-    /// Parsed mod recipes targeting `game_parsed.recipe.id`. Empty
-    /// when `game_parsed == null` or there genuinely are none.
-    mods: []recipe.ParsedMod,
-    /// Pre-computed counters for the four tab labels.
-    counts: ModsTabCounts,
-    /// Parallel to `mods` — each flag answers the same predicates
-    /// the row renderer asks (`have_archive`, `installed`,
-    /// `load_index` from the resolver). Owned by `alloc`.
-    have_archive: []bool,
-    archive_paths: []?[]u8,
-    installed: []bool,
-    load_index: []?u32,
-    alloc: std.mem.Allocator,
-};
-
-fn castModsPageCache(p: *anyopaque) *ModsPageCache {
-    return @ptrCast(@alignCast(p));
-}
+// `ModsTabCounts` + `ModsPageCache` live in `owned.zig` so
+// `state.mods_page_cache` can hold a typed pointer. Aliased here so
+// existing call sites keep their short type names.
+pub const ModsTabCounts = owned_types.ModsTabCounts;
+pub const ModsPageCache = owned_types.ModsPageCache;
 
 pub fn dropModsPageCache(frame: *Frame) void {
     freeModsPageCacheState(frame.state, frame.lib.alloc);
 }
 
 pub fn freeModsPageCacheState(state: *State, alloc: std.mem.Allocator) void {
-    if (state.mods_page_cache) |p| {
-        const c = castModsPageCache(p);
+    if (state.mods_page_cache) |c| {
         // Recipe arenas + duped strings.
         if (c.game_parsed) |*gp| gp.deinit();
         for (c.mods) |*pm| pm.deinit();
@@ -5703,8 +5686,7 @@ pub fn modsPageCache(frame: *Frame, game: *const library.Game) *ModsPageCache {
     const install_id_slice: []const u8 = if (install_opt) |i| i.id[0..] else &[_]u8{};
 
     // Cache hit check: same thread + same install id.
-    if (state.mods_page_cache) |p| {
-        const cached = castModsPageCache(p);
+    if (state.mods_page_cache) |cached| {
         const same_thread = (state.mods_page_cache_thread orelse 0) == game.f95_thread_id and
             state.mods_page_cache_thread != null;
         const cached_install = state.mods_page_cache_install_id_buf[0..state.mods_page_cache_install_id_len];
@@ -5937,7 +5919,7 @@ pub fn modfilesForGame(frame: *Frame, parent_game: *const library.Game) []const 
         state.modfile_cache_thread.? != parent_game.f95_thread_id or
         state.modfile_cache == null;
     if (need_reload) refreshModfileCache(frame, parent_game);
-    if (state.modfile_cache) |p| return castModfileCache(p).mods;
+    if (state.modfile_cache) |cache| return cache.mods;
     return &.{};
 }
 
@@ -6762,9 +6744,7 @@ fn deleteUserPresetNow(frame: *Frame, preset_id: []const u8) void {
 /// trailing lib-allocator outer-struct to track.
 pub fn getMergedPresets(frame: *Frame) ?*recipe.MergedPresetSet {
     const state = frame.state;
-    if (state.preset_cache) |raw| {
-        return @ptrCast(@alignCast(raw));
-    }
+    if (state.preset_cache) |bundle_ptr| return bundle_ptr;
     var bundle = recipe.loadMergedPresets(frame.lib.alloc, frame.io, frame.info.mod_presets_dir) catch return null;
     // Move the bundle into its own arena so the outer struct's
     // lifetime matches the inner arena's. After this move, calling
@@ -6775,7 +6755,7 @@ pub fn getMergedPresets(frame: *Frame) ?*recipe.MergedPresetSet {
         return null;
     };
     bundle_ptr.* = bundle;
-    state.preset_cache = @ptrCast(bundle_ptr);
+    state.preset_cache = bundle_ptr;
     return bundle_ptr;
 }
 
@@ -6783,9 +6763,8 @@ pub fn getMergedPresets(frame: *Frame) ?*recipe.MergedPresetSet {
 /// rebuilds. Call after any `<data_root>/mod-presets/` write so the
 /// next read sees the new disk state.
 pub fn invalidatePresetCache(state: *State) void {
-    if (state.preset_cache) |raw| {
-        const bundle: *recipe.MergedPresetSet = @ptrCast(@alignCast(raw));
-        bundle.deinit(); // arena dies → bundle_ptr's memory dies too
+    if (state.preset_cache) |bundle_ptr| {
+        bundle_ptr.deinit(); // arena dies → bundle_ptr's memory dies too
         state.preset_cache = null;
     }
 }
@@ -8218,14 +8197,11 @@ fn reportResolverResult(state: *State, result: *const resolver.SolveResult) bool
 //  post-download install — auto-extract on .done transition
 // ============================================================
 
-const PostInstalledSet = std.AutoHashMap(u64, void);
-const AttemptsMap = std.AutoHashMap(u64, u32);
-const InstalledSet = std.AutoHashMap(u64, void);
+// `PostInstalledSet`, `AttemptsMap`, `InstalledSet` aliased from
+// `owned.zig` at the top of the file.
 
 fn postInstalledSet(frame: *Frame) *PostInstalledSet {
-    if (frame.state.post_installed) |opaque_ptr| {
-        return @ptrCast(@alignCast(opaque_ptr));
-    }
+    if (frame.state.post_installed) |p| return p;
     const set_ptr = frame.lib.alloc.create(PostInstalledSet) catch unreachable;
     set_ptr.* = PostInstalledSet.init(frame.lib.alloc);
     frame.state.post_installed = set_ptr;
@@ -8235,9 +8211,7 @@ fn postInstalledSet(frame: *Frame) *PostInstalledSet {
 /// Lazy-init the installed-set. `refreshInstalledSet` repopulates it
 /// from the DB; callers consult `isInstalled` per game.
 fn installedSetPtr(frame: *Frame) *InstalledSet {
-    if (frame.state.installed_set) |opaque_ptr| {
-        return @ptrCast(@alignCast(opaque_ptr));
-    }
+    if (frame.state.installed_set) |p| return p;
     const set_ptr = frame.lib.alloc.create(InstalledSet) catch unreachable;
     set_ptr.* = InstalledSet.init(frame.lib.alloc);
     frame.state.installed_set = set_ptr;
@@ -8370,8 +8344,7 @@ pub fn installDotState(frame: *Frame, game: *const library.Game) InstallDotState
 }
 
 pub fn freeInstalledSet(state: *State, alloc: std.mem.Allocator) void {
-    if (state.installed_set) |opaque_ptr| {
-        const set_ptr: *InstalledSet = @ptrCast(@alignCast(opaque_ptr));
+    if (state.installed_set) |set_ptr| {
         set_ptr.deinit();
         alloc.destroy(set_ptr);
         state.installed_set = null;
@@ -8379,9 +8352,7 @@ pub fn freeInstalledSet(state: *State, alloc: std.mem.Allocator) void {
 }
 
 fn attemptsMap(frame: *Frame) *AttemptsMap {
-    if (frame.state.download_attempts) |opaque_ptr| {
-        return @ptrCast(@alignCast(opaque_ptr));
-    }
+    if (frame.state.download_attempts) |p| return p;
     const map_ptr = frame.lib.alloc.create(AttemptsMap) catch unreachable;
     map_ptr.* = AttemptsMap.init(frame.lib.alloc);
     frame.state.download_attempts = map_ptr;
@@ -8396,12 +8367,10 @@ fn resetAttempt(frame: *Frame, game_id: u64) void {
     m.put(game_id, 0) catch {};
 }
 
-const RunningGamesMap = std.AutoHashMap(u64, i32);
+// `RunningGamesMap` aliased from `owned.zig` at the top of the file.
 
 fn runningGamesMap(frame: *Frame) *RunningGamesMap {
-    if (frame.state.running_games) |opaque_ptr| {
-        return @ptrCast(@alignCast(opaque_ptr));
-    }
+    if (frame.state.running_games) |p| return p;
     const map_ptr = frame.lib.alloc.create(RunningGamesMap) catch unreachable;
     map_ptr.* = RunningGamesMap.init(frame.lib.alloc);
     frame.state.running_games = map_ptr;
@@ -8529,8 +8498,7 @@ fn notifyOnAbnormalExit(frame: *Frame, thread_id: u64, status: u32) void {
 }
 
 fn freeRunningGames(state: *State, alloc: std.mem.Allocator) void {
-    if (state.running_games) |opaque_ptr| {
-        const map_ptr: *RunningGamesMap = @ptrCast(@alignCast(opaque_ptr));
+    if (state.running_games) |map_ptr| {
         map_ptr.deinit();
         alloc.destroy(map_ptr);
         state.running_games = null;
@@ -8782,10 +8750,7 @@ pub fn startInstallFromDownloadJob(
         state.setDownloadMsg("install already running for this game");
         return;
     }
-    if (state.post_installed) |opaque_ptr| {
-        const set_ptr: *PostInstalledSet = @ptrCast(@alignCast(opaque_ptr));
-        _ = set_ptr.remove(job_id);
-    }
+    if (state.post_installed) |set_ptr| _ = set_ptr.remove(job_id);
     startPostInstall(frame, job_id, thread_id, expected_sha256) catch |e| {
         var msg_buf: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&msg_buf, "install start failed: {s}", .{@errorName(e)}) catch "install start failed";
@@ -8832,10 +8797,7 @@ pub fn startInstallFromDownload(frame: *Frame, game: *const library.Game) void {
     // Drop the dedupe entry so the worker spawn isn't gated by a
     // prior auto-attempt that bailed (e.g. unknown 7z without
     // p7zip on PATH).
-    if (state.post_installed) |opaque_ptr| {
-        const set_ptr: *PostInstalledSet = @ptrCast(@alignCast(opaque_ptr));
-        _ = set_ptr.remove(job_id);
-    }
+    if (state.post_installed) |set_ptr| _ = set_ptr.remove(job_id);
 
     startPostInstall(frame, job_id, game.f95_thread_id, sha_opt) catch |e| {
         var msg_buf: [128]u8 = undefined;
@@ -10131,14 +10093,12 @@ fn exeExistsUnder(io: std.Io, install_dir: []const u8, exe: []const u8) bool {
 /// Tear-down for the post_installed set + per-game download-attempts
 /// map + running-games map. Called from runMainLoop's defer block.
 pub fn freePostInstalled(state: *State, alloc: std.mem.Allocator) void {
-    if (state.post_installed) |opaque_ptr| {
-        const set_ptr: *PostInstalledSet = @ptrCast(@alignCast(opaque_ptr));
+    if (state.post_installed) |set_ptr| {
         set_ptr.deinit();
         alloc.destroy(set_ptr);
         state.post_installed = null;
     }
-    if (state.download_attempts) |opaque_ptr| {
-        const map_ptr: *AttemptsMap = @ptrCast(@alignCast(opaque_ptr));
+    if (state.download_attempts) |map_ptr| {
         map_ptr.deinit();
         alloc.destroy(map_ptr);
         state.download_attempts = null;
