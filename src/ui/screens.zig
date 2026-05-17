@@ -1129,7 +1129,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
         var lbl_buf: [200]u8 = undefined;
         const lbl = std.fmt.bufPrint(&lbl_buf, "Syncing {s}…", .{cur_name}) catch "Syncing…";
         dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
-    } else if (state.sync_msg_len > 0) {
+    } else if (!state.sync_msg.isEmpty()) {
         dvui.label(@src(), "{s}", .{state.syncMsg()}, .{ .gravity_y = 0.5 });
     } else {
         dvui.label(@src(), "Syncing…", .{}, .{ .gravity_y = 0.5 });
@@ -1476,7 +1476,7 @@ fn renderAddSplitButton(frame: *Frame) void {
 fn renderBookmarksProgress(frame: *Frame) void {
     const state = frame.state;
     const pending = state.pending_bookmarks != null;
-    const has_msg = state.bookmarks_msg_len > 0;
+    const has_msg = !state.bookmarks_msg.isEmpty();
     if (!pending and !has_msg) return;
 
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -1573,7 +1573,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
         dvui.label(@src(), "{s}", .{state.bookmarksMsg()}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (iconOnly(@src(), "dismiss", entypo.cross, .{})) {
-            state.bookmarks_msg_len = 0;
+            state.bookmarks_msg.clear();
         }
     }
 }
@@ -4397,9 +4397,9 @@ fn renderModfileActionBar(frame: *Frame, game: *const library.Game) void {
         pickAndImportModRecipe(frame);
     }
 
-    if (state.modfile_scan_msg_len > 0) {
+    if (!state.modfile_scan_msg.isEmpty()) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        const txt = state.modfile_scan_msg_buf[0..state.modfile_scan_msg_len];
+        const txt = state.modfile_scan_msg.read();
         dvui.label(@src(), "{s}", .{txt}, .{ .gravity_y = 0.5 });
     }
 }
@@ -6715,7 +6715,7 @@ fn renderBrowserSection(frame: *Frame) void {
             actions.saveBrowserPath(frame, state.browserPathSlice());
         }
     }
-    if (state.browser_msg_len > 0) {
+    if (!state.browser_msg.isEmpty()) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
         dvui.label(@src(), "{s}", .{state.browserMsg()}, .{ .style = .highlight });
     }
@@ -6741,7 +6741,7 @@ fn renderF95Account(frame: *Frame) void {
         else => .{},
     };
     dvui.label(@src(), "status: {s}", .{status_text}, status_opts);
-    if (state.login_msg_len > 0) {
+    if (!state.login_msg.isEmpty()) {
         dvui.label(@src(), "{s}", .{state.loginMsg()}, .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -6803,7 +6803,7 @@ fn renderRpdlAccount(frame: *Frame) void {
         else => .{},
     };
     dvui.label(@src(), "status: {s}", .{status_text}, status_opts);
-    if (state.rpdl_msg_len > 0) {
+    if (!state.rpdl_msg.isEmpty()) {
         dvui.label(@src(), "{s}", .{state.rpdlMsg()}, .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -6989,7 +6989,7 @@ pub fn importScreen(frame: *Frame) !bool {
     te.deinit();
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    if (state.import_msg_len > 0) {
+    if (!state.import_msg.isEmpty()) {
         dvui.label(@src(), "{s}", .{state.importMsg()}, .{ .style = .highlight });
     } else {
         dvui.label(@src(), "Imported games show up as \"(unsynced)\". Click Sync on each to populate.", .{}, .{});

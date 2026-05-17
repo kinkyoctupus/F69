@@ -329,7 +329,7 @@ pub fn syncGame(frame: *Frame, game: *library.Game) void {
     // any lingering completion message so a stale "sync-all complete"
     // doesn't sit on top of the in-progress banner.
     state.setCurrentSyncName(game.name);
-    state.sync_msg_len = 0;
+    state.sync_msg.clear();
     state.sync_status = .running;
     state.pending_sync = job;
 }
@@ -877,7 +877,7 @@ pub fn drainSync(frame: *Frame) void {
             }
             j.alloc.destroy(j);
             s.pending_sync = null;
-            s.active_sync_name_len = 0;
+            s.active_sync_name.clear();
         }
     }.run;
 
@@ -907,7 +907,7 @@ pub fn drainSync(frame: *Frame) void {
         const was_cancelled = job.err_name != null and std.mem.eql(u8, job.err_name.?, "Cancelled");
         if (was_cancelled) {
             state.sync_status = .idle;
-            state.sync_msg_len = 0;
+            state.sync_msg.clear();
             cleanup(job, state);
             return;
         }
@@ -1474,7 +1474,7 @@ pub fn drainUpdateCheck(frame: *Frame) void {
         if (cancelled) {
             // User-driven stop — silent like the sync/bookmark cancel.
             state.sync_status = .idle;
-            state.sync_msg_len = 0;
+            state.sync_msg.clear();
             cleanup(job, state);
             return;
         }
@@ -2792,7 +2792,7 @@ pub fn drainImageQueue(frame: *Frame) void {
             job.alloc.free(job.covers_dir);
             job.alloc.destroy(job);
             state.image_active = null;
-            state.image_active_name_len = 0;
+            state.image_active_name.clear();
         } else {
             // Still running — wait for next frame.
             return;
@@ -2932,7 +2932,7 @@ pub fn drainImageQueue(frame: *Frame) void {
         frame.lib.alloc.free(covers_dup);
         frame.lib.alloc.destroy(job);
         state.image_active = null;
-        state.image_active_name_len = 0;
+        state.image_active_name.clear();
         return;
     };
     job.thr.detach();
@@ -3647,7 +3647,7 @@ pub fn drainBookmarks(frame: *Frame) void {
         const user_cancelled = job.cancel.load(.acquire) or
             (job.err_name != null and std.mem.eql(u8, job.err_name.?, "Cancelled"));
         if (user_cancelled) {
-            state.bookmarks_msg_len = 0;
+            state.bookmarks_msg.clear();
             return;
         }
         const friendly = friendlyError(job.err_name orelse "?");
@@ -7043,14 +7043,14 @@ pub fn doScanModfiles(frame: *Frame, parent_game: *const library.Game) void {
     };
     defer report.deinit(alloc);
 
-    const summary = std.fmt.bufPrint(&state.modfile_scan_msg_buf, "Added {d}, unchanged {d}, duplicate skipped {d}, non-archive skipped {d}, removed missing {d}", .{
+    const summary = std.fmt.bufPrint(&state.modfile_scan_msg.bytes, "Added {d}, unchanged {d}, duplicate skipped {d}, non-archive skipped {d}, removed missing {d}", .{
         report.added.len,
         report.unchanged,
         report.duplicates_skipped.len,
         report.non_archive_skipped.len,
         report.removed_missing,
-    }) catch state.modfile_scan_msg_buf[0..0];
-    state.modfile_scan_msg_len = summary.len;
+    }) catch state.modfile_scan_msg.bytes[0..0];
+    state.modfile_scan_msg.len = summary.len;
 
     refreshModfileCache(frame, parent_game);
 }

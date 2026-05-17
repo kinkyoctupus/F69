@@ -4,6 +4,8 @@
 const std = @import("std");
 const library = @import("library");
 const dvui = @import("dvui");
+const buf_mod = @import("buf.zig");
+pub const MessageBuf = buf_mod.MessageBuf;
 
 pub const Screen = enum { library, detail, settings, import, downloads, diagnostics, recipe_editor, mods_for_game };
 /// Sort options. `weighted` uses Game.weightedRating against the
@@ -622,8 +624,7 @@ pub const State = struct {
     /// Last Sync action's status. Reset to `.idle` when entering detail.
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).
-    sync_msg_buf: [128]u8 = [_]u8{0} ** 128,
-    sync_msg_len: usize = 0,
+    sync_msg: buf_mod.MessageBuf(128) = .{},
     /// Heap-allocated SyncJob (defined in `ui.zig`); held as anyopaque
     /// so `state.zig` doesn't pull in f95/library/std.Thread.
     pending_sync: ?*anyopaque = null,
@@ -719,8 +720,7 @@ pub const State = struct {
     /// `syncGame` when it spawns the worker and cleared by the
     /// drainSync cleanup helper. Reads as a sentinel-trimmed slice via
     /// `currentSyncName()`.
-    active_sync_name_buf: [160]u8 = [_]u8{0} ** 160,
-    active_sync_name_len: usize = 0,
+    active_sync_name: buf_mod.MessageBuf(160) = .{},
 
     // ----- phase-2 image fetch (screenshots) -----
     /// FIFO of thread_ids whose phase-1 (text+cover) scrape just
@@ -739,8 +739,7 @@ pub const State = struct {
     image_active: ?*anyopaque = null,
     /// Name of the game whose ImageJob is in flight (for the second
     /// banner row). Sentinel-trimmed.
-    image_active_name_buf: [160]u8 = [_]u8{0} ** 160,
-    image_active_name_len: usize = 0,
+    image_active_name: buf_mod.MessageBuf(160) = .{},
     /// Cumulative images fetched / planned across the current phase-2
     /// "batch". Resets to 0 when the queue empties AND `image_active`
     /// is null, so the banner row disappears between bursts. `done`
@@ -764,8 +763,7 @@ pub const State = struct {
     /// Paste-area for the bookmark/thread-list importer (8 KiB cap).
     import_buf: [8192]u8 = [_]u8{0} ** 8192,
     /// Imported / skipped counts shown to the user post-import.
-    import_msg_buf: [128]u8 = [_]u8{0} ** 128,
-    import_msg_len: usize = 0,
+    import_msg: buf_mod.MessageBuf(128) = .{},
     /// Set by the importer; runMainLoop checks each iteration and
     /// re-runs `lib.listGames` when true.
     reload_requested: bool = false,
@@ -792,14 +790,12 @@ pub const State = struct {
     /// detected paths into it. `actions.openInBrowser` reads from here.
     browser_path_buf: [512]u8 = [_]u8{0} ** 512,
     /// "OK" / error message after a browser save click.
-    browser_msg_buf: [80]u8 = [_]u8{0} ** 80,
-    browser_msg_len: usize = 0,
+    browser_msg: buf_mod.MessageBuf(80) = .{},
     /// F95 login form state.
     f95_user_buf: [128]u8 = [_]u8{0} ** 128,
     f95_pass_buf: [128]u8 = [_]u8{0} ** 128,
     login_status: LoginStatus = .unknown,
-    login_msg_buf: [128]u8 = [_]u8{0} ** 128,
-    login_msg_len: usize = 0,
+    login_msg: buf_mod.MessageBuf(128) = .{},
     /// In-flight bookmarks pull (worker thread). `actions.zig` defines
     /// the actual job struct.
     pending_bookmarks: ?*anyopaque = null,
@@ -811,11 +807,9 @@ pub const State = struct {
     rpdl_user_buf: [128]u8 = [_]u8{0} ** 128,
     rpdl_pass_buf: [128]u8 = [_]u8{0} ** 128,
     rpdl_status: LoginStatus = .unknown,
-    rpdl_msg_buf: [128]u8 = [_]u8{0} ** 128,
-    rpdl_msg_len: usize = 0,
+    rpdl_msg: buf_mod.MessageBuf(128) = .{},
     rpdl_token: ?[]u8 = null,
-    bookmarks_msg_buf: [160]u8 = [_]u8{0} ** 160,
-    bookmarks_msg_len: usize = 0,
+    bookmarks_msg: buf_mod.MessageBuf(160) = .{},
     /// Mirrored from the worker's atomic fields each frame so the
     /// progress widget can read plain `u32`s.
     bookmarks_progress_current: u32 = 0,
@@ -905,8 +899,7 @@ pub const State = struct {
     modfile_scan_busy: bool = false,
     /// Last scan summary message ("Added N, skipped M, …") shown after
     /// a Scan run completes.
-    modfile_scan_msg_buf: [256]u8 = [_]u8{0} ** 256,
-    modfile_scan_msg_len: usize = 0,
+    modfile_scan_msg: buf_mod.MessageBuf(256) = .{},
     /// Modfile id currently waiting for a confirm-delete press. UI
     /// flips the row's button to "Confirm delete" when set; any other
     /// click clears it. `null` = idle.
@@ -944,12 +937,10 @@ pub const State = struct {
     clash_modal: ?*anyopaque = null,
 
     pub fn importMsg(self: *const State) []const u8 {
-        return self.import_msg_buf[0..self.import_msg_len];
+        return self.import_msg.read();
     }
     pub fn setImportMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.import_msg_buf.len);
-        @memcpy(self.import_msg_buf[0..n], msg[0..n]);
-        self.import_msg_len = n;
+        self.import_msg.write(msg);
     }
 
     pub fn importBufSlice(self: *State) []u8 {
@@ -958,33 +949,24 @@ pub const State = struct {
     }
 
     pub fn syncMsg(self: *const State) []const u8 {
-        return self.sync_msg_buf[0..self.sync_msg_len];
+        return self.sync_msg.read();
     }
-
     pub fn setSyncMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.sync_msg_buf.len);
-        @memcpy(self.sync_msg_buf[0..n], msg[0..n]);
-        self.sync_msg_len = n;
+        self.sync_msg.write(msg);
     }
 
     pub fn currentSyncName(self: *const State) []const u8 {
-        return self.active_sync_name_buf[0..self.active_sync_name_len];
+        return self.active_sync_name.read();
     }
-
     pub fn setCurrentSyncName(self: *State, name: []const u8) void {
-        const n = @min(name.len, self.active_sync_name_buf.len);
-        @memcpy(self.active_sync_name_buf[0..n], name[0..n]);
-        self.active_sync_name_len = n;
+        self.active_sync_name.write(name);
     }
 
     pub fn currentImageName(self: *const State) []const u8 {
-        return self.image_active_name_buf[0..self.image_active_name_len];
+        return self.image_active_name.read();
     }
-
     pub fn setCurrentImageName(self: *State, name: []const u8) void {
-        const n = @min(name.len, self.image_active_name_buf.len);
-        @memcpy(self.image_active_name_buf[0..n], name[0..n]);
-        self.image_active_name_len = n;
+        self.image_active_name.write(name);
     }
 
     pub fn searchSlice(self: *const State) []const u8 {
@@ -998,12 +980,10 @@ pub const State = struct {
     }
 
     pub fn loginMsg(self: *const State) []const u8 {
-        return self.login_msg_buf[0..self.login_msg_len];
+        return self.login_msg.read();
     }
     pub fn setLoginMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.login_msg_buf.len);
-        @memcpy(self.login_msg_buf[0..n], msg[0..n]);
-        self.login_msg_len = n;
+        self.login_msg.write(msg);
     }
 
     pub fn f95UserSlice(self: *State) []u8 {
@@ -1024,21 +1004,17 @@ pub const State = struct {
         return self.rpdl_pass_buf[0..end];
     }
     pub fn rpdlMsg(self: *const State) []const u8 {
-        return self.rpdl_msg_buf[0..self.rpdl_msg_len];
+        return self.rpdl_msg.read();
     }
     pub fn setRpdlMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.rpdl_msg_buf.len);
-        @memcpy(self.rpdl_msg_buf[0..n], msg[0..n]);
-        self.rpdl_msg_len = n;
+        self.rpdl_msg.write(msg);
     }
 
     pub fn bookmarksMsg(self: *const State) []const u8 {
-        return self.bookmarks_msg_buf[0..self.bookmarks_msg_len];
+        return self.bookmarks_msg.read();
     }
     pub fn setBookmarksMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.bookmarks_msg_buf.len);
-        @memcpy(self.bookmarks_msg_buf[0..n], msg[0..n]);
-        self.bookmarks_msg_len = n;
+        self.bookmarks_msg.write(msg);
     }
 
     /// Push a toast onto the stack. Newest at index 0. When already
@@ -1242,12 +1218,10 @@ pub const State = struct {
     }
 
     pub fn browserMsg(self: *const State) []const u8 {
-        return self.browser_msg_buf[0..self.browser_msg_len];
+        return self.browser_msg.read();
     }
     pub fn setBrowserMsg(self: *State, msg: []const u8) void {
-        const n = @min(msg.len, self.browser_msg_buf.len);
-        @memcpy(self.browser_msg_buf[0..n], msg[0..n]);
-        self.browser_msg_len = n;
+        self.browser_msg.write(msg);
     }
 
     /// Reset every UI field scoped to a single detail page. Called
