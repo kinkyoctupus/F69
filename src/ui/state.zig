@@ -6,6 +6,7 @@ const library = @import("library");
 const dvui = @import("dvui");
 const buf_mod = @import("buf.zig");
 const owned = @import("owned.zig");
+const import_job_mod = @import("import_job.zig");
 pub const MessageBuf = buf_mod.MessageBuf;
 
 pub const Screen = enum { library, detail, settings, import, downloads, diagnostics, recipe_editor, mods_for_game };
@@ -626,22 +627,22 @@ pub const State = struct {
     sync_msg: buf_mod.MessageBuf(128) = .{},
     /// Heap-allocated SyncJob (defined in `ui.zig`); held as anyopaque
     /// so `state.zig` doesn't pull in f95/library/std.Thread.
-    pending_sync: ?*anyopaque = null,
+    pending_sync: ?*owned.SyncJob = null,
     /// Sync-all queue: thread_ids waiting to be synced. drainSync pops
     /// the head and spawns the next job once the current one finishes.
     /// Heap-alloc'd via `lib.alloc`; null when no batch is in flight.
     /// Heap-allocated UpdateCheckJob (defined in `actions.zig`), held
     /// as anyopaque to avoid the cyclic import. `drainUpdateCheck`
     /// reads phase via atomics and frees here on completion.
-    pending_update_check: ?*anyopaque = null,
+    pending_update_check: ?*owned.UpdateCheckJob = null,
     /// Heap-allocated RpdlDownloadJob (defined in `actions.zig`).
     /// Tracks the search → fetch-torrent → enqueue handoff for the
     /// per-game Tier-2 auto-download.
-    pending_rpdl_download: ?*anyopaque = null,
+    pending_rpdl_download: ?*owned.RpdlDownloadJob = null,
     /// Heap-allocated DonorDownloadJob (defined in `actions.zig`).
     /// Mirrors `pending_rpdl_download` for the Tier-1 donor-DDL flow:
     /// POST `/sam/dddl.php` → grab signed URL → enqueue via aria2.
-    pending_donor_download: ?*anyopaque = null,
+    pending_donor_download: ?*owned.DonorDownloadJob = null,
     /// Tracks which in-flight aria2 jobs originated from a donor-DDL
     /// signed URL so the failure handler knows it can POST for a fresh
     /// URL and re-enqueue (handles signed-URL TTL expiry).
@@ -654,26 +655,26 @@ pub const State = struct {
     /// observed byte count, stall-since timestamp, last seen aria2
     /// errorMessage). Drives the verbose "how is this download
     /// behaving" logging that `drainDonorTelemetry` emits.
-    donor_tick_log: ?*anyopaque = null,
+    donor_tick_log: ?*owned.DonorTickLog = null,
     /// Heap-allocated RefreshTagsJob (defined in `actions.zig`).
     /// Set while a master-tag-list refresh is in flight.
-    pending_tags_refresh: ?*anyopaque = null,
+    pending_tags_refresh: ?*owned.RefreshTagsJob = null,
     /// Active post-install workers — one entry per terminal download
     /// whose archive is currently being SHA-verified + extracted on a
     /// detached thread. Held as anyopaque so `state.zig` doesn't pull
     /// in downloads / installer modules; `actions.postInstallJobsList`
     /// does the lazy ArrayList(*PostInstallJob) init. Drained every
     /// frame by `drainPostInstall`.
-    post_install_jobs: ?*anyopaque = null,
+    post_install_jobs: ?*owned.PostInstallJobsList = null,
     /// In-flight F95Checker / xLibrary import worker. Held as
     /// anyopaque so state.zig doesn't pull in the import_job module.
     /// One at a time; `actions.startImport*` rejects a second click.
-    import_job: ?*anyopaque = null,
+    import_job: ?*import_job_mod.Job = null,
     /// In-flight manual-install workers (user picked an archive off
     /// disk; we hash + extract + write an `installs` row). Same
     /// lifecycle as `post_install_jobs`; held as anyopaque so this
     /// file doesn't pull in actions.zig's `ManualInstallJob`.
-    manual_install_jobs: ?*anyopaque = null,
+    manual_install_jobs: ?*owned.ManualInstallJobsList = null,
     /// Detail-page "Install from file…" expander state: when true,
     /// renderActionRow drops an inline panel under itself with
     /// path / version / name fields. Independent of an in-flight
@@ -689,7 +690,7 @@ pub const State = struct {
     /// `SyncRecapEntry` (defined in actions.zig). When the batch
     /// finishes with `sync_recap_show = true`, the main loop renders
     /// the popup over the current screen.
-    sync_recap: ?*anyopaque = null,
+    sync_recap: ?*owned.SyncRecapList = null,
     /// True while the end-of-batch recap popup should be visible.
     /// Cleared by the user (close button) or by starting a new batch.
     sync_recap_show: bool = false,
@@ -733,7 +734,7 @@ pub const State = struct {
     image_queue_cap: usize = 0,
     /// Currently-running ImageJob; opaque so `actions.zig` owns the
     /// definition. Null when idle between jobs.
-    image_active: ?*anyopaque = null,
+    image_active: ?*owned.ImageJob = null,
     /// Name of the game whose ImageJob is in flight (for the second
     /// banner row). Sentinel-trimmed.
     image_active_name: buf_mod.MessageBuf(160) = .{},
@@ -795,7 +796,7 @@ pub const State = struct {
     login_msg: buf_mod.MessageBuf(128) = .{},
     /// In-flight bookmarks pull (worker thread). `actions.zig` defines
     /// the actual job struct.
-    pending_bookmarks: ?*anyopaque = null,
+    pending_bookmarks: ?*owned.BookmarksJob = null,
     /// RPDL credentials + status, mirroring the F95 section above.
     /// `rpdl_token` is heap-owned (`lib.alloc`), populated on Login or
     /// from `<config>/f69/rpdl_token` at startup; freed on quit. The
@@ -916,7 +917,7 @@ pub const State = struct {
     /// install (real)" button. `*anyopaque` for the same reason as
     /// `preset_cache` — keeps installer / recipe types out of state.zig.
     /// Drained per frame from `guiFrame`; null when idle.
-    test_install_job: ?*anyopaque = null,
+    test_install_job: ?*owned.TestInstallJob = null,
 
     /// Recipe wizard — drives the multi-step modal that turns a
     /// modfile into a `.mod.zon`. Null = wizard closed.
@@ -926,7 +927,7 @@ pub const State = struct {
     /// declared-files conflict scan finds collisions; cleared by the
     /// modal on cancel / accept. `*anyopaque` for the same reason as
     /// `modfile_cache` — keeps installer types out of state.zig.
-    clash_modal: ?*anyopaque = null,
+    clash_modal: ?*owned.ClashModalState = null,
 
     pub fn importMsg(self: *const State) []const u8 {
         return self.import_msg.read();
