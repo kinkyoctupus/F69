@@ -20,6 +20,7 @@ const dvui = @import("dvui");
 const image = @import("image");
 const types = @import("../types.zig");
 const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const downloads_mod = @import("downloads.zig");
 const installer_mod = @import("installer.zig");
@@ -30,10 +31,10 @@ const Frame = types.Frame;
 const State = types.State;
 
 const SyncRecapList = owned_types.SyncRecapList;
-const SyncJobPhase = owned_types.SyncJobPhase;
 const ImageJobPhase = owned_types.ImageJobPhase;
 
 pub const SyncRecapEntry = owned_types.SyncRecapEntry;
+pub const SyncPayload = owned_types.SyncPayload;
 pub const SyncJob = owned_types.SyncJob;
 pub const ImageJob = owned_types.ImageJob;
 
@@ -179,53 +180,40 @@ pub fn syncGame(frame: *Frame, game: *library.Game) void {
     };
 
     const alloc = frame.lib.alloc;
-    const job = alloc.create(SyncJob) catch {
-        state.sync_status = .err;
-        state.setSyncMsg("internal error: job alloc");
-        return;
-    };
     const url_owned = alloc.dupe(u8, url_slice) catch {
-        alloc.destroy(job);
         state.sync_status = .err;
         state.setSyncMsg("internal error: url dup");
         return;
     };
     const covers_owned = alloc.dupe(u8, frame.info.covers_dir) catch {
         alloc.free(url_owned);
-        alloc.destroy(job);
         state.sync_status = .err;
         state.setSyncMsg("internal error: covers_dir dup");
         return;
     };
-    job.* = .{
-        .phase = .init(@intFromEnum(SyncJobPhase.pending)),
-        .thread_id = game.f95_thread_id,
-        .alloc = alloc,
-        .url = url_owned,
-        .f95_svc = frame.f95_svc,
-        .win = frame.win,
-        .covers_dir = covers_owned,
-        .io = frame.io,
-        .thr = undefined,
-        .cancel = .init(false),
-        .progress_done = .init(0),
-        .progress_total = .init(1),
-    };
 
-    job.thr = std.Thread.spawn(.{}, syncWorker, .{job}) catch {
+    _ = job_mod.spawnJob(
+        SyncPayload,
+        syncWorker,
+        alloc,
+        frame.win,
+        .{
+            .thread_id = game.f95_thread_id,
+            .url = url_owned,
+            .f95_svc = frame.f95_svc,
+            .covers_dir = covers_owned,
+            .io = frame.io,
+            .progress_done = .init(0),
+            .progress_total = .init(1),
+        },
+        &state.pending_sync,
+    ) catch {
         alloc.free(covers_owned);
         alloc.free(url_owned);
-        alloc.destroy(job);
         state.sync_status = .err;
-        state.setSyncMsg("internal error: thread spawn");
+        state.setSyncMsg("internal error: job alloc/spawn");
         return;
     };
-    // Detach is safe even if the worker has already exited by the time
-    // we get here — POSIX `pthread_detach` accepts joinable+exited
-    // threads. The worker only writes `job.phase` via release-store +
-    // `dvui.refresh`; we never read it before `state.pending_sync`
-    // is set below, so drainSync can't fire prematurely.
-    job.thr.detach();
 
     state.sync_status = .running;
     // Banner shows the active game's name + queue progress. If the
@@ -237,7 +225,6 @@ pub fn syncGame(frame: *Frame, game: *library.Game) void {
     state.setCurrentSyncName(game.name);
     state.sync_msg.clear();
     state.sync_status = .running;
-    state.pending_sync = job;
 }
 
 /// Wall-clock milliseconds via the Zig 0.16 `std.Io.Clock` API.
@@ -247,65 +234,64 @@ fn nowMs(io: std.Io) i64 {
 }
 
 fn syncWorker(job: *SyncJob) void {
+    const p = &job.payload;
     // Coarse wall-clock timing so the log shows where the seconds go.
     // Phase boundaries: HTML fetch+parse → cover fetch → screenshots.
     // The image phases dominate when a thread has many screenshots
     // because each GET is rate-limited at the F95 client level.
-    const t_start = nowMs(job.io);
-    const scraped = job.f95_svc.scrapeThread(job.url) catch |e| {
+    const t_start = nowMs(p.io);
+    const scraped = p.f95_svc.scrapeThread(p.url) catch |e| {
         // HTTP 404 from F95 means the thread is gone — dev took it
         // down, mod nuked it, whatever. We don't want to error out
         // (the user would have to dismiss a banner per orphaned
         // game during a sync-all). Instead flag the job and let
         // drainSync flip the row's dev_status to .orphaned.
         if (e == f95.errors.Error.NotFound) {
-            log.info("sync tid={d} ORPHANED (F95 returned 404) elapsed_ms={d}", .{ job.thread_id, nowMs(job.io) - t_start });
-            job.orphaned = true;
-            job.phase.store(@intFromEnum(SyncJobPhase.done), .release);
-            dvui.refresh(job.win, @src(), null);
+            log.info("sync tid={d} ORPHANED (F95 returned 404) elapsed_ms={d}", .{ p.thread_id, nowMs(p.io) - t_start });
+            p.orphaned = true;
+            job.markDone();
             return;
         }
-        log.info("sync tid={d} FAIL scrape elapsed_ms={d} err={s}", .{ job.thread_id, nowMs(job.io) - t_start, @errorName(e) });
-        job.err_name = @errorName(e);
-        job.phase.store(@intFromEnum(SyncJobPhase.failed), .release);
-        dvui.refresh(job.win, @src(), null);
+        log.info("sync tid={d} FAIL scrape elapsed_ms={d} err={s}", .{ p.thread_id, nowMs(p.io) - t_start, @errorName(e) });
+        p.err_name = @errorName(e);
+        job.markFailed();
         return;
     };
-    const t_after_scrape = nowMs(job.io);
+    const t_after_scrape = nowMs(p.io);
     log.info(
         "sync tid={d} scrape_ms={d} name={?s} engine_str={?s} version={?s} developer={?s}",
-        .{ job.thread_id, t_after_scrape - t_start, scraped.name, scraped.engine_str, scraped.version, scraped.developer },
+        .{ p.thread_id, t_after_scrape - t_start, scraped.name, scraped.engine_str, scraped.version, scraped.developer },
     );
 
     // ScrapedThread strings are job.alloc-owned; we transfer ownership
     // onto the SyncJob fields, drainSync copies into Library.
-    job.name = if (scraped.name) |n| @constCast(n) else null;
-    job.version = if (scraped.version) |v| @constCast(v) else null;
-    job.developer = if (scraped.developer) |d| @constCast(d) else null;
-    job.rating = scraped.rating;
-    job.vote_count = scraped.vote_count;
+    p.name = if (scraped.name) |n| @constCast(n) else null;
+    p.version = if (scraped.version) |v| @constCast(v) else null;
+    p.developer = if (scraped.developer) |d| @constCast(d) else null;
+    p.rating = scraped.rating;
+    p.vote_count = scraped.vote_count;
     if (scraped.engine_str) |e| {
-        job.engine = library.Engine.fromBracket(e);
+        p.engine = library.Engine.fromBracket(e);
         job.alloc.free(e);
     }
     if (scraped.dev_status_str) |s| {
-        job.dev_status = library.DevStatus.fromBracket(s);
+        p.dev_status = library.DevStatus.fromBracket(s);
         job.alloc.free(s);
     }
-    if (scraped.last_updated_at) |ts| job.last_updated_at = ts;
-    if (scraped.thread_info_md) |t| job.thread_info_md = @constCast(t);
+    if (scraped.last_updated_at) |ts| p.last_updated_at = ts;
+    if (scraped.thread_info_md) |t| p.thread_info_md = @constCast(t);
     if (scraped.censored_str) |c| {
-        job.censored = library.CensoredState.fromText(c);
+        p.censored = library.CensoredState.fromText(c);
         job.alloc.free(c);
     }
-    if (scraped.tags.len > 0) job.tags = scraped.tags;
-    if (scraped.screenshots.len > 0) job.screenshots = scraped.screenshots;
-    if (scraped.description_md) |d| job.description_md = @constCast(d);
-    if (scraped.changelog_md) |c| job.changelog_md = @constCast(c);
-    if (scraped.reviews_md) |r| job.reviews_md = @constCast(r);
-    if (scraped.downloads_md) |d| job.downloads_md = @constCast(d);
+    if (scraped.tags.len > 0) p.tags = scraped.tags;
+    if (scraped.screenshots.len > 0) p.screenshots = scraped.screenshots;
+    if (scraped.description_md) |d| p.description_md = @constCast(d);
+    if (scraped.changelog_md) |c| p.changelog_md = @constCast(c);
+    if (scraped.reviews_md) |r| p.reviews_md = @constCast(r);
+    if (scraped.downloads_md) |d| p.downloads_md = @constCast(d);
     if (scraped.download_links.len > 0) {
-        job.download_links = encodeDownloadLinks(job.alloc, scraped.download_links) catch null;
+        p.download_links = encodeDownloadLinks(job.alloc, scraped.download_links) catch null;
         // Encoded copy lives on the job; free the source list now.
         for (scraped.download_links) |link| {
             job.alloc.free(link.url);
@@ -324,37 +310,37 @@ fn syncWorker(job: *SyncJob) void {
     const want_cover = scraped.cover_url != null;
     var cover_path_buf: [256]u8 = undefined;
     const cover_present = if (want_cover) blk: {
-        const cp = std.fmt.bufPrint(&cover_path_buf, "{s}/{d}", .{ job.covers_dir, job.thread_id }) catch break :blk false;
-        break :blk fileExists(job.io, cp);
+        const cp = std.fmt.bufPrint(&cover_path_buf, "{s}/{d}", .{ p.covers_dir, p.thread_id }) catch break :blk false;
+        break :blk fileExists(p.io, cp);
     } else true;
 
-    const t_before_images = nowMs(job.io);
+    const t_before_images = nowMs(p.io);
     if (!want_cover or cover_present) {
         // Nothing to fetch in this worker. Leave `progress_total` at
         // its initial 1 so the banner's sub-progress doesn't flicker.
         if (scraped.cover_url) |cu| job.alloc.free(cu);
         log.info(
             "sync tid={d} cover_cached={any} shots_deferred={d}",
-            .{ job.thread_id, want_cover and cover_present, scraped.screenshots.len },
+            .{ p.thread_id, want_cover and cover_present, scraped.screenshots.len },
         );
     } else {
         // Cover work coming up — publish the planned step count.
-        job.progress_total.store(2, .release);
-        job.progress_done.store(1, .release);
+        p.progress_total.store(2, .release);
+        p.progress_done.store(1, .release);
         dvui.refresh(job.win, @src(), null);
         if (scraped.cover_url) |cu| {
             defer job.alloc.free(cu);
-            if (job.cancel.load(.acquire)) {
-                log.info("sync tid={d} cancelled before cover fetch", .{job.thread_id});
+            if (job.cancelRequested()) {
+                log.info("sync tid={d} cancelled before cover fetch", .{p.thread_id});
             } else {
-                const t_c0 = nowMs(job.io);
+                const t_c0 = nowMs(p.io);
                 if (fetchAndWriteCover(job, cu)) {
-                    job.cover_updated = true;
-                    log.info("sync tid={d} cover_ms={d}", .{ job.thread_id, nowMs(job.io) - t_c0 });
+                    p.cover_updated = true;
+                    log.info("sync tid={d} cover_ms={d}", .{ p.thread_id, nowMs(p.io) - t_c0 });
                 } else |_| {
-                    log.info("sync tid={d} cover FAIL elapsed_ms={d}", .{ job.thread_id, nowMs(job.io) - t_c0 });
+                    log.info("sync tid={d} cover FAIL elapsed_ms={d}", .{ p.thread_id, nowMs(p.io) - t_c0 });
                 }
-                _ = job.progress_done.fetchAdd(1, .release);
+                _ = p.progress_done.fetchAdd(1, .release);
                 dvui.refresh(job.win, @src(), null);
             }
         }
@@ -364,20 +350,18 @@ fn syncWorker(job: *SyncJob) void {
     // skips the applyScrape write — the scraped data is still owned
     // by job and will be freed via cleanup(). This keeps cancellation
     // observable to the UI without partial-row commits.
-    if (job.cancel.load(.acquire)) {
-        log.info("sync tid={d} TOTAL_ms={d} CANCELLED", .{ job.thread_id, nowMs(job.io) - t_start });
-        job.err_name = "Cancelled";
-        job.phase.store(@intFromEnum(SyncJobPhase.failed), .release);
-        dvui.refresh(job.win, @src(), null);
+    if (job.cancelRequested()) {
+        log.info("sync tid={d} TOTAL_ms={d} CANCELLED", .{ p.thread_id, nowMs(p.io) - t_start });
+        p.err_name = "Cancelled";
+        job.markFailed();
         return;
     }
 
     log.info(
         "sync tid={d} TOTAL_ms={d} scrape_ms={d} images_ms={d}",
-        .{ job.thread_id, nowMs(job.io) - t_start, t_after_scrape - t_start, nowMs(job.io) - t_before_images },
+        .{ p.thread_id, nowMs(p.io) - t_start, t_after_scrape - t_start, nowMs(p.io) - t_before_images },
     );
-    job.phase.store(@intFromEnum(SyncJobPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    job.markDone();
 }
 
 /// Encode a `DownloadLink` slice into the persisted line format —
@@ -402,7 +386,8 @@ fn encodeDownloadLinks(alloc: std.mem.Allocator, links: []const f95.DownloadLink
 /// Worker-thread helper: fetch image bytes via the same rate-limited
 /// HTTP client and atomically replace the on-disk cover file.
 fn fetchAndWriteCover(job: *SyncJob, cover_url: []const u8) !void {
-    const raw = try job.f95_svc.client.getImage(cover_url);
+    const p = &job.payload;
+    const raw = try p.f95_svc.client.getImage(cover_url);
     defer job.alloc.free(raw);
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("cover transcode failed ({s}): {s}", .{ @errorName(e), cover_url });
@@ -411,12 +396,12 @@ fn fetchAndWriteCover(job: *SyncJob, cover_url: []const u8) !void {
     defer job.alloc.free(ready);
 
     var path_buf: [256]u8 = undefined;
-    const path = try coverPath(&path_buf, job.covers_dir, job.thread_id);
-    try writeAtomic(job.io, path, ready);
+    const path = try coverPath(&path_buf, p.covers_dir, p.thread_id);
+    try writeAtomic(p.io, path, ready);
 
     // Also write the thumbnail. Failure here is non-fatal — the lazy
     // path in `thumbBytes` will regenerate from the full-size file.
-    writeThumbBeside(job.alloc, job.io, path, ready) catch |e| {
+    writeThumbBeside(job.alloc, p.io, path, ready) catch |e| {
         std.log.scoped(.ui_actions).warn("cover thumb gen failed: {s}", .{@errorName(e)});
     };
 }
@@ -431,7 +416,8 @@ fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8) !void {
 /// Fetch a single screenshot to `<covers_dir>/<tid>.s<n>`. Same atomic
 /// write pattern as the cover.
 fn fetchAndWriteScreenshot(job: *SyncJob, url: []const u8, idx: usize) !void {
-    const raw = try job.f95_svc.client.getImage(url);
+    const p = &job.payload;
+    const raw = try p.f95_svc.client.getImage(url);
     defer job.alloc.free(raw);
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("screenshot {d} transcode failed ({s}): {s}", .{ idx, @errorName(e), url });
@@ -440,10 +426,10 @@ fn fetchAndWriteScreenshot(job: *SyncJob, url: []const u8, idx: usize) !void {
     defer job.alloc.free(ready);
 
     var path_buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ job.covers_dir, job.thread_id, idx });
-    try writeAtomic(job.io, path, ready);
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ p.covers_dir, p.thread_id, idx });
+    try writeAtomic(p.io, path, ready);
 
-    writeThumbBeside(job.alloc, job.io, path, ready) catch |e| {
+    writeThumbBeside(job.alloc, p.io, path, ready) catch |e| {
         std.log.scoped(.ui_actions).warn("screenshot {d} thumb gen failed: {s}", .{ idx, @errorName(e) });
     };
 }
@@ -742,98 +728,109 @@ pub fn freeThumbCache(state: *State, alloc: std.mem.Allocator) void {
 /// `state.pending_sync`. No-op while the worker is still pending.
 pub fn drainSync(frame: *Frame) void {
     const state = frame.state;
-    const job = state.pending_sync orelse return;
+    // Snapshot the slot before draining so we can do the post-drain
+    // cache invalidation + queue advance independent of the carrier
+    // (drainBackgroundJob destroys it via the .done/.failed handler).
+    const slot_was_set = state.pending_sync != null;
+    job_mod.drainBackgroundJob(
+        SyncPayload,
+        onSyncDone,
+        onSyncFailed,
+        frame,
+        &state.pending_sync,
+    );
+    if (!slot_was_set) return;
+    if (state.pending_sync != null) return; // worker still pending — no-op
+    // Worker reached terminal phase and the carrier is freed. Clear
+    // the active-sync banner and advance the queue if a batch is in
+    // flight. (cancelSync nulls sync_queue, so a cancelled run won't
+    // advance — matches the previous behaviour.)
+    state.active_sync_name.clear();
+    if (state.sync_queue != null) advanceSyncQueue(frame);
+}
 
-    const phase: SyncJobPhase = @enumFromInt(job.phase.load(.acquire));
-    if (phase == .pending) return;
-
-    // We *cannot* use `defer` for the cleanup here, because the
-    // batch-chain calls (`advanceSyncQueue` → `syncGame`) need to see
-    // `state.pending_sync = null` so they actually spawn the next job
-    // instead of queueing it behind the just-finished one. The defer
-    // would fire AFTER advance, so syncGame would observe the still-
-    // set pending_sync and silently append to the queue, leaving the
-    // batch stalled with no active worker. Worse: the defer would
-    // then clear pending_sync, nuking the newly-spawned next job's
-    // pointer. So: cleanup() is explicit, run before any chain call.
-    const cleanup = struct {
-        fn run(j: *SyncJob, s: *State) void {
-            j.alloc.free(j.url);
-            j.alloc.free(j.covers_dir);
-            if (j.name) |n| j.alloc.free(n);
-            if (j.version) |v| j.alloc.free(v);
-            if (j.developer) |d| j.alloc.free(d);
-            if (j.tags) |ts| {
-                for (ts) |t| j.alloc.free(t);
-                j.alloc.free(ts);
-            }
-            if (j.screenshots) |ss| {
-                for (ss) |x| j.alloc.free(x);
-                j.alloc.free(ss);
-            }
-            if (j.description_md) |d| j.alloc.free(d);
-            if (j.changelog_md) |c| j.alloc.free(c);
-            if (j.reviews_md) |r| j.alloc.free(r);
-            if (j.downloads_md) |d| j.alloc.free(d);
-            if (j.thread_info_md) |t| j.alloc.free(t);
-            if (j.download_links) |dl| {
-                for (dl) |d| j.alloc.free(d);
-                j.alloc.free(dl);
-            }
-            j.alloc.destroy(j);
-            s.pending_sync = null;
-            s.active_sync_name.clear();
-        }
-    }.run;
-
-    // Cover was just rewritten on disk — drop the cached entry so the
-    // next frame re-reads it.
-    if (job.cover_updated) {
-        invalidateCover(state, frame.lib.alloc, job.thread_id);
+/// Drop any cover/slide/thumb caches keyed on this job's thread id
+/// before transferring ownership back to the UI thread. Runs from
+/// both onSyncDone and onSyncFailed so cancelled / failed jobs that
+/// still wrote a fresh cover (cover_updated) don't leave stale bytes
+/// in the cache.
+fn invalidateCachesForJob(frame: *Frame, job: *SyncJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    if (p.cover_updated) {
+        invalidateCover(state, frame.lib.alloc, p.thread_id);
     }
-
-    // The sync worker also rewrote the full-size cover + every
-    // screenshot AND their `.t` thumbs. The detail-page caches keyed
-    // on `thread_id` still hold the old (or null) bytes — drop them
-    // so the next paint reloads from the freshly-written files.
-    // Without this, slide 0 stays at "(no cover)" until the user
-    // navigates away and back.
-    if (state.slide_cache_thread == job.thread_id) {
+    if (state.slide_cache_thread == p.thread_id) {
         freeSlideCache(state, frame.lib.alloc);
     }
-    if (state.thumb_cache_thread == job.thread_id) {
+    if (state.thumb_cache_thread == p.thread_id) {
         freeThumbCache(state, frame.lib.alloc);
     }
+}
 
-    if (phase == .failed) {
-        // User cancellation is not an error path — silently clean up
-        // and DO NOT chain into the rest of the queue (cancelSync
-        // already freed it). Real failures still surface a banner.
-        const was_cancelled = job.err_name != null and std.mem.eql(u8, job.err_name.?, "Cancelled");
-        if (was_cancelled) {
-            state.sync_status = .idle;
-            state.sync_msg.clear();
-            cleanup(job, state);
-            return;
-        }
-        state.sync_status = .err;
-        const friendly = common.friendlyError(job.err_name orelse "?");
-        var emsg: [128]u8 = undefined;
-        const m = if (state.sync_queue) |_|
-            std.fmt.bufPrint(&emsg, "sync-all: {d}/{d} — failed: {s}", .{ state.sync_queue_started, state.sync_queue_total, friendly }) catch "sync-all error"
-        else
-            std.fmt.bufPrint(&emsg, "scrape failed: {s}", .{friendly}) catch "scrape failed";
-        state.setSyncMsg(m);
-        cleanup(job, state);
-        // Don't abort the batch on a single failure — keep going.
-        if (state.sync_queue != null) advanceSyncQueue(frame);
+/// Free every payload-owned heap allocation. Called from both
+/// handlers right before drainBackgroundJob destroys the carrier.
+/// Idempotent — every field is null-checked.
+fn freeSyncPayload(job: *SyncJob) void {
+    const p = &job.payload;
+    job.alloc.free(p.url);
+    job.alloc.free(p.covers_dir);
+    if (p.name) |n| job.alloc.free(n);
+    if (p.version) |v| job.alloc.free(v);
+    if (p.developer) |d| job.alloc.free(d);
+    if (p.tags) |ts| {
+        for (ts) |t| job.alloc.free(t);
+        job.alloc.free(ts);
+    }
+    if (p.screenshots) |ss| {
+        for (ss) |x| job.alloc.free(x);
+        job.alloc.free(ss);
+    }
+    if (p.description_md) |d| job.alloc.free(d);
+    if (p.changelog_md) |c| job.alloc.free(c);
+    if (p.reviews_md) |r| job.alloc.free(r);
+    if (p.downloads_md) |d| job.alloc.free(d);
+    if (p.thread_info_md) |t| job.alloc.free(t);
+    if (p.download_links) |dl| {
+        for (dl) |d| job.alloc.free(d);
+        job.alloc.free(dl);
+    }
+}
+
+fn onSyncFailed(frame: *Frame, job: *SyncJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    invalidateCachesForJob(frame, job);
+    // User cancellation is not an error path — silently clean up
+    // and DO NOT chain into the rest of the queue (cancelSync
+    // already freed it). Real failures still surface a banner.
+    const was_cancelled = p.err_name != null and std.mem.eql(u8, p.err_name.?, "Cancelled");
+    if (was_cancelled) {
+        state.sync_status = .idle;
+        state.sync_msg.clear();
+        freeSyncPayload(job);
         return;
     }
+    state.sync_status = .err;
+    const friendly = common.friendlyError(p.err_name orelse "?");
+    var emsg: [128]u8 = undefined;
+    const m = if (state.sync_queue) |_|
+        std.fmt.bufPrint(&emsg, "sync-all: {d}/{d} — failed: {s}", .{ state.sync_queue_started, state.sync_queue_total, friendly }) catch "sync-all error"
+    else
+        std.fmt.bufPrint(&emsg, "scrape failed: {s}", .{friendly}) catch "scrape failed";
+    state.setSyncMsg(m);
+    freeSyncPayload(job);
+}
+
+fn onSyncDone(frame: *Frame, job: *SyncJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    invalidateCachesForJob(frame, job);
 
     // .done — find the row by thread_id and apply numeric fields.
     var target: ?*library.Game = null;
     for (frame.games) |*gg| {
-        if (gg.f95_thread_id == job.thread_id) {
+        if (gg.f95_thread_id == p.thread_id) {
             target = gg;
             break;
         }
@@ -841,9 +838,7 @@ pub fn drainSync(frame: *Frame) void {
     const game = target orelse {
         state.sync_status = .err;
         state.setSyncMsg("synced game no longer in list");
-        cleanup(job, state);
-        // Don't stall a sync-all batch on a single missing row.
-        if (state.sync_queue != null) advanceSyncQueue(frame);
+        freeSyncPayload(job);
         return;
     };
 
@@ -853,7 +848,7 @@ pub fn drainSync(frame: *Frame) void {
     // clobber the row's good data with the empty scrape — only flip
     // dev_status + bump last_scraped_at so the badge updates and the
     // user can see the row was checked.
-    if (job.orphaned) {
+    if (p.orphaned) {
         frame.lib.applyScrape(game, .{
             .dev_status = .orphaned,
             .last_scraped_at = now_s,
@@ -862,8 +857,7 @@ pub fn drainSync(frame: *Frame) void {
             var emsg: [80]u8 = undefined;
             const m = std.fmt.bufPrint(&emsg, "DB write failed: {s}", .{@errorName(e)}) catch "DB write failed";
             state.setSyncMsg(m);
-            cleanup(job, state);
-            if (state.sync_queue != null) advanceSyncQueue(frame);
+            freeSyncPayload(job);
             return;
         };
         state.sync_status = .ok;
@@ -873,10 +867,9 @@ pub fn drainSync(frame: *Frame) void {
         const m = if (state.sync_queue) |_|
             std.fmt.bufPrint(&orph_buf, "sync-all: {d}/{d} — orphaned (thread gone from F95)", .{ state.sync_queue_started, state.sync_queue_total }) catch "orphaned"
         else
-            std.fmt.bufPrint(&orph_buf, "orphaned — F95 returned 404 for thread {d}", .{job.thread_id}) catch "orphaned";
+            std.fmt.bufPrint(&orph_buf, "orphaned — F95 returned 404 for thread {d}", .{p.thread_id}) catch "orphaned";
         state.setSyncMsg(m);
-        cleanup(job, state);
-        if (state.sync_queue != null) advanceSyncQueue(frame);
+        freeSyncPayload(job);
         return;
     }
 
@@ -891,32 +884,30 @@ pub fn drainSync(frame: *Frame) void {
     defer if (old_version_snapshot) |s| frame.lib.alloc.free(s);
 
     frame.lib.applyScrape(game, .{
-        .name = job.name,
-        .version = job.version,
-        .developer = job.developer,
-        .rating = job.rating,
-        .vote_count = job.vote_count,
-        .engine = job.engine,
-        .dev_status = job.dev_status,
-        .last_updated_at = job.last_updated_at,
-        .thread_info_md = job.thread_info_md,
-        .censored = job.censored,
-        .tags = job.tags,
-        .screenshots = job.screenshots,
-        .description_md = job.description_md,
-        .changelog_md = job.changelog_md,
-        .reviews_md = job.reviews_md,
-        .download_links = job.download_links,
-        .downloads_md = job.downloads_md,
+        .name = p.name,
+        .version = p.version,
+        .developer = p.developer,
+        .rating = p.rating,
+        .vote_count = p.vote_count,
+        .engine = p.engine,
+        .dev_status = p.dev_status,
+        .last_updated_at = p.last_updated_at,
+        .thread_info_md = p.thread_info_md,
+        .censored = p.censored,
+        .tags = p.tags,
+        .screenshots = p.screenshots,
+        .description_md = p.description_md,
+        .changelog_md = p.changelog_md,
+        .reviews_md = p.reviews_md,
+        .download_links = p.download_links,
+        .downloads_md = p.downloads_md,
         .last_scraped_at = now_s,
     }) catch |e| {
         state.sync_status = .err;
         var emsg: [80]u8 = undefined;
         const m = std.fmt.bufPrint(&emsg, "DB write failed: {s}", .{@errorName(e)}) catch "DB write failed";
         state.setSyncMsg(m);
-        cleanup(job, state);
-        // Continue the batch even when one DB write fails.
-        if (state.sync_queue != null) advanceSyncQueue(frame);
+        freeSyncPayload(job);
         return;
     };
 
@@ -992,9 +983,7 @@ pub fn drainSync(frame: *Frame) void {
         enqueueImageFetch(frame, game.f95_thread_id, game.screenshots.len);
     }
 
-    cleanup(job, state);
-    // If a batch is in flight, kick off the next item.
-    if (state.sync_queue != null) advanceSyncQueue(frame);
+    freeSyncPayload(job);
 }
 
 // ============================================================
@@ -1138,7 +1127,7 @@ pub fn cancelSync(frame: *Frame) void {
     const state = frame.state;
     if (state.pending_sync) |j| {
         j.cancel.store(true, .release);
-        log.info("cancelSync: flag set on tid={d}", .{j.thread_id});
+        log.info("cancelSync: flag set on tid={d}", .{j.payload.thread_id});
     }
     if (state.sync_queue) |q| {
         frame.lib.alloc.free(q);

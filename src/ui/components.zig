@@ -627,8 +627,8 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
                 .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
             });
         } else {
-            const done = j.progress_done.load(.acquire);
-            const total = j.progress_total.load(.acquire);
+            const done = j.payload.progress_done.load(.acquire);
+            const total = j.payload.progress_total.load(.acquire);
             if (total > 1) {
                 _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
                 var step_buf: [40]u8 = undefined;

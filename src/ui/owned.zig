@@ -133,16 +133,11 @@ pub const SyncRecapEntry = struct {
 
 pub const SyncRecapList = std.ArrayList(SyncRecapEntry);
 
-/// Phases of the worker. UI thread only reads; worker only writes
-/// (transitions are .pending → .done|.failed exactly once).
-pub const SyncJobPhase = enum(u8) { pending, done, failed };
-
-/// One outstanding Sync. Heap-alloc'd so it outlives the click handler;
-/// the UI thread drains and frees once `phase` transitions away from
-/// `.pending`.
-pub const SyncJob = struct {
-    /// Atomic so the UI thread sees writes from the worker.
-    phase: std.atomic.Value(u8),
+/// Payload for the per-game sync worker (scrape OP + cover +
+/// screenshots). Generic carrier (phase, cancel, thread, allocator,
+/// dvui window) is provided by `Job(...)`; this struct holds the
+/// per-task inputs + worker output.
+pub const SyncPayload = struct {
     thread_id: u64,
     /// Set when phase == .done. Strings are job.alloc-owned; drainSync
     /// copies them into `lib.alloc`-owned slots via `applyScrape`, then
@@ -174,15 +169,8 @@ pub const SyncJob = struct {
     download_links: ?[]const []const u8 = null,
     /// Set when phase == .failed; static string, not allocator-owned.
     err_name: ?[]const u8 = null,
-    /// Detached worker thread handle; owned by Job, not joined (we drain
-    /// via the atomic flag and detach so the OS reaps the thread).
-    thr: std.Thread,
-    /// Allocator that owns this Job + url copy.
-    alloc: std.mem.Allocator,
     url: []u8,
     f95_svc: *f95.Service,
-    /// Used to wake the UI thread once the worker writes `phase`.
-    win: *dvui.Window,
     /// Owned copy of the covers cache dir; used by the worker to write
     /// the fetched cover bytes. Owned-and-freed alongside the Job.
     covers_dir: []u8,
@@ -191,10 +179,6 @@ pub const SyncJob = struct {
     cover_updated: bool = false,
     /// Io vtable — worker uses it for the cover-file write.
     io: std.Io,
-    /// Set by the UI thread (Cancel button) to ask the worker to bail
-    /// out at the next phase boundary. The worker treats this as an
-    /// expected exit, not an error.
-    cancel: std.atomic.Value(bool) = .init(false),
     /// Intra-sync progress: items completed / planned. Updated by the
     /// worker after each phase (HTML parse + cover + each screenshot).
     /// The UI banner reads both atomically to render the "step k/N"
@@ -207,6 +191,7 @@ pub const SyncJob = struct {
     /// than a hard failure that surfaces an error banner.
     orphaned: bool = false,
 };
+pub const SyncJob = Job(SyncPayload);
 
 pub const UpdateCheckJob = struct {
     phase: std.atomic.Value(u8),
