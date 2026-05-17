@@ -860,6 +860,32 @@ I want this documented so we don't relitigate.
 | Anti-corruption parser trait | 10+ `parseX` functions | **Reject** | Already de facto-uniform shape (`pub fn parse(alloc, bytes) !Output`). No further abstraction needed. |
 | Decorator chain for HTTP middleware | UA, cookie, rate-limit (F18 F19) | **Adopt simplified form** | A single `util/http.zig` with `client.fetch(url, opts) → Body` that injects UA from `build_options` + handles status classification. Not a full middleware chain — just one helper + one struct. |
 
+### Status of the refactor (2026-05-17)
+
+7 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
+
+| Phase | Status | Commit | Scope |
+|---|---|---|---|
+| R1 | ✅ shipped | `c690f31` | `util/atomic_io.zig` + dead Service deleted + `util/spsc`/`util/snapshot` deleted + USER_AGENT from `build_options.version` + RPDL JSON via `std.json.Stringify` |
+| R2 | ✅ shipped | `8bbcec2` | `util/domain.zig` shared kernel (`Engine` 4× → 1×, `Distro` 2× → 1×, `Os`); compat's missing `unknown` variant is gone |
+| R3 | ✅ shipped | `1686abd` | `src/ui/buf.zig` `MessageBuf(N)`; 9 paired `_buf`+`_len` fields collapsed |
+| R5 | ✅ shipped | `6f0ed4b` | `util/http.zig` + `util/proc.zig` primitives; **call-site migrations are a follow-up — 5 HTTP and 14 process-spawn sites still in their original shape** |
+| R7 | ✅ shipped | `3c94d21` | `recipe.walkSteps` Visitor primitive + `recipe/validator.zig` demo migration; simulate/apply/ui-actions switches deliberately left as-is (step-local state doesn't compose with the duck-typed visitor) |
+| R10 | ✅ shipped | `be6d7aa` | `util/setting.zig` (`readSingleLine`, `parseBool`, `loadBool`, `loadInt`, `loadFloat`); **main.zig's 15 bespoke `loadX` helpers still in place — migration is a follow-up** |
+| R11 | ✅ shipped | `ba35fa9` | `util/test_env.zig` `TestEnv` (auto-cleanup tmpdir + writeFile/touchFile/path helpers); **existing tests still use their bespoke fixtures — migration is a follow-up** |
+| R4 | ⏳ remaining | — | `src/ui/owned.zig` — kill 25+ `*anyopaque` fields + ~50 `@ptrCast(@alignCast)` sites. **Prerequisite for R6.** |
+| R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. Depends on R4. Touches every one of 12+ Job structs. |
+| R8 | ⏳ remaining | — | Split `screens.zig` (9001 LOC) into 8 per-screen files + `components.zig`. Pure organisation. |
+| R9 | ⏳ remaining | — | Split `actions.zig` (10154 LOC) into 10 per-domain files. Pure organisation. |
+
+**Follow-up migrations** queued from shipped phases:
+- R5: 5 `std.http.Client` and 14 `std.process.spawn` sites should migrate to `util/http` / `util/proc`.
+- R10: 15 `main.zig` settings (aria2_port, ui_scale, auto_check, …) should migrate to `util/setting`.
+- R11: existing tests should migrate to `util/test_env.TestEnv`.
+- R3: remaining `_buf`+`_len` pairs (err_msg in WizardBlock, aria2_port_msg / aria2_seed_ratio_msg with inline memcpy, modfile_id, for_game).
+
+**To resume in a fresh session**: read this status table first, then `git log --grep="refactor R" --oneline` to see history, then pick a remaining phase from the plan below.
+
 ### Refactor plan — risk-ascending, dependency-aware order
 
 Each phase ships independently. Tests stay green on every boundary.
