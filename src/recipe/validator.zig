@@ -49,24 +49,37 @@ fn checkSha256(hex: []const u8) errs.Error!void {
 }
 
 fn checkInstallStep(step: dom.InstallStep) errs.Error!void {
-    switch (step) {
-        .extract => |x| try checkSafePath(x.to),
-        .extract_inner => |x| {
-            try checkSafePath(x.archive);
-            try checkSafePath(x.to);
-        },
-        .copy => |x| {
-            try checkSafePath(x.src);
-            try checkSafePath(x.dest);
-        },
-        .move => |x| {
-            try checkSafePath(x.src);
-            try checkSafePath(x.dest);
-        },
-        .delete => |x| try checkSafePath(x.path),
-        .chmod_x => |x| for (x.paths) |p| try checkSafePath(p),
-    }
+    var visitor = SafePathVisitor{};
+    try dom.walkSteps(&[_]dom.InstallStep{step}, &visitor);
 }
+
+/// `walkSteps` visitor that runs `checkSafePath` on every path-shaped
+/// field of every variant. Compile-time exhaustive: if a new InstallStep
+/// variant lands, the visitor must grow a matching method or the
+/// caller's `walkSteps` invocation fails to compile.
+const SafePathVisitor = struct {
+    pub fn onExtract(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        try checkSafePath(x.to);
+    }
+    pub fn onExtractInner(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        try checkSafePath(x.archive);
+        try checkSafePath(x.to);
+    }
+    pub fn onCopy(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        try checkSafePath(x.src);
+        try checkSafePath(x.dest);
+    }
+    pub fn onMove(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        try checkSafePath(x.src);
+        try checkSafePath(x.dest);
+    }
+    pub fn onDelete(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        try checkSafePath(x.path);
+    }
+    pub fn onChmodX(_: *SafePathVisitor, x: anytype) errs.Error!void {
+        for (x.paths) |p| try checkSafePath(p);
+    }
+};
 
 /// Reject `..` segments and absolute paths in recipe-driven file ops —
 /// install steps must stay within the install dir.
