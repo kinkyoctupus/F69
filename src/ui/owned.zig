@@ -193,13 +193,12 @@ pub const SyncPayload = struct {
 };
 pub const SyncJob = Job(SyncPayload);
 
-pub const UpdateCheckJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the periodic latest-updates walker. Generic carrier
+/// (phase, cancel, thread, allocator, dvui window) provided by
+/// `Job(...)`; this struct holds the per-task inputs + worker output.
+pub const UpdateCheckPayload = struct {
     f95_svc: *f95.Service,
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     /// Library thread-id set — built on the UI thread before spawn,
     /// read-only on the worker thread for membership tests.
     library_set: std.AutoHashMap(u64, void),
@@ -216,10 +215,8 @@ pub const UpdateCheckJob = struct {
     /// post-walk status message.
     scanned: u32 = 0,
     err_name: ?[]const u8 = null,
-    /// Flipped to `true` by the UI thread to ask the walker to bail
-    /// at the next page boundary. Used by the graceful-shutdown path.
-    cancel: std.atomic.Value(bool) = .init(false),
 };
+pub const UpdateCheckJob = Job(UpdateCheckPayload);
 
 pub const RpdlDownloadJob = struct {
     phase: std.atomic.Value(u8),
