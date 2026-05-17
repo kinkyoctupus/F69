@@ -862,7 +862,7 @@ I want this documented so we don't relitigate.
 
 ### Status of the refactor (2026-05-17)
 
-10 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
+11 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
 
 | Phase | Status | Commit | Scope |
 |---|---|---|---|
@@ -876,14 +876,14 @@ I want this documented so we don't relitigate.
 | R11 | ✅ shipped | `ba35fa9` | `util/test_env.zig` `TestEnv` (auto-cleanup tmpdir + writeFile/touchFile/path helpers); **existing tests still use their bespoke fixtures — migration is a follow-up** |
 | R8 | ✅ shipped | `366063a` | `src/ui/screens.zig` (8994 LOC) split into 8 per-screen files under `src/ui/screens/` + `src/ui/components.zig` for cross-screen widgets. `screens.zig` shrinks to a 57-line re-export wall preserving every prior `pub` name. External API of `screens.zig` unchanged. |
 | R9 | ✅ shipped | `f6f10d3` | `src/ui/actions.zig` (9699 LOC) split into 10 per-domain files under `src/ui/actions/`. `actions.zig` shrinks to a 265-line re-export wall preserving every prior `pub` name + type alias. External API unchanged. |
-| R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. R4 prerequisite is now in. Touches every one of 12+ Job structs (all in `owned.zig` now). |
+| R6 | ✅ shipped | `4b93393` + `e01e28c` + `4cf8eb3` + `3b63b9c` + `884198e` + `a2d01fd` + `ebbc4f1` | `src/ui/job.zig` introduces `Job(Payload)` + `spawnJob` + `drainBackgroundJob`. Seven jobs migrated: RefreshTagsJob (part 1, lands the primitive end-to-end), SyncJob, UpdateCheckJob, RpdlDownloadJob, DonorDownloadJob, BookmarksJob, TestInstallJob. **ImageJob, PostInstallJob, ManualInstallJob deliberately kept on the bespoke shape** — ImageJob has an external cancel pointer (`*atomic.Value(bool)` into shared `state.image_cancel`) that the primitive doesn't model; PostInstallJob + ManualInstallJob each run a paired poller thread alongside the worker (extract-progress estimator) that the primitive doesn't carry. Promoting any of those would require extending the carrier or accepting a worse shape — out of scope for the easy seven. Per-job phase enums for the migrated seven (`SyncJobPhase`, `UpdateCheckPhase`, `RpdlDownloadPhase`, `DonorDownloadPhase`, `BookmarksJobPhase`, `TestInstallPhase`, `RefreshTagsPhase`) deleted in favour of canonical `job.Phase`. |
 
 **Follow-up migrations** queued from shipped phases:
 - R5: 5 `std.http.Client` and 14 `std.process.spawn` sites should migrate to `util/http` / `util/proc`.
 - R10: 15 `main.zig` settings (aria2_port, ui_scale, auto_check, …) should migrate to `util/setting`.
 - R11: existing tests should migrate to `util/test_env.TestEnv`.
 - R3: remaining `_buf`+`_len` pairs (err_msg in WizardBlock, aria2_port_msg / aria2_seed_ratio_msg with inline memcpy, modfile_id, for_game).
-- R4: phase enums other than `SyncJobPhase`/`ImageJobPhase` (UpdateCheckPhase, RpdlDownloadPhase, DonorDownloadPhase, RefreshTagsPhase, TestInstallPhase, ManualInstallPhase, PostInstallPhase, BookmarksJobPhase) stayed file-local in `actions.zig` — nothing reads them outside actions, so moving would be churn.
+- R4: the remaining file-local phase enums (`ImageJobPhase`, `ManualInstallPhase`, `PostInstallPhase`) live alongside the three jobs R6 deliberately skipped (ImageJob / ManualInstallJob / PostInstallJob — bespoke shapes that don't compose with the `Job(Payload)` primitive). Folding those last three jobs would naturally retire their phase enums too.
 
 **To resume in a fresh session**: read this status table first, then `git log --grep="refactor R" --oneline` to see history, then pick a remaining phase from the plan below.
 
