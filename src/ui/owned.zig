@@ -218,12 +218,12 @@ pub const UpdateCheckPayload = struct {
 };
 pub const UpdateCheckJob = Job(UpdateCheckPayload);
 
-pub const RpdlDownloadJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the RPDL torrent search → fetch worker. Generic
+/// carrier (phase, cancel, thread, allocator, dvui window) provided
+/// by `Job(...)`; this struct holds the per-task inputs + worker
+/// output.
+pub const RpdlDownloadPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     /// Inputs owned by the job.
     token: []u8,
     game_name: []u8,
@@ -237,6 +237,7 @@ pub const RpdlDownloadJob = struct {
     torrent_bytes: ?[]u8 = null,
     err_name: ?[]const u8 = null,
 };
+pub const RpdlDownloadJob = Job(RpdlDownloadPayload);
 
 pub const DonorDownloadJob = struct {
     phase: std.atomic.Value(u8),
