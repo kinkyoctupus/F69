@@ -13,12 +13,14 @@ const import_job = @import("../import_job.zig");
 const importers_mod = @import("importers");
 const file_picker = @import("util_file_picker");
 const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const sync_act = @import("sync.zig");
 
 const Frame = types.Frame;
 const State = types.State;
 
+pub const UpdateCheckPayload = owned_types.UpdateCheckPayload;
 pub const UpdateCheckJob = owned_types.UpdateCheckJob;
 
 // ============================================================
@@ -32,8 +34,6 @@ pub const UpdateCheckJob = owned_types.UpdateCheckJob;
 // entry whose `thread_id` is in our library, queue a sync. Mirrors
 // the user's mental model — "show me what changed since I last
 // checked", not "ask the server about every game".
-
-const UpdateCheckPhase = enum(u8) { pending, done, failed };
 
 /// Hard cap on pages walked per category so a misconfigured stamp
 /// can't drag us through F95's entire history. 90 entries × 30
@@ -89,66 +89,57 @@ pub fn startUpdateCheck(frame: *Frame) void {
     else
         now_s - UPDATE_WALK_FIRST_RUN_LOOKBACK_S;
 
-    const job = alloc.create(UpdateCheckJob) catch {
+    _ = job_mod.spawnJob(
+        UpdateCheckPayload,
+        updateCheckWorker,
+        alloc,
+        frame.win,
+        .{
+            .f95_svc = frame.f95_svc,
+            .io = frame.io,
+            .library_set = set,
+            .since_ts = since,
+            .mismatch_tids = .empty,
+        },
+        &state.pending_update_check,
+    ) catch {
         set.deinit();
         return;
     };
-    job.* = .{
-        .phase = .init(@intFromEnum(UpdateCheckPhase.pending)),
-        .alloc = alloc,
-        .f95_svc = frame.f95_svc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .library_set = set,
-        .since_ts = since,
-        .mismatch_tids = .empty,
-    };
 
-    job.thr = std.Thread.spawn(.{}, updateCheckWorker, .{job}) catch {
-        job.library_set.deinit();
-        job.mismatch_tids.deinit(alloc);
-        alloc.destroy(job);
-        return;
-    };
-    job.thr.detach();
-
-    state.pending_update_check = job;
     state.setSyncMsg("scanning F95 latest updates…");
     state.sync_status = .running;
 }
 
 fn updateCheckWorker(job: *UpdateCheckJob) void {
+    const p = &job.payload;
     var url_buf: [256]u8 = undefined;
     var page: u32 = 1;
     var done: bool = false;
 
     while (!done and page <= UPDATE_WALK_MAX_PAGES) {
-        if (job.cancel.load(.acquire)) {
-            job.err_name = "Cancelled";
-            job.phase.store(@intFromEnum(UpdateCheckPhase.failed), .release);
-            dvui.refresh(job.win, @src(), null);
+        if (job.cancelRequested()) {
+            p.err_name = "Cancelled";
+            job.markFailed();
             return;
         }
         // ts query param is just a cache-buster; the response is the
         // same regardless. Stamp it with the current second so we
         // don't accidentally hit a stale CDN copy.
-        const cache_buster = std.Io.Clock.Timestamp.now(job.io, .real).raw.toSeconds();
+        const cache_buster = std.Io.Clock.Timestamp.now(p.io, .real).raw.toSeconds();
         const url = std.fmt.bufPrint(
             &url_buf,
             "https://f95zone.to/sam/latest_alpha/latest_data.php?cmd=list&cat=games&page={d}&sort=date&rows=90&_={d}",
             .{ page, cache_buster },
         ) catch {
-            job.err_name = "InternalUrlBuild";
-            job.phase.store(@intFromEnum(UpdateCheckPhase.failed), .release);
-            dvui.refresh(job.win, @src(), null);
+            p.err_name = "InternalUrlBuild";
+            job.markFailed();
             return;
         };
 
-        const body = job.f95_svc.client.get(url) catch |e| {
-            job.err_name = @errorName(e);
-            job.phase.store(@intFromEnum(UpdateCheckPhase.failed), .release);
-            dvui.refresh(job.win, @src(), null);
+        const body = p.f95_svc.client.get(url) catch |e| {
+            p.err_name = @errorName(e);
+            job.markFailed();
             return;
         };
         defer job.alloc.free(body);
@@ -187,24 +178,23 @@ fn updateCheckWorker(job: *UpdateCheckJob) void {
             if (tid_signed <= 0) continue;
             const tid: u64 = @intCast(tid_signed);
 
-            job.scanned += 1;
-            if (ts > job.newest_seen_ts) job.newest_seen_ts = ts;
+            p.scanned += 1;
+            if (ts > p.newest_seen_ts) p.newest_seen_ts = ts;
 
-            if (ts < job.since_ts) {
+            if (ts < p.since_ts) {
                 done = true;
                 continue; // keep scanning the rest of this page for any newer entries that lagged in sort order
             }
 
-            if (job.library_set.contains(tid)) {
-                job.mismatch_tids.append(job.alloc, tid) catch {};
+            if (p.library_set.contains(tid)) {
+                p.mismatch_tids.append(job.alloc, tid) catch {};
             }
         }
 
         page += 1;
     }
 
-    job.phase.store(@intFromEnum(UpdateCheckPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    job.markDone();
 }
 
 /// Decode a JSON value that might be `.integer` (when F95 returned a
@@ -224,35 +214,44 @@ fn parseJsonInt64(v: std.json.Value) ?i64 {
 /// can start exactly where this one left off.
 pub fn drainUpdateCheck(frame: *Frame) void {
     const state = frame.state;
-    const job = state.pending_update_check orelse return;
-    const phase: UpdateCheckPhase = @enumFromInt(job.phase.load(.acquire));
-    if (phase == .pending) return;
+    const slot_was_set = state.pending_update_check != null;
+    job_mod.drainBackgroundJob(
+        UpdateCheckPayload,
+        onUpdateCheckDone,
+        onUpdateCheckFailed,
+        frame,
+        &state.pending_update_check,
+    );
+    if (!slot_was_set) return;
+    if (state.pending_update_check != null) return;
+    // Worker reached terminal phase. If a fresh queue was installed
+    // (the onDone handler grew it), kick the sync chain.
+    if (state.sync_queue != null and state.pending_sync == null) {
+        sync_act.advanceSyncQueue(frame);
+    }
+}
 
-    const cleanup = struct {
-        fn run(j: *UpdateCheckJob, s: *types.State) void {
-            j.library_set.deinit();
-            j.mismatch_tids.deinit(j.alloc);
-            j.alloc.destroy(j);
-            s.pending_update_check = null;
-        }
-    }.run;
-
-    if (phase == .failed) {
-        const cancelled = job.err_name != null and std.mem.eql(u8, job.err_name.?, "Cancelled");
-        if (cancelled) {
-            // User-driven stop — silent like the sync/bookmark cancel.
-            state.sync_status = .idle;
-            state.sync_msg.clear();
-            cleanup(job, state);
-            return;
-        }
-        var emsg: [128]u8 = undefined;
-        const m = std.fmt.bufPrint(&emsg, "update check failed: {s}", .{common.friendlyError(job.err_name orelse "?")}) catch "update check failed";
-        state.sync_status = .err;
-        state.setSyncMsg(m);
-        cleanup(job, state);
+fn onUpdateCheckFailed(frame: *Frame, job: *UpdateCheckJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeUpdateCheckPayload(job);
+    const cancelled = p.err_name != null and std.mem.eql(u8, p.err_name.?, "Cancelled");
+    if (cancelled) {
+        // User-driven stop — silent like the sync/bookmark cancel.
+        state.sync_status = .idle;
+        state.sync_msg.clear();
         return;
     }
+    var emsg: [128]u8 = undefined;
+    const m = std.fmt.bufPrint(&emsg, "update check failed: {s}", .{common.friendlyError(p.err_name orelse "?")}) catch "update check failed";
+    state.sync_status = .err;
+    state.setSyncMsg(m);
+}
+
+fn onUpdateCheckDone(frame: *Frame, job: *UpdateCheckJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeUpdateCheckPayload(job);
 
     // De-dup the mismatch list — the same tid can appear twice if a
     // game was updated more than once within the check window.
@@ -260,7 +259,7 @@ pub fn drainUpdateCheck(frame: *Frame) void {
     defer seen.deinit();
     var uniques: std.ArrayList(u64) = .empty;
     defer uniques.deinit(frame.lib.alloc);
-    for (job.mismatch_tids.items) |tid| {
+    for (p.mismatch_tids.items) |tid| {
         const r = seen.getOrPut(tid) catch break;
         if (r.found_existing) continue;
         uniques.append(frame.lib.alloc, tid) catch break;
@@ -268,9 +267,9 @@ pub fn drainUpdateCheck(frame: *Frame) void {
 
     // Always advance the stamp on success — even with zero hits, we
     // confirmed nothing happened in our library during the window.
-    if (job.newest_seen_ts > 0) {
-        state.last_update_check_ts = job.newest_seen_ts;
-        persistInt64IfDirty(frame.info.last_update_check_path, frame.io, job.newest_seen_ts);
+    if (p.newest_seen_ts > 0) {
+        state.last_update_check_ts = p.newest_seen_ts;
+        persistInt64IfDirty(frame.info.last_update_check_path, frame.io, p.newest_seen_ts);
     } else {
         // Worker saw zero entries (rare — maybe F95 was down). Stamp
         // with "now" anyway so the next click doesn't re-scan the
@@ -282,27 +281,20 @@ pub fn drainUpdateCheck(frame: *Frame) void {
 
     if (uniques.items.len == 0) {
         var ok_buf: [96]u8 = undefined;
-        const m = std.fmt.bufPrint(&ok_buf, "no library updates ({d} F95 entries scanned)", .{job.scanned}) catch "no library updates";
+        const m = std.fmt.bufPrint(&ok_buf, "no library updates ({d} F95 entries scanned)", .{p.scanned}) catch "no library updates";
         state.sync_status = .ok;
         state.setSyncMsg(m);
-        cleanup(job, state);
         return;
     }
 
     // Append to (or install) the sync queue.
     if (state.sync_queue) |q| {
-        const new_q = frame.lib.alloc.realloc(q, q.len + uniques.items.len) catch {
-            cleanup(job, state);
-            return;
-        };
+        const new_q = frame.lib.alloc.realloc(q, q.len + uniques.items.len) catch return;
         @memcpy(new_q[q.len..], uniques.items);
         state.sync_queue = new_q;
         state.sync_queue_total += @intCast(uniques.items.len);
     } else {
-        const owned = frame.lib.alloc.alloc(u64, uniques.items.len) catch {
-            cleanup(job, state);
-            return;
-        };
+        const owned = frame.lib.alloc.alloc(u64, uniques.items.len) catch return;
         @memcpy(owned, uniques.items);
         state.sync_queue = owned;
         state.sync_queue_idx = 0;
@@ -311,13 +303,14 @@ pub fn drainUpdateCheck(frame: *Frame) void {
     }
 
     var m_buf: [128]u8 = undefined;
-    const m = std.fmt.bufPrint(&m_buf, "queued {d} updates ({d} F95 entries scanned)", .{ uniques.items.len, job.scanned }) catch "queued updates";
+    const m = std.fmt.bufPrint(&m_buf, "queued {d} updates ({d} F95 entries scanned)", .{ uniques.items.len, p.scanned }) catch "queued updates";
     state.sync_status = .ok;
     state.setSyncMsg(m);
+}
 
-    cleanup(job, state);
-
-    if (state.pending_sync == null) sync_act.advanceSyncQueue(frame);
+fn freeUpdateCheckPayload(job: *UpdateCheckJob) void {
+    job.payload.library_set.deinit();
+    job.payload.mismatch_tids.deinit(job.alloc);
 }
 
 /// Write `ts` as decimal text to `path`. Best-effort; logs and
