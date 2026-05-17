@@ -1,0 +1,26 @@
+// Ren'Py "drop into game/" overlay — the most common Ren'Py mod
+// shape. Archive root is the game/ directory contents; we extract
+// into <install>/game/ so .rpy/.rpyc files land next to vanilla.
+.{
+    .id = "renpy-overlay",
+    .name = "Ren'Py game/ overlay",
+    .description = "Drops .rpy/.rpyc files into <install>/game/",
+    .engine_hint = .renpy,
+
+    .match = .{
+        .requires = .{
+            "game/**/*.rpy",
+        },
+        .forbids = .{
+            "www/**/*",
+            "BepInEx/**/*",
+        },
+        .min_confidence = 0.5,
+    },
+
+    .install = .{
+        .{ .extract = .{ .to = ".", .strip = 0 } },
+    },
+
+    .weight = 1.0,
+}

@@ -1,0 +1,17 @@
+// Same nwjs install as `rpgm-mv-standard` but skips the libffmpeg
+// codec swap. Useful when the game has no mp4 audio (some smaller
+// games) and you want the lightest possible footprint, or when the
+// codec swap is causing problems.
+.{
+    .id = "rpgm-mv-no-codecs",
+    .name = "RPGM MV (nwjs, no codec swap)",
+    .description = "Same as standard but skips libffmpeg replacement.",
+    .engine_hint = .rpgm_mv,
+    .spec = .{ .rpgm = .{
+        .ffmpeg_codecs = false,
+        .bundle_syslibs = true,
+    } },
+    // Weight below the standard preset so the codec-enabled variant
+    // wins by default; user can pick this explicitly via the UI.
+    .weight = 0.5,
+}

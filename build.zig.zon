@@ -1,0 +1,36 @@
+// Project manifest for `zig build`.
+//
+// To add dvui (the GUI library), once-only after first `nix develop`:
+//
+//     zig fetch --save git+https://github.com/david-vanderson/dvui#main
+//
+// That populates `.dependencies.dvui` with the right URL + content hash and
+// makes `@import("dvui")` resolvable from build.zig.
+
+.{
+    .name = .f69,
+    .version = "0.0.0",
+
+    // Project fingerprint. Zig validates the low 32 bits encode the
+    // package name; if the build complains, paste the suggested value here.
+    .fingerprint = 0x650277fd37a9eb2d,
+
+    .minimum_zig_version = "0.16.0",
+
+    .dependencies = .{
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#fa3ce4f65b27dafd7116f723410ffb1087da4323",
+            .hash = "dvui-0.5.0-dev-AQFJmTbW9QAo69Zd7-gS8j4ak9XWzMNggCrjyy9WU36L",
+        },
+        .zqlite = .{
+            .url = "git+https://github.com/karlseguin/zqlite.zig?ref=master#5ac4cabe95a6d7faa7baf0da8057a8e6e8a227a1",
+            .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

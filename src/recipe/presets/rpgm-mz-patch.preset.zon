@@ -1,0 +1,27 @@
+// RPGM MZ patch — MZ flattened the www/ layout into the install root
+// (`data/`, `img/`, `js/` directly). Same overlay shape, different
+// detection.
+.{
+    .id = "rpgm-mz-patch",
+    .name = "RPGM MZ data/ patch",
+    .description = "Overlays files under <install>/data/ (MZ layout)",
+    .engine_hint = .rpgm_mz,
+
+    .match = .{
+        .requires = .{
+            "data/**/*.json",
+        },
+        .forbids = .{
+            "www/**/*",
+            "game/**/*.rpy",
+            "BepInEx/**/*",
+        },
+        .min_confidence = 0.5,
+    },
+
+    .install = .{
+        .{ .extract = .{ .to = ".", .strip = 0 } },
+    },
+
+    .weight = 1.0,
+}

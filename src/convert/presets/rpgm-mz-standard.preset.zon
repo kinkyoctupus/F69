@@ -1,0 +1,13 @@
+// RPGM MZ standard convert. Same shape as MV (RPGM MZ ships an nwjs
+// build internally) — handler differs only in detection.
+.{
+    .id = "rpgm-mz-standard",
+    .name = "RPGM MZ (nwjs + codecs)",
+    .description = "Auto-pick nwjs by Chrome version, swap libffmpeg for codec support, bundle syslibs.",
+    .engine_hint = .rpgm_mz,
+    .spec = .{ .rpgm = .{
+        .ffmpeg_codecs = true,
+        .bundle_syslibs = true,
+    } },
+    .weight = 1.0,
+}
