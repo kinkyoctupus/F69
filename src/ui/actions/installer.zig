@@ -28,6 +28,7 @@ const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const mod_job_queue = @import("../mod_job_queue.zig");
 const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const mods_act = @import("mods.zig");
 const launch_act = @import("launch.zig");
@@ -40,6 +41,7 @@ const State = types.State;
 const PostInstalledSet = owned_types.PostInstalledSet;
 const PostInstallJobsList = owned_types.PostInstallJobsList;
 
+pub const TestInstallPayload = owned_types.TestInstallPayload;
 pub const TestInstallJob = owned_types.TestInstallJob;
 pub const PostInstallJob = owned_types.PostInstallJob;
 pub const ManualInstallJob = owned_types.ManualInstallJob;
@@ -493,9 +495,6 @@ pub fn drainModJobs(frame: *Frame) void {
 //  Test install (real) — backgrounded worker
 // ============================================================
 
-const TestInstallPhase = enum(u8) { pending, done, failed };
-
-
 /// "Test install (real)" — kicks off a worker thread that runs the
 /// actual installer against a throwaway scratch dir. Verifies the
 /// plan extracts cleanly against a real filesystem. UI stays
@@ -593,90 +592,80 @@ pub fn doTestInstallPreview(frame: *Frame, parent_game: *const library.Game) voi
         return;
     };
 
-    // 4. Build the job, spawn the thread.
-    const job = alloc.create(TestInstallJob) catch {
+    // 4. Spawn the worker via the generic Job(P) primitive.
+    const new_job = job_mod.spawnJob(
+        TestInstallPayload,
+        testInstallWorker,
+        alloc,
+        frame.win,
+        .{
+            .io = frame.io,
+            .archive_path = archive_path,
+            .scratch = scratch,
+            .steps_arena = steps_arena,
+            .steps = steps_slice,
+        },
+        &state.test_install_job,
+    ) catch {
         steps_arena.deinit();
         alloc.free(archive_path);
         alloc.free(scratch);
-        state.pushToast(.err, "Test install: out of memory.");
-        return;
-    };
-    job.* = .{
-        .phase = .init(@intFromEnum(TestInstallPhase.pending)),
-        .alloc = alloc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .archive_path = archive_path,
-        .scratch = scratch,
-        .steps_arena = steps_arena,
-        .steps = steps_slice,
-    };
-    job.thr = std.Thread.spawn(.{}, testInstallWorker, .{job}) catch {
-        job.steps_arena.deinit();
-        alloc.free(job.archive_path);
-        alloc.free(job.scratch);
-        alloc.destroy(job);
         state.pushToast(.err, "Test install: failed to spawn worker thread.");
         return;
     };
-    state.test_install_job = job;
-    log.info("test install spawned → scratch {s}", .{job.scratch});
+    log.info("test install spawned → scratch {s}", .{new_job.payload.scratch});
 }
 
 fn testInstallWorker(job: *TestInstallJob) void {
+    const p = &job.payload;
     var failed = false;
-    const aalloc = job.steps_arena.allocator();
+    const aalloc = p.steps_arena.allocator();
 
     // Tracker pointing into the scratch.
-    const tracker_path = std.fmt.allocPrint(aalloc, "{s}/.f69-mods.json", .{job.scratch}) catch {
-        job.err_name = "out of memory";
-        job.phase.store(@intFromEnum(TestInstallPhase.failed), .release);
-        dvui.refresh(job.win, @src(), null);
+    const tracker_path = std.fmt.allocPrint(aalloc, "{s}/.f69-mods.json", .{p.scratch}) catch {
+        p.err_name = "out of memory";
+        job.markFailed();
         return;
     };
-    var tracker = installer_mod.Tracker.init(job.alloc, job.io, tracker_path);
+    var tracker = installer_mod.Tracker.init(job.alloc, p.io, tracker_path);
     defer tracker.deinit();
 
     installer_mod.applyModRecipe(
         job.alloc,
-        job.io,
+        p.io,
         "test-preview",
-        job.archive_path,
-        job.scratch,
-        job.steps,
+        p.archive_path,
+        p.scratch,
+        p.steps,
         &tracker,
         .{},
     ) catch |e| {
         failed = true;
-        job.err_name = std.fmt.allocPrint(aalloc, "{s}", .{@errorName(e)}) catch "apply failed";
+        p.err_name = std.fmt.allocPrint(aalloc, "{s}", .{@errorName(e)}) catch "apply failed";
     };
 
     if (!failed) {
         // Walk the scratch to compute file count + total bytes.
-        var root = std.Io.Dir.cwd().openDir(job.io, job.scratch, .{ .iterate = true, .access_sub_paths = true }) catch null;
+        var root = std.Io.Dir.cwd().openDir(p.io, p.scratch, .{ .iterate = true, .access_sub_paths = true }) catch null;
         if (root) |*dir| {
-            defer dir.close(job.io);
+            defer dir.close(p.io);
             var walker = dir.walk(job.alloc) catch null;
             if (walker) |*w| {
                 defer w.deinit();
-                while (w.next(job.io) catch null) |entry| {
+                while (w.next(p.io) catch null) |entry| {
                     if (entry.kind != .file) continue;
                     if (std.mem.endsWith(u8, entry.path, ".f69-mods.json")) continue;
-                    job.file_count += 1;
+                    p.file_count += 1;
                     var sub_path_buf: [1024]u8 = undefined;
-                    const full = std.fmt.bufPrint(&sub_path_buf, "{s}/{s}", .{ job.scratch, entry.path }) catch continue;
-                    const stat = std.Io.Dir.cwd().statFile(job.io, full, .{}) catch continue;
-                    job.total_bytes += stat.size;
+                    const full = std.fmt.bufPrint(&sub_path_buf, "{s}/{s}", .{ p.scratch, entry.path }) catch continue;
+                    const stat = std.Io.Dir.cwd().statFile(p.io, full, .{}) catch continue;
+                    p.total_bytes += stat.size;
                 }
             }
         }
     }
 
-    const final: TestInstallPhase = if (failed) .failed else .done;
-    job.phase.store(@intFromEnum(final), .release);
-    // Wake the UI loop so the drain runs promptly.
-    dvui.refresh(job.win, @src(), null);
+    if (failed) job.markFailed() else job.markDone();
 }
 
 /// Per-frame drain: checks the in-flight test-install job's phase, on
@@ -684,39 +673,47 @@ fn testInstallWorker(job: *TestInstallJob) void {
 /// tree, frees the job. Called from `guiFrame` alongside the other
 /// worker drains.
 pub fn drainTestInstall(frame: *Frame) void {
-    const state = frame.state;
-    const job = state.test_install_job orelse return;
+    job_mod.drainBackgroundJob(
+        TestInstallPayload,
+        onTestInstallDone,
+        onTestInstallFailed,
+        frame,
+        &frame.state.test_install_job,
+    );
+}
 
-    const phase: TestInstallPhase = @enumFromInt(job.phase.load(.acquire));
-    if (phase == .pending) return;
-
-    job.thr.join();
-
-    if (phase == .done) {
-        var size_buf: [32]u8 = undefined;
-        const size_txt = humanBytesActions(&size_buf, job.total_bytes);
-        var msg_buf: [240]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Test install OK: {d} file(s), {s}.", .{ job.file_count, size_txt }) catch "Test install OK.";
-        state.pushToast(.success, msg);
-        log.info("test install done: {d} files, {s} to {s}", .{ job.file_count, size_txt, job.scratch });
-    } else {
-        var msg_buf: [240]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Test install failed: {s}", .{job.err_name orelse "unknown"}) catch "Test install failed";
-        state.pushToast(.err, msg);
-    }
-
+fn freeTestInstallPayload(frame: *Frame, job: *TestInstallJob) void {
+    const p = &job.payload;
     // Cleanup scratch. Best-effort.
-    std.Io.Dir.cwd().deleteTree(frame.io, job.scratch) catch |e| {
-        log.warn("test install scratch cleanup failed for {s}: {s}", .{ job.scratch, @errorName(e) });
+    std.Io.Dir.cwd().deleteTree(frame.io, p.scratch) catch |e| {
+        log.warn("test install scratch cleanup failed for {s}: {s}", .{ p.scratch, @errorName(e) });
     };
+    // Arena owns the step strings + err_name; the outer allocator
+    // owns archive_path / scratch.
+    p.steps_arena.deinit();
+    job.alloc.free(p.archive_path);
+    job.alloc.free(p.scratch);
+}
 
-    // Free job memory. Arena owns the step strings + err_name; the
-    // outer allocator owns archive_path / scratch / the job struct.
-    job.steps_arena.deinit();
-    job.alloc.free(job.archive_path);
-    job.alloc.free(job.scratch);
-    job.alloc.destroy(job);
-    state.test_install_job = null;
+fn onTestInstallDone(frame: *Frame, job: *TestInstallJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeTestInstallPayload(frame, job);
+    var size_buf: [32]u8 = undefined;
+    const size_txt = humanBytesActions(&size_buf, p.total_bytes);
+    var msg_buf: [240]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "Test install OK: {d} file(s), {s}.", .{ p.file_count, size_txt }) catch "Test install OK.";
+    state.pushToast(.success, msg);
+    log.info("test install done: {d} files, {s} to {s}", .{ p.file_count, size_txt, p.scratch });
+}
+
+fn onTestInstallFailed(frame: *Frame, job: *TestInstallJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeTestInstallPayload(frame, job);
+    var msg_buf: [240]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "Test install failed: {s}", .{p.err_name orelse "unknown"}) catch "Test install failed";
+    state.pushToast(.err, msg);
 }
 
 /// True when a test install is in flight. Used by the wizard's
@@ -726,16 +723,23 @@ pub fn isTestInstallRunning(state: *const State) bool {
     return state.test_install_job != null;
 }
 
-/// Shutdown-time cleanup: if a test install is mid-run, join the
-/// worker, free the job, drop the scratch. Called from `ui.zig`'s
-/// teardown defer alongside the other shutdown cleanups.
+/// Shutdown-time cleanup: if a test install is mid-run, drop the
+/// scratch + free the job. Called from `ui.zig`'s teardown defer
+/// alongside the other shutdown cleanups.
+///
+/// Note: the worker thread is detached (Job(P) primitive contract),
+/// so we can't `join` it. If the worker is still mid-run when the
+/// app shuts down, we tear down its payload anyway — the worst case
+/// is a few failed syscalls inside the now-detached thread before
+/// process exit reaps it. The scratch dir cleanup runs unconditionally
+/// so /tmp doesn't grow across runs.
 pub fn freeTestInstallJob(state: *State, io: std.Io) void {
     const job = state.test_install_job orelse return;
-    job.thr.join();
-    std.Io.Dir.cwd().deleteTree(io, job.scratch) catch {};
-    job.steps_arena.deinit();
-    job.alloc.free(job.archive_path);
-    job.alloc.free(job.scratch);
+    const p = &job.payload;
+    std.Io.Dir.cwd().deleteTree(io, p.scratch) catch {};
+    p.steps_arena.deinit();
+    job.alloc.free(p.archive_path);
+    job.alloc.free(p.scratch);
     job.alloc.destroy(job);
     state.test_install_job = null;
 }
