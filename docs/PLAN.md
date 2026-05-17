@@ -862,7 +862,7 @@ I want this documented so we don't relitigate.
 
 ### Status of the refactor (2026-05-17)
 
-8 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
+9 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
 
 | Phase | Status | Commit | Scope |
 |---|---|---|---|
@@ -874,8 +874,8 @@ I want this documented so we don't relitigate.
 | R7 | ✅ shipped | `3c94d21` | `recipe.walkSteps` Visitor primitive + `recipe/validator.zig` demo migration; simulate/apply/ui-actions switches deliberately left as-is (step-local state doesn't compose with the duck-typed visitor) |
 | R10 | ✅ shipped | `be6d7aa` | `util/setting.zig` (`readSingleLine`, `parseBool`, `loadBool`, `loadInt`, `loadFloat`); **main.zig's 15 bespoke `loadX` helpers still in place — migration is a follow-up** |
 | R11 | ✅ shipped | `ba35fa9` | `util/test_env.zig` `TestEnv` (auto-cleanup tmpdir + writeFile/touchFile/path helpers); **existing tests still use their bespoke fixtures — migration is a follow-up** |
+| R8 | ✅ shipped | this commit | `src/ui/screens.zig` (8994 LOC) split into 8 per-screen files under `src/ui/screens/` + `src/ui/components.zig` for cross-screen widgets. `screens.zig` shrinks to a 57-line re-export wall preserving every prior `pub` name. External API of `screens.zig` unchanged. |
 | R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. R4 prerequisite is now in. Touches every one of 12+ Job structs (all in `owned.zig` now). |
-| R8 | ⏳ remaining | — | Split `screens.zig` (9001 LOC) into 8 per-screen files + `components.zig`. Pure organisation. |
 | R9 | ⏳ remaining | — | Split `actions.zig` (10154 LOC) into 10 per-domain files. Pure organisation. |
 
 **Follow-up migrations** queued from shipped phases:
