@@ -875,7 +875,7 @@ I want this documented so we don't relitigate.
 | R10 | ✅ shipped | `be6d7aa` | `util/setting.zig` (`readSingleLine`, `parseBool`, `loadBool`, `loadInt`, `loadFloat`); **main.zig's 15 bespoke `loadX` helpers still in place — migration is a follow-up** |
 | R11 | ✅ shipped | `ba35fa9` | `util/test_env.zig` `TestEnv` (auto-cleanup tmpdir + writeFile/touchFile/path helpers); **existing tests still use their bespoke fixtures — migration is a follow-up** |
 | R8 | ✅ shipped | `366063a` | `src/ui/screens.zig` (8994 LOC) split into 8 per-screen files under `src/ui/screens/` + `src/ui/components.zig` for cross-screen widgets. `screens.zig` shrinks to a 57-line re-export wall preserving every prior `pub` name. External API of `screens.zig` unchanged. |
-| R9 | ✅ shipped | `this commit` | `src/ui/actions.zig` (9699 LOC) split into 10 per-domain files under `src/ui/actions/`. `actions.zig` shrinks to a 265-line re-export wall preserving every prior `pub` name + type alias. External API unchanged. |
+| R9 | ✅ shipped | `f6f10d3` | `src/ui/actions.zig` (9699 LOC) split into 10 per-domain files under `src/ui/actions/`. `actions.zig` shrinks to a 265-line re-export wall preserving every prior `pub` name + type alias. External API unchanged. |
 | R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. R4 prerequisite is now in. Touches every one of 12+ Job structs (all in `owned.zig` now). |
 
 **Follow-up migrations** queued from shipped phases:
