@@ -1,0 +1,52 @@
+// Unity (Linux player) games on non-FHS Linux. Unity ports vary
+// widely by year/version — older titles often ABI-pin
+// `libcurl-gnutls.so.4`, `libpng12.so.0`, or specific libstdc++
+// minor versions that modern distros no longer ship.
+//
+// **Scaffold recipe — investigation needed.** The lib list below is
+// the historically-painful set; refine when the first failing Unity
+// game shows up. Run `ldd <Game>.x86_64` on a stripped host and add
+// any missing sonames to both this detector and the bundle in
+// flake.nix.
+.{
+    .id = "linux.unity.player-fhs",
+    .title = "Unity (Linux): bundled player cannot find runtime libs",
+    .explain =
+        \\Unity's Linux player dlopens X11/GL/audio libs by soname.
+        \\Older Unity titles also link against historical libraries
+        \\(libcurl-gnutls, libpng12) that modern distros may not ship
+        \\out of the box. On hosts without these libraries in the
+        \\standard loader path (NixOS, minimal containers), the player
+        \\aborts before the engine can finish booting. The fix
+        \\prepends LD_LIBRARY_PATH with a curated Unity-friendly
+        \\bundle.
+        \\
+        \\No game files are modified. The fix can be undone at any time.
+    ,
+    .severity = .blocker,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .all = .{
+        .{ .engine_fingerprint = .unity },
+        .{ .host_lacks_any_soname = .{
+            "libX11.so.6",
+            "libGL.so.1",
+            "libcurl-gnutls.so.4",
+        } },
+    } },
+    .apply = .{
+        .{ .env_prepend = .{
+            .name = "LD_LIBRARY_PATH",
+            .from_resource = "unity-fhs-libs",
+            .relpath = "lib",
+            .sep = ":",
+        } },
+    },
+    .required_resources = .{ "unity-fhs-libs" },
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Enable `programs.nix-ld.enable = true;` and add libx11/libGL/curl to `programs.nix-ld.libraries`." },
+        .{ .via = "pacman", .command = "Install `libcurl-gnutls libpng12` from AUR if you see this on Arch." },
+        .{ .via = "apt",    .command = "Install `libx11-6 libgl1 libcurl3-gnutls libpng12-0` if you see this on Debian/Ubuntu." },
+        .{ .via = "dnf",    .command = "Install `libX11 mesa-libGL libcurl libpng12` if you see this on Fedora." },
+    },
+}

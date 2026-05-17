@@ -24,8 +24,20 @@ const log = std.log.scoped(.compat_repo);
 /// is used only for diagnostic messages.
 const BUNDLED = [_]struct { name: []const u8, src: [:0]const u8 }{
     .{
-        .name = "linux.renpy.sdl-fhs.compat.zon",
-        .src = @embedFile("recipes/linux.renpy.sdl-fhs.compat.zon"),
+        .name = "linux.renpy7.sdl-fhs.compat.zon",
+        .src = @embedFile("recipes/linux.renpy7.sdl-fhs.compat.zon"),
+    },
+    .{
+        .name = "linux.renpy8.sdl-fhs.compat.zon",
+        .src = @embedFile("recipes/linux.renpy8.sdl-fhs.compat.zon"),
+    },
+    .{
+        .name = "linux.rpgm-mv.fhs.compat.zon",
+        .src = @embedFile("recipes/linux.rpgm-mv.fhs.compat.zon"),
+    },
+    .{
+        .name = "linux.unity.fhs.compat.zon",
+        .src = @embedFile("recipes/linux.unity.fhs.compat.zon"),
     },
 };
 

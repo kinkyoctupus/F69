@@ -23,6 +23,7 @@ const style = @import("style.zig");
 const installer_mod = @import("installer");
 const mod_job_queue = @import("mod_job_queue.zig");
 const import_job_mod = @import("import_job.zig");
+const build_options = @import("build_options");
 
 const State = types.State;
 const Frame = types.Frame;
@@ -1069,18 +1070,46 @@ pub fn renderSyncBanner(frame: *Frame) void {
     const state = frame.state;
     const has_active = state.pending_sync != null;
     const has_queue = state.sync_queue != null;
+    // Phase-2 (background image fetch) keeps the banner pinned even
+    // after phase-1 sync-all is done. The whole library is usable; the
+    // banner just shows "still tidying up screenshots…". `image_total
+    // > 0` covers the brief window where the active job is reaped but
+    // the next hasn't spawned yet.
+    const has_image_work = state.image_active != null or
+        (state.image_queue != null and state.image_queue_head < state.image_queue_len) or
+        state.image_total > 0;
     // Only surface the banner while a sync is genuinely in flight.
     // Terminal messages like "nothing to sync — all games already
     // populated" used to keep the banner pinned on every screen
     // (including during bookmark imports) — that's noisy and confusing.
     // Settled state messages live in their normal status-line slots.
-    if (!has_active and !has_queue) return;
+    if (!has_active and !has_queue and !has_image_work) return;
 
-    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    // Stack: row 1 = sync (text + cover); row 2 = phase-2 (images).
+    // The outer vbox gives both rows the same padded background so it
+    // reads as a single banner.
+    var outer = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .horizontal,
         .padding = .{ .x = 12, .y = 4, .w = 12, .h = 4 },
         .background = true,
         .style = if (state.sync_status == .err) .err else .highlight,
+    });
+    defer outer.deinit();
+
+    // Only render row 1 when phase-1 work is in flight; otherwise the
+    // phase-2 row stands alone after the sync-all batch settles.
+    if (has_active or has_queue) {
+        renderSyncBannerSyncRow(frame);
+    }
+    if (has_image_work) {
+        renderSyncBannerImageRow(frame);
+    }
+}
+
+fn renderSyncBannerSyncRow(frame: *Frame) void {
+    const state = frame.state;
+    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
     });
     defer bar.deinit();
 
@@ -1200,6 +1229,101 @@ pub fn renderSyncBanner(frame: *Frame) void {
     } else {
         if (iconButton(@src(), "Cancel", entypo.cross, .{ .style = .err })) {
             actions.cancelSync(frame);
+        }
+    }
+}
+
+/// Phase-2 banner row: aggregate progress for background screenshot
+/// fetches. Stays pinned after phase-1 wraps up so the user can see
+/// "library is usable, images still trickling in".
+fn renderSyncBannerImageRow(frame: *Frame) void {
+    const state = frame.state;
+    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 2, .w = 0, .h = 0 },
+    });
+    defer bar.deinit();
+
+    const queue_pending: usize = if (state.image_queue) |_|
+        state.image_queue_len - state.image_queue_head
+    else
+        0;
+    const cur_name = state.currentImageName();
+    const cancelling = state.image_cancel.load(.acquire);
+    const done = state.image_done.load(.acquire);
+    const total = state.image_total;
+
+    if (cancelling) {
+        dvui.label(@src(), "Cancelling background image fetch\u{2026}", .{}, .{
+            .gravity_y = 0.5,
+            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        });
+    } else if (cur_name.len > 0 and queue_pending > 0) {
+        var lbl_buf: [220]u8 = undefined;
+        const lbl = std.fmt.bufPrint(
+            &lbl_buf,
+            "Fetching images: {s}  (+{d} games queued)",
+            .{ cur_name, queue_pending },
+        ) catch "Fetching images\u{2026}";
+        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+    } else if (cur_name.len > 0) {
+        var lbl_buf: [200]u8 = undefined;
+        const lbl = std.fmt.bufPrint(&lbl_buf, "Fetching images: {s}", .{cur_name}) catch "Fetching images\u{2026}";
+        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+    } else {
+        dvui.label(@src(), "Fetching images\u{2026}", .{}, .{ .gravity_y = 0.5 });
+    }
+
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    if (total > 0) {
+        const pct: u32 = @intCast(@min(@divTrunc(@as(u64, done) * 100, @as(u64, total)), 100));
+        {
+            var bar_outer = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .min_size_content = .{ .w = 200, .h = 10 },
+                .border = style.border_thin,
+                .corner_radius = .all(3),
+                .color_border = style.border_color,
+                .background = true,
+                .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
+                .gravity_y = 0.5,
+            });
+            defer bar_outer.deinit();
+            if (pct > 0) {
+                const fill_w: f32 = (@as(f32, @floatFromInt(pct)) * 196.0) / 100.0;
+                var bar_inner = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .min_size_content = .{
+                        .w = @max(2.0, fill_w),
+                        .h = 6,
+                    },
+                    .background = true,
+                    .color_fill = .{ .r = 0x8A, .g = 0x6E, .b = 0xC9 },
+                    .corner_radius = .all(2),
+                    .gravity_y = 0.5,
+                });
+                bar_inner.deinit();
+            }
+        }
+        var pct_buf: [32]u8 = undefined;
+        const pct_str = std.fmt.bufPrint(&pct_buf, "  {d}/{d}", .{ done, total }) catch "";
+        dvui.label(@src(), "{s}", .{pct_str}, .{
+            .gravity_y = 0.5,
+            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        });
+    }
+
+    // Cancel button (separate from the phase-1 Cancel — once phase-1
+    // is done, only this remains). Same dim-on-press treatment.
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+    if (cancelling) {
+        const dim: dvui.Options = .{
+            .style = .control,
+            .color_text = .{ .r = 0x80, .g = 0x80, .b = 0x80 },
+        };
+        _ = iconButton(@src(), "Cancelling\u{2026}", entypo.cross, dim);
+    } else {
+        if (iconButton(@src(), "Cancel images", entypo.cross, .{ .style = .control })) {
+            actions.cancelImageQueue(frame);
         }
     }
 }
@@ -3724,7 +3848,7 @@ pub fn modsScreen(frame: *Frame) !bool {
         });
         defer tabs.deinit();
 
-        const counts = computeModsTabCounts(frame, game);
+        const counts = actions.modsPageCache(frame, game).counts;
         if (tabButton(modsTabLabel(.installed, "Installed", counts.installed), state.mods_tab == .installed)) state.mods_tab = .installed;
         if (tabButton(modsTabLabel(.ready, "Ready", counts.ready), state.mods_tab == .ready)) state.mods_tab = .ready;
         if (tabButton(modsTabLabel(.needs_archive, "Needs archive", counts.needs_archive), state.mods_tab == .needs_archive)) state.mods_tab = .needs_archive;
@@ -3769,52 +3893,8 @@ fn modsTabLabel(tag: state_mod.ModsTab, name: []const u8, count: usize) []const 
     return out;
 }
 
-const ModsTabCounts = struct {
-    installed: usize = 0,
-    ready: usize = 0,
-    needs_archive: usize = 0,
-    needs_recipe: usize = 0,
-};
-
-/// One pass over modfiles + game-recipe-bound mod recipes that
-/// classifies each into one of the four tab buckets. Caller renders
-/// counts in tab labels + body filtering uses the same predicates.
-fn computeModsTabCounts(frame: *Frame, game: *const library.Game) ModsTabCounts {
-    var out = ModsTabCounts{};
-
-    // Orphan archives: modfiles with zero linked recipes.
-    const modfiles = actions.modfilesForGame(frame, game);
-    for (modfiles) |m| {
-        if (m.recipe_ids.len == 0) out.needs_recipe += 1;
-    }
-
-    // Recipe-driven entries: for each mod recipe targeting this game,
-    // check archive presence + install state.
-    const game_parsed_opt = frame.recipe_repo.findGameByThread(game.f95_thread_id) catch null;
-    var game_parsed = game_parsed_opt orelse return out;
-    defer game_parsed.deinit();
-    const mods = frame.recipe_repo.listModsForGame(game_parsed.recipe.id) catch return out;
-    defer frame.recipe_repo.freeModList(mods);
-
-    for (mods) |*pm| {
-        const have_archive: bool = blk: {
-            if (actions.findRegisteredModArchive(frame, game, &pm.recipe)) |p| {
-                frame.lib.alloc.free(p);
-                break :blk true;
-            }
-            break :blk false;
-        };
-        const installed = actions.isModInstalled(frame, game, &pm.recipe);
-        if (installed) {
-            out.installed += 1;
-        } else if (have_archive) {
-            out.ready += 1;
-        } else {
-            out.needs_archive += 1;
-        }
-    }
-    return out;
-}
+/// Tab-strip counters. Defined in `actions.zig` (`actions.ModsTabCounts`)
+/// so the cache that produces them can live alongside `ModfileCache`.
 
 /// Body of the Mods page — picks the active tab + renders the
 /// filtered list.
@@ -4101,116 +4181,31 @@ fn renderModsTabNeedsRecipe(frame: *Frame, game: *const library.Game) void {
 /// installed-state + load-order, then filters + renders rows.
 fn renderModRecipeList(frame: *Frame, game: *const library.Game, filter: ModRecipeFilter) void {
     const state = frame.state;
+    const cache = actions.modsPageCache(frame, game);
 
-    const game_parsed_opt = frame.recipe_repo.findGameByThread(game.f95_thread_id) catch null;
-    var game_parsed = game_parsed_opt orelse {
-        renderTabEmptyHint(filter);
-        return;
-    };
-    defer game_parsed.deinit();
-
-    const mods = frame.recipe_repo.listModsForGame(game_parsed.recipe.id) catch {
-        dvui.label(@src(), "Failed to enumerate mod recipes.", .{}, .{ .style = .err });
-        return;
-    };
-    defer frame.recipe_repo.freeModList(mods);
-
-    if (mods.len == 0) {
+    if (cache.game_parsed == null) {
         renderTabEmptyHint(filter);
         return;
     }
-
-    // Per-mod "is installed?" + load index map — built once per frame.
-    const alloc = frame.lib.alloc;
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const aalloc = arena.allocator();
-
-    const ModFlags = struct { installed: bool, load_index: ?u32 };
-    var flags = std.StringHashMap(ModFlags).init(aalloc);
-    for (mods) |pm| flags.put(pm.recipe.id, .{ .installed = false, .load_index = null }) catch {};
-
-    const install_opt = actions.resolveModsPageInstall(frame, game.f95_thread_id);
-    defer if (install_opt) |i| frame.lib.freeInstall(i);
-
-    var any_installed: bool = false;
-    if (install_opt) |install| {
-        const layout_opt: ?actions.ModTrackerLayout = actions.modTrackerLayout(frame.io, alloc, install.install_path) catch null;
-        defer if (layout_opt) |l| actions.freeModTrackerLayout(alloc, l);
-        if (layout_opt) |layout| {
-            var log_obj = installer_for_diag.Tracker.load(alloc, frame.io, layout.tracker_path) catch installer_for_diag.InstallLog{ .entries = &.{} };
-            defer log_obj.deinit(alloc);
-
-            for (log_obj.entries) |e| {
-                if (e.mod_id.len == 0) continue;
-                const tid = std.fmt.parseUnsigned(u64, e.mod_id, 10) catch continue;
-                for (mods) |pm| {
-                    if (pm.recipe.f95_thread == tid) {
-                        if (flags.getPtr(pm.recipe.id)) |fp| {
-                            if (!fp.installed) {
-                                fp.installed = true;
-                                any_installed = true;
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Resolver-driven load order — only when at least one mod is
-        // installed (otherwise the graph has no edges to sort).
-        if (any_installed) {
-            var requested: std.ArrayList(recipe.ModRecipe) = .empty;
-            defer requested.deinit(aalloc);
-            for (mods) |pm| {
-                const f = flags.get(pm.recipe.id) orelse continue;
-                if (f.installed) requested.append(aalloc, pm.recipe) catch {};
-            }
-
-            var available: std.ArrayList(recipe.ModRecipe) = .empty;
-            defer available.deinit(aalloc);
-            for (mods) |pm| available.append(aalloc, pm.recipe) catch {};
-
-            const resolver = @import("resolver");
-            var result = resolver.solveExplained(aalloc, .{
-                .requested = requested.items,
-                .available = available.items,
-                .game_version = install.version,
-            }) catch null;
-            if (result) |*r| {
-                defer r.deinit(aalloc);
-                switch (r.*) {
-                    .ok => |plan| {
-                        for (plan.steps) |step| {
-                            if (flags.getPtr(step.mod_id)) |fp| fp.load_index = step.load_index;
-                        }
-                    },
-                    else => {},
-                }
-            }
-        }
+    if (cache.mods.len == 0) {
+        renderTabEmptyHint(filter);
+        return;
     }
 
     var rendered: usize = 0;
-    for (mods) |*pm| {
-        const row_flags = flags.get(pm.recipe.id) orelse ModFlags{ .installed = false, .load_index = null };
-        const have_archive: bool = blk: {
-            if (actions.findRegisteredModArchive(frame, game, &pm.recipe)) |p| {
-                frame.lib.alloc.free(p);
-                break :blk true;
-            }
-            break :blk false;
-        };
+    for (cache.mods, 0..) |*pm, i| {
+        const installed = cache.installed[i];
+        const have_archive = cache.have_archive[i];
+        const load_index = cache.load_index[i];
 
         const keep = switch (filter) {
-            .installed => row_flags.installed,
-            .ready => !row_flags.installed and have_archive,
-            .needs_archive => !row_flags.installed and !have_archive,
+            .installed => installed,
+            .ready => !installed and have_archive,
+            .needs_archive => !installed and !have_archive,
         };
         if (!keep) continue;
 
-        renderRecipeRow(frame, game, pm, row_flags.load_index, row_flags.installed, have_archive, state);
+        renderRecipeRow(frame, game, pm, load_index, installed, have_archive, state);
         rendered += 1;
     }
 
@@ -5858,7 +5853,7 @@ fn mapLibEngine(e: library.Engine) recipe.Engine {
 }
 
 // ============================================================
-//  settings screen — read-only for now
+//  settings screen
 // ============================================================
 
 pub fn settingsScreen(frame: *Frame) !bool {
@@ -6153,8 +6148,8 @@ fn renderImportBanner(frame: *Frame) void {
     }
 }
 
-/// Downloads tab — aria2 daemon port + (placeholder for) future
-/// throughput / connection caps. Port changes require an app restart
+/// Downloads tab — aria2 daemon port + seed-ratio. Port changes
+/// require an app restart
 /// because aria2 binds the listener at spawn time and we don't tear
 /// the daemon down on edit (in-flight downloads would die).
 fn renderSettingsDownloads(frame: *Frame) void {
@@ -8862,6 +8857,12 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
         .expand = .horizontal,
     });
     defer body.deinit();
+
+    // --- build ---
+    diagSection(@src(), "Build");
+    diagRow(@src(), "f69 version", build_options.version);
+
+    diagSep();
 
     // --- paths ---
     diagSection(@src(), "Paths");

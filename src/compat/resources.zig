@@ -2,9 +2,11 @@
 // path under `<data_root>/compat-resources/<id>/`.
 //
 // Resources are materialized at app build time (the flake's
-// `renpy-fhs-libs` derivation lands under the install output's
-// `data/compat-resources/` directory; build.zig copies it there).
-// The runtime just verifies presence + hands back an absolute path.
+// per-engine FHS-libs derivations — `renpy7-fhs-libs`,
+// `renpy8-fhs-libs`, `rpgm-mv-fhs-libs`, `unity-fhs-libs` — land
+// under the install output's `data/compat-resources/` directory;
+// build.zig copies them there). The runtime just verifies presence
+// + hands back an absolute path.
 
 const std = @import("std");
 const errs = @import("errors.zig");

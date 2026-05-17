@@ -13,8 +13,8 @@
 // We do not piggyback on f95.Client — RPDL is its own host with its own
 // auth scheme. Each call uses a short-lived std.http.Client.
 //
-// Token storage is the caller's concern (libsecret via util/secret.zig,
-// or plaintext under <config>/f69/rpdl_token in the meantime).
+// Token storage is the caller's concern (plaintext at <data_root>/rpdl_token
+// today; a Secret Service backend is on the roadmap).
 
 const std = @import("std");
 const Io = std.Io;

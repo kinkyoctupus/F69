@@ -1,8 +1,7 @@
 // SDK cache abstraction. Engines look up their pre-fetched archives
-// under `<cache>/f69/convert/sdks/<engine>-<version>/`.
-//
-// Round 19 shipped the lookup + clear "not cached" error.
-// Round 21a wires on-demand fetch from public mirrors.
+// under `<cache>/f69/convert/sdks/<engine>-<version>/`. On miss the
+// cache fetches from the engine's public mirror (renpy.org / dl.nwjs.io
+// / nwjs-ffmpeg-prebuilt) and extracts in place.
 //
 // Layout:
 //   <cache>/f69/convert/sdks/renpy-7.5.3/   ← extracted renpy-7.5.3-sdk.tar.gz

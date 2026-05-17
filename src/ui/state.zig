@@ -721,6 +721,37 @@ pub const State = struct {
     /// `currentSyncName()`.
     active_sync_name_buf: [160]u8 = [_]u8{0} ** 160,
     active_sync_name_len: usize = 0,
+
+    // ----- phase-2 image fetch (screenshots) -----
+    /// FIFO of thread_ids whose phase-1 (text+cover) scrape just
+    /// committed; a background worker will fetch their screenshots so
+    /// the library stays usable while images trickle in. Owned by
+    /// `lib.alloc`. Indices `image_queue_head..image_queue_len` are
+    /// pending; everything before head has been spawned. When head ==
+    /// len the queue is drained and (after `image_active` clears) the
+    /// counters reset.
+    image_queue: ?[]u64 = null,
+    image_queue_head: usize = 0,
+    image_queue_len: usize = 0,
+    image_queue_cap: usize = 0,
+    /// Currently-running ImageJob; opaque so `actions.zig` owns the
+    /// definition. Null when idle between jobs.
+    image_active: ?*anyopaque = null,
+    /// Name of the game whose ImageJob is in flight (for the second
+    /// banner row). Sentinel-trimmed.
+    image_active_name_buf: [160]u8 = [_]u8{0} ** 160,
+    image_active_name_len: usize = 0,
+    /// Cumulative images fetched / planned across the current phase-2
+    /// "batch". Resets to 0 when the queue empties AND `image_active`
+    /// is null, so the banner row disappears between bursts. `done`
+    /// is atomic so the worker thread can bump after each fetch.
+    image_done: std.atomic.Value(u32) = .init(0),
+    image_total: u32 = 0,
+    /// Set by `cancelSync` (or a dedicated cancel button on the banner)
+    /// to bail every in-flight + queued image fetch. Worker checks
+    /// between each image; drain clears the queue + resets to false
+    /// once the active job exits.
+    image_cancel: std.atomic.Value(bool) = .init(false),
     /// Round-robin cache of cover bytes, shared by detail screen and
     /// grid thumbs. Owned by `lib.alloc`; freed on quit and on entry
     /// eviction. Sync invalidates the entry for the synced thread.
@@ -852,6 +883,24 @@ pub const State = struct {
     /// `*anyopaque` because `state.zig` shouldn't pull installer types
     /// in directly; `actions.zig` owns the cast both ways. Lazy-init.
     modfile_cache: ?*anyopaque = null,
+
+    /// Per-game cache of the parsed game.zon + parsed mod.zon list +
+    /// per-mod install/archive flags + computed tab counts shown on
+    /// the Mods page. Without this, every render frame (including
+    /// mouse-move) re-iterates the recipes dir, re-parses every ZON
+    /// file, AND reloads the install tracker per mod — a noticeable
+    /// stutter even with a few dozen mods. Invalidated whenever the
+    /// modfile cache is dropped (covers every mutating action) plus
+    /// on thread/install-selection switch (handled in modsScreen).
+    /// Owned by `lib.alloc`; cast in actions.zig.
+    mods_page_cache_thread: ?u64 = null,
+    /// Buffer holding the install-id this cache was built against.
+    /// Stored as a fixed buffer so we can compare without allocating.
+    /// Length 0 = "no install selected" (cache built without an
+    /// install context — happens when no installs exist for the game).
+    mods_page_cache_install_id_buf: [64]u8 = [_]u8{0} ** 64,
+    mods_page_cache_install_id_len: usize = 0,
+    mods_page_cache: ?*anyopaque = null,
     /// Scan in flight — UI greys the Scan button + shows a status row.
     modfile_scan_busy: bool = false,
     /// Last scan summary message ("Added N, skipped M, …") shown after
@@ -926,6 +975,16 @@ pub const State = struct {
         const n = @min(name.len, self.active_sync_name_buf.len);
         @memcpy(self.active_sync_name_buf[0..n], name[0..n]);
         self.active_sync_name_len = n;
+    }
+
+    pub fn currentImageName(self: *const State) []const u8 {
+        return self.image_active_name_buf[0..self.image_active_name_len];
+    }
+
+    pub fn setCurrentImageName(self: *State, name: []const u8) void {
+        const n = @min(name.len, self.image_active_name_buf.len);
+        @memcpy(self.image_active_name_buf[0..n], name[0..n]);
+        self.image_active_name_len = n;
     }
 
     pub fn searchSlice(self: *const State) []const u8 {

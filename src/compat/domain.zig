@@ -46,13 +46,34 @@ pub const Detect = union(enum) {
     /// each in `host_lacks_soname` under `all`; convenience for the
     /// common "needs X11 or Wayland and has neither" case.
     host_lacks_sonames_all: []const []const u8,
+    /// True when ANY listed soname is missing. The Ren'Py SDL-FHS case:
+    /// a stripped Debian container might have libX11 but lack libXmu,
+    /// or vice versa, and either gap breaks the bundled runtime.
+    /// Recipe authors don't need to know the host distro — they just
+    /// list the sonames the engine wants and we report missing.
+    host_lacks_any_soname: []const []const u8,
     /// Composite engine fingerprint. Implemented in `detect.zig` as a
     /// canned check for the engine's signature files.
     engine_fingerprint: Engine,
+    /// True when the engine's detected version is <= `version`. Engine-
+    /// specific version probes live in `detect.zig`. Currently only
+    /// Ren'Py is wired up; other engines return false until their
+    /// probe lands. Comparison uses `util_version.compare` (semver-ish).
+    engine_version_at_most: EngineVersionBound,
+    /// True when the engine's detected version is >= `version`.
+    engine_version_at_least: EngineVersionBound,
     /// All sub-detectors must be true.
     all: []const Detect,
     /// At least one sub-detector must be true.
     any: []const Detect,
+};
+
+pub const EngineVersionBound = struct {
+    engine: Engine,
+    /// Semver-shaped string ("7.99", "8.0", "7.6.1"). Compared via
+    /// `util_version.compare` after we strip the detected version
+    /// to the same shape.
+    version: []const u8,
 };
 
 /// One step in the recipe's `apply` pipeline. MVP implements env-only
@@ -115,9 +136,10 @@ pub const DistroHint = struct {
 /// Top-level recipe — populated by `std.zon.parse` from a `.compat.zon`
 /// file or an `@embedFile`d bundled recipe.
 pub const Recipe = struct {
-    /// Stable identifier. Convention: `<os>.<engine>.<short-tag>`,
-    /// e.g. `linux.renpy.sdl-fhs`. Stored on the install when applied
-    /// so the UI can tell whether a fix has been applied.
+    /// Stable identifier. Convention: `<os>.<engine>[<version>].<short-tag>`,
+    /// e.g. `linux.renpy7.sdl-fhs` or `linux.unity.player-fhs`. Stored
+    /// on the install when applied so the UI can tell whether a fix
+    /// has been applied.
     id: []const u8,
     /// Short human-readable headline shown next to the Fix button.
     title: []const u8,

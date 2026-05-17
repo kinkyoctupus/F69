@@ -615,9 +615,8 @@ pub const Manager = struct {
     /// On-disk schema. Deliberately *just* the bookkeeping needed to
     /// re-attach to aria2's session-restored downloads — progress
     /// counters get rebuilt by the first `tick()` against the daemon.
-    /// `game_id` is additive (default 0 on older files via
-    /// `ignore_unknown_fields`), so existing manager_jobs.json files
-    /// from before Round 22 still load.
+    /// `game_id` is additive (default 0 via `ignore_unknown_fields`),
+    /// so older manager_jobs.json files still load.
     const JobsFileEntry = struct {
         id: u64,
         gid: []const u8,

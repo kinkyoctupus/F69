@@ -12,11 +12,20 @@
 //
 // Lines starting with `#` are ignored. Blank lines too. The file is
 // rewritten atomically on each successful refresh.
+//
+// **Bundled seed.** `tags_seed.txt` is `@embedFile`d below — a snapshot
+// of the master tag list taken at build time. `loadOrSeed` returns the
+// disk copy when present (the user has refreshed at least once since
+// install) and falls back to the embedded snapshot otherwise. This way
+// first-launch users get a usable tag sidebar without having to be
+// logged in / refresh first; refresh still wins thereafter.
 
 const std = @import("std");
 const log = std.log.scoped(.f95_tags);
 const errs = @import("errors.zig");
 const Client = @import("client.zig").Client;
+
+const SEED_BYTES: []const u8 = @embedFile("tags_seed.txt");
 
 /// Hard cap on how many tags we keep in the master list. F95 currently
 /// publishes about 200 game-related tags; 1024 is a generous safety net.
@@ -36,16 +45,10 @@ pub const Cached = struct {
     }
 };
 
-/// Read `<data_root>/tags.txt` and return whatever's cached. Missing
-/// file → empty list, `fetched_at = 0`. A malformed line is skipped,
-/// not fatal.
-pub fn loadFromDisk(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Cached {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 * 1024)) catch |e| {
-        if (e == error.FileNotFound) return .{ .tags = &.{}, .fetched_at = 0 };
-        return e;
-    };
-    defer alloc.free(bytes);
-
+/// Pure: parse the same `tags.txt`-shaped bytes (header + one-tag-per-line)
+/// used both for the on-disk cache AND the embedded seed. Caller owns
+/// the result. Malformed lines are skipped, not fatal.
+pub fn parseTagsFile(alloc: std.mem.Allocator, bytes: []const u8) !Cached {
     var fetched_at: i64 = 0;
     var out: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -75,6 +78,37 @@ pub fn loadFromDisk(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Cac
         .tags = try out.toOwnedSlice(alloc),
         .fetched_at = fetched_at,
     };
+}
+
+/// Read `<data_root>/tags.txt` and return whatever's cached. Missing
+/// file → empty list, `fetched_at = 0`. A malformed line is skipped,
+/// not fatal.
+pub fn loadFromDisk(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Cached {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 * 1024)) catch |e| {
+        if (e == error.FileNotFound) return .{ .tags = &.{}, .fetched_at = 0 };
+        return e;
+    };
+    defer alloc.free(bytes);
+    return parseTagsFile(alloc, bytes);
+}
+
+/// Parse the build-time embedded snapshot. Used as a first-run fallback
+/// when no on-disk cache exists yet. Same format as `loadFromDisk`.
+pub fn loadSeed(alloc: std.mem.Allocator) !Cached {
+    return parseTagsFile(alloc, SEED_BYTES);
+}
+
+/// Disk-first, seed-fallback loader. Returns the on-disk cache when
+/// the file exists AND contains at least one tag; otherwise returns
+/// the bundled snapshot. After the user clicks Refresh once, the
+/// resulting `tags.txt` always wins.
+pub fn loadOrSeed(alloc: std.mem.Allocator, io: std.Io, path: []const u8) !Cached {
+    var disk = try loadFromDisk(alloc, io, path);
+    if (disk.tags.len > 0) return disk;
+    // Disk empty or missing — release whatever loadFromDisk allocated
+    // (empty slice) and return the seed.
+    disk.deinit(alloc);
+    return try loadSeed(alloc);
 }
 
 /// Atomic write — tmp + rename. Caller passes the deduped, sorted
@@ -238,6 +272,17 @@ test "parseAllTags: real F95 /tags/ tagCloud markup" {
     try std.testing.expectEqualStrings("2dcg", tags[1]);
     try std.testing.expectEqualStrings("3d game", tags[2]);
     try std.testing.expectEqualStrings("adventure", tags[3]);
+}
+
+test "loadSeed: embedded snapshot parses non-empty + has a real fetched_at" {
+    var cached = try loadSeed(std.testing.allocator);
+    defer cached.deinit(std.testing.allocator);
+    // The bundled tag list must contain at least the canonical staples
+    // — if this drops to 0 the @embedFile path broke.
+    try std.testing.expect(cached.tags.len > 50);
+    // The seed carries the snapshot time of the build-time refresh, so
+    // a sane lower bound rejects accidental zero-headers.
+    try std.testing.expect(cached.fetched_at > 1_700_000_000);
 }
 
 test "loadFromDisk: round-trip via saveToDisk happy path" {

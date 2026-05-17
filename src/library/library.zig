@@ -1280,15 +1280,3 @@ test "library: upsert + list + getGame round-trip" {
     }
 }
 
-// ----- version helpers (re-exported as a sub-namespace) -----
-
-const ver = @import("version.zig");
-
-pub const version = struct {
-    pub const Cmp = ver.Cmp;
-    pub const Op = ver.Op;
-    pub const Constraint = ver.Constraint;
-    pub const compare = ver.compare;
-    pub const parseRange = ver.parseRange;
-    pub const satisfies = ver.satisfies;
-};

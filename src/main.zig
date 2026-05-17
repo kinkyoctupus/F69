@@ -1,6 +1,6 @@
-// f69 entry point. Phase 1: open Library against `~/.config/f69/games.db`,
-// seed a few sample games if the table is empty (so first launch has
-// something to show), then run the UI.
+// f69 entry point. Resolves `data_root` (portable layout — `<exe_dir>/data/`
+// by default, override via `F69_DATA_DIR`), opens the Library SQLite DB,
+// wires services and the aria2 RPC daemon, then runs the UI loop.
 //
 // `pub fn main(init: std.process.Init)` is Zig 0.16's main signature when
 // you want access to the process Init context (allocator, io, args, env).

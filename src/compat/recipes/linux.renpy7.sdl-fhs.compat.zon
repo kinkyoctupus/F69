@@ -1,0 +1,73 @@
+// Ren'Py 7 games on non-FHS Linux loaders (NixOS, minimal containers,
+// musl distros) crash at startup because the bundled libSDL2 + GL
+// renderer (gldraw.so) dlopen X11/Wayland/GLEW client libs by bare
+// soname. Ren'Py 7 specifically needs libGLEW.so.1.7 (statically
+// linked into Ren'Py runtime) + its transitive libXmu/libGLU. The
+// generic loader has none of these in its standard search path on
+// affected hosts.
+//
+// Fix: prepend the resource-provided Ren'Py-7 FHS bundle to
+// LD_LIBRARY_PATH at launch. Reversible, zero game-tree mutation.
+.{
+    .id = "linux.renpy7.sdl-fhs",
+    .title = "Ren'Py 7: bundled SDL2/GLEW cannot find X11/Wayland on this host",
+    .explain =
+        \\Ren'Py 7 ships its own SDL2 and a GLEW-based GL renderer
+        \\that loads X11/Wayland/GLEW libraries by name at runtime.
+        \\This host does not expose those libraries through the
+        \\standard dynamic-loader search path (typical on NixOS and
+        \\minimal containers). The fix prepends LD_LIBRARY_PATH with
+        \\a curated bundle of X11/Wayland/GL/audio libraries — plus
+        \\libXmu/libGLU which Ren'Py 7's libGLEW.so.1.7 needs at
+        \\import time — when the game launches.
+        \\
+        \\No game files are modified. The fix can be undone at any time.
+    ,
+    .severity = .blocker,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .all = .{
+        .{ .engine_fingerprint = .renpy },
+        // Cap the engine version at 7.99 so this recipe doesn't fire
+        // for Ren'Py 8 installs (which use the leaner `renpy8`
+        // recipe).
+        .{ .engine_version_at_most = .{ .engine = .renpy, .version = "7.99" } },
+        .{ .file_exists_any = .{
+            "lib/linux-x86_64/libSDL2-2.0.so.0",
+            "lib/linux-i686/libSDL2-2.0.so.0",
+        } },
+        // Any of these missing is enough to break Ren'Py 7. Listing
+        // them all means a Debian container that has libX11 but
+        // lacks libXmu still trips the detector.
+        .{ .host_lacks_any_soname = .{
+            "libX11.so.6",
+            "libXmu.so.6",
+            "libGLU.so.1",
+            "libGLEW.so.1.7",
+        } },
+    } },
+    .apply = .{
+        .{ .env_prepend = .{
+            .name = "LD_LIBRARY_PATH",
+            .from_resource = "renpy7-fhs-libs",
+            .relpath = "lib",
+            .sep = ":",
+        } },
+        // Force the X11 driver. The bundled SDL2 supports both
+        // wayland and x11, but the wayland init bombs against a
+        // newer libxkbcommon ABI than Ren'Py was built for. X11 via
+        // XWayland works on every modern wayland compositor and is
+        // the path of least surprise.
+        .{ .env_set = .{
+            .name = "SDL_VIDEODRIVER",
+            .value = "x11",
+        } },
+    },
+    .required_resources = .{ "renpy7-fhs-libs" },
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Enable `programs.nix-ld.enable = true;` and add the listed X11/Wayland packages to `programs.nix-ld.libraries` in your NixOS configuration." },
+        .{ .via = "pacman", .command = "Should not trigger on Arch — file an issue if it does." },
+        .{ .via = "apt",    .command = "Should not trigger on Debian/Ubuntu — file an issue if it does." },
+        .{ .via = "dnf",    .command = "Should not trigger on Fedora — file an issue if it does." },
+    },
+}

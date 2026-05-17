@@ -65,55 +65,107 @@
 
         # Compat resource: FHS-style bundle of X11/Wayland/GL/audio/
         # font client libraries. Materialised at app build time and
-        # copied to `<data_root>/compat-resources/renpy-fhs-libs/lib/`.
-        # The Ren'Py compat recipe prepends `<that>/lib` to
-        # LD_LIBRARY_PATH so the game's bundled SDL2 dlopen finds
-        # libX11.so.6, libwayland-client.so.0, etc. — the libraries
-        # missing from the standard loader paths on NixOS / musl /
-        # minimal containers.
-        renpy-fhs-libs =
+        # copied to `<data_root>/compat-resources/<id>/lib/`. The
+        # compat recipes prepend `<that>/lib` to LD_LIBRARY_PATH so the
+        # game's bundled runtime (SDL2 dlopen, nwjs, Unity loader) can
+        # find libX11.so.6, libwayland-client.so.0, etc. — the
+        # libraries missing from standard loader paths on NixOS / musl
+        # / minimal containers.
+        #
+        # `bundleFhsLibs id paths` re-packs a symlinkJoin so the `lib/`
+        # tree is inner-self-contained (no dangling links into the
+        # store) — `zig build install`'s Dir.walk skips dangling
+        # symlinks. Each engine version gets its own bundle so a NixOS
+        # user pulling one engine's compat doesn't get every other
+        # engine's transitive libs.
+        bundleFhsLibs = id: paths:
           let
-            joined = pkgs.symlinkJoin {
-              name = "renpy-fhs-libs-symlinks";
-              paths = with pkgs; [
-                xorg.libX11
-                xorg.libXext
-                xorg.libXi
-                xorg.libXcursor
-                xorg.libXrandr
-                xorg.libXinerama
-                xorg.libXxf86vm
-                # Ren'Py's gl renderer (gldraw.so, gl.so, …) links
-                # libGLEW.so.1.7, which transitively needs libXmu.so.6
-                # and libGLU.so.1. Without these, Python's __import__
-                # of the renderer module fails and Ren'Py falls back
-                # to its software renderer.
-                xorg.libXmu
-                libGLU
-                libxkbcommon
-                wayland
-                libdecor
-                libGL
-                libglvnd
-                fontconfig
-                freetype
-                alsa-lib
-                libpulseaudio
-                zlib
-              ];
-            };
+            joined = pkgs.symlinkJoin { name = "${id}-symlinks"; inherit paths; };
           in
-          # Re-pack the symlinkJoin output so the `lib/` directory
-          # holds real files (or symlinks within the resource itself).
-          # `zig build install` copies file-by-file via Dir.walk which
-          # skips dangling symlinks; we need an inner-self-contained
-          # tree.
-          pkgs.runCommand "renpy-fhs-libs" { } ''
+          pkgs.runCommand id { } ''
             mkdir -p $out/lib
             cp -rL ${joined}/lib/. $out/lib/
           '';
+
+        # ----- Ren'Py 7 ----------------------------------------------
+        # GL renderer (`gldraw.so`, `gl.so`) links libGLEW.so.1.7
+        # statically into the Ren'Py runtime — its transitive deps
+        # libXmu.so.6 + libGLU.so.1 must therefore be on the loader
+        # path. Ren'Py 8 dropped GLEW (uses SDL2 directly) — see the
+        # `renpy8-fhs-libs` bundle below for the leaner set.
+        renpy7-fhs-libs = bundleFhsLibs "renpy7-fhs-libs" (with pkgs; [
+          libx11 libxext libxi libxcursor libxrandr libxinerama libxxf86vm
+          libxmu libGLU
+          libxkbcommon wayland libdecor
+          libGL libglvnd
+          fontconfig freetype alsa-lib libpulseaudio zlib
+        ]);
+
+        # ----- Ren'Py 8 ----------------------------------------------
+        # SDL2 video deps only — no GLEW/GLU/Xmu. Same X11/Wayland +
+        # GL surface as renpy7 but without the renderer-shim
+        # transitives that Ren'Py 8 doesn't load.
+        renpy8-fhs-libs = bundleFhsLibs "renpy8-fhs-libs" (with pkgs; [
+          libx11 libxext libxi libxcursor libxrandr libxinerama libxxf86vm
+          libxkbcommon wayland libdecor
+          libGL libglvnd
+          fontconfig freetype alsa-lib libpulseaudio zlib
+        ]);
+
+        # ----- RPGM-MV / RPGM-MZ (nwjs runtime) ----------------------
+        # Lib set distilled from the `fix-linux-games.sh` / `nixos-
+        # libs.sh` field-tested helpers: everything the bundled nwjs
+        # (Chromium runtime) dlopens on a stripped host, plus the NSS
+        # internals (`libsoftokn3`, `libfreebl3`, `libssl3`,
+        # `libnssckbi`) that Chrome resolves lazily after process
+        # start. The X11 surface is wide because nwjs uses Chromium's
+        # full X11 backend (composite/damage/randr/screensaver/etc.),
+        # not just a basic X11 hook.
+        rpgm-mv-fhs-libs = bundleFhsLibs "rpgm-mv-fhs-libs" (with pkgs; [
+          # ---- X11 surface (Chromium X11 backend) ----
+          libx11 libxcb
+          xorg.libXcomposite xorg.libXcursor xorg.libXdamage xorg.libXext
+          xorg.libXfixes xorg.libXi xorg.libXrender xorg.libXtst
+          xorg.libXScrnSaver xorg.libXrandr xorg.libXau xorg.libXdmcp
+          libxkbcommon
+          # ---- GTK3 + accessibility + image stack ----
+          gtk3 glib pango cairo gdk-pixbuf at-spi2-atk at-spi2-core atk
+          fribidi fontconfig freetype harfbuzz pixman libpng
+          # ---- Chromium sandbox / security stack ----
+          # nss exposes libnss3 + the dlopen'd libsoftokn3/libfreebl3/
+          # libssl3/libnssckbi internals as files inside its lib/.
+          nss nspr cups dbus expat
+          # ---- GPU / video output ----
+          libdrm libxshmfence mesa libgbm libGL libglvnd
+          # ---- Audio ----
+          alsa-lib libpulseaudio
+          # ---- Misc ----
+          zlib
+        ]);
+
+        # ----- Unity (Linux player) ----------------------------------
+        # SCAFFOLD — typical Unity-on-Linux pain points are libstdc++
+        # version skew, libcurl-gnutls vs libcurl-openssl, and
+        # missing libpng12. Real list emerges from `ldd <Game.x86_64>`
+        # on the first failing game. Seed with the historically
+        # painful set so the bundle is non-empty for the recipe.
+        unity-fhs-libs = bundleFhsLibs "unity-fhs-libs" (with pkgs; [
+          # X11 / window surface
+          libx11 libxext libxcursor libxrandr libxi libxinerama libxkbcommon
+          # GL
+          libGL libglvnd
+          # Audio
+          alsa-lib libpulseaudio
+          # Fonts / misc
+          fontconfig freetype zlib
+          # Common offender: many older Unity titles link libcurl-gnutls
+          curl
+        ]);
       in {
-        packages.renpy-fhs-libs = renpy-fhs-libs;
+        packages.renpy7-fhs-libs = renpy7-fhs-libs;
+        packages.renpy8-fhs-libs = renpy8-fhs-libs;
+        packages.rpgm-mv-fhs-libs = rpgm-mv-fhs-libs;
+        packages.unity-fhs-libs = unity-fhs-libs;
 
         devShells.default = pkgs.mkShell {
           # Build-time tools for the Zig project.
@@ -195,12 +247,16 @@
               pkgs.vulkan-loader
             ]}:''${LD_LIBRARY_PATH:-}"
 
-            # Path to the compat resource bundle. build.zig reads this
-            # and copies it into zig-out/bin/data/compat-resources/ so
-            # `zig build run` picks up the FHS libs automatically.
-            export F69_COMPAT_RENPY_FHS_LIBS="${renpy-fhs-libs}"
+            # Paths to the compat resource bundles. build.zig reads
+            # each one and copies it into
+            # `zig-out/bin/data/compat-resources/<id>/` so `zig build
+            # run` picks up the FHS libs automatically.
+            export F69_COMPAT_RENPY7_FHS_LIBS="${renpy7-fhs-libs}"
+            export F69_COMPAT_RENPY8_FHS_LIBS="${renpy8-fhs-libs}"
+            export F69_COMPAT_RPGM_MV_FHS_LIBS="${rpgm-mv-fhs-libs}"
+            export F69_COMPAT_UNITY_FHS_LIBS="${unity-fhs-libs}"
 
-            echo "f69 dev shell"
+            echo "f69 dev shell  (target: f69 0.9.0)"
             echo "  zig:    $(zig version)"
             echo "  zls:    $(zls --version 2>/dev/null | head -1 || echo 'not found')"
             echo "  sdl3:   ${pkgs.sdl3.version}"

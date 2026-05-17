@@ -1,7 +1,4 @@
-// Public face of the installer context. Installer is one of the few
-// contexts that DOES warrant a Service struct — it orchestrates across
-// downloads + library + overlay + tracker, so it's the natural home for
-// cross-context use cases.
+// Public face of the installer context.
 
 const dom = @import("domain.zig");
 const ovl = @import("overlay.zig");
@@ -15,8 +12,6 @@ pub const OverlayMode = dom.OverlayMode;
 pub const OverlayBackend = ovl.OverlayBackend;
 pub const pickOverlay = ovl.pickBackend;
 pub const Tracker = trk.Tracker;
-
-pub const Service = @import("service.zig").Service;
 
 // Public face of `apply.zig` — UI calls these directly.
 pub const applyModArchive = @import("apply.zig").applyModArchive;
