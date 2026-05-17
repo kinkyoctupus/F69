@@ -65,7 +65,7 @@ fn versionMatches(ctx: *const Ctx, bound: dom.EngineVersionBound, mode: VersionM
         // Other engines: version probing not implemented yet. Returning
         // null here means engine_version_at_* never matches for them —
         // an upcoming patch can flesh out per-engine probes.
-        .rpgm_mv, .rpgm_mz, .unity => null,
+        else => null,
     };
     const detected = detected_opt orelse return false;
     const ord = util_version.compare(detected, bound.version);
@@ -128,6 +128,8 @@ fn engineFingerprint(ctx: *const Ctx, eng: dom.Engine) bool {
         .rpgm_mz => fileExists(ctx, "js/rmmz_managers.js"),
         .unity => fileExists(ctx, "UnityPlayer.so") or
             fileExists(ctx, "UnityPlayer.dll"),
+        // Other engines: no fingerprint heuristic yet — fall through.
+        else => false,
     };
 }
 

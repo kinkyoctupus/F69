@@ -5,13 +5,11 @@
 
 const std = @import("std");
 
-pub const Engine = enum {
-    renpy,
-    rpgm_mv,
-    rpgm_mz,
-    unity,
-    unknown,
-};
+/// Engine + Distro live in `util_domain` so every context shares the
+/// same enums (with the same `fromBracket` / `parseOsReleaseId`
+/// parsers).
+pub const Engine = @import("util_domain").Engine;
+pub const Distro = @import("util_domain").Distro;
 
 /// What `convert_linux` looks like in a recipe. Tagged union over the
 /// engine-specific config blocks the handlers consume. `.none` means
@@ -31,37 +29,4 @@ pub const ConvertSpec = union(enum) {
         ffmpeg_codecs: bool = true,
         bundle_syslibs: bool = true,
     },
-};
-
-pub const Distro = enum {
-    nixos,
-    arch,
-    debian,
-    ubuntu,
-    fedora,
-    other,
-
-    /// Read `ID=...` from /etc/os-release. Falls back to `.other` on
-    /// any IO error.
-    pub fn detect(io: std.Io, gpa: std.mem.Allocator) Distro {
-        const content = std.Io.Dir.cwd().readFileAlloc(io, "/etc/os-release", gpa, .limited(64 * 1024)) catch return .other;
-        defer gpa.free(content);
-        return parseOsReleaseId(content);
-    }
-
-    /// Pure — split out for unit testing without touching /etc/.
-    pub fn parseOsReleaseId(content: []const u8) Distro {
-        var it = std.mem.splitScalar(u8, content, '\n');
-        while (it.next()) |line| {
-            if (!std.mem.startsWith(u8, line, "ID=")) continue;
-            const v = std.mem.trim(u8, line[3..], "\"' \t");
-            if (std.mem.eql(u8, v, "nixos")) return .nixos;
-            if (std.mem.eql(u8, v, "arch")) return .arch;
-            if (std.mem.eql(u8, v, "debian")) return .debian;
-            if (std.mem.eql(u8, v, "ubuntu")) return .ubuntu;
-            if (std.mem.eql(u8, v, "fedora")) return .fedora;
-            return .other;
-        }
-        return .other;
-    }
 };

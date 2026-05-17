@@ -53,13 +53,9 @@ pub const InstallStep = union(enum) {
     // No run/exec/script. Anti-RCE by schema.
 };
 
-pub const Engine = enum {
-    renpy,
-    rpgm_mv,
-    rpgm_mz,
-    unity,
-    unknown,
-};
+/// Canonical Engine lives in `util_domain` — same enum across recipe,
+/// library, convert, compat.
+pub const Engine = @import("util_domain").Engine;
 
 pub const ConvertSpec = union(enum) {
     none: void,

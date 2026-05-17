@@ -132,72 +132,9 @@ test "DevStatus.fromBracket" {
     try testing.expectEqual(DevStatus.unknown, DevStatus.fromBracket("Demo"));
 }
 
-pub const Engine = enum {
-    renpy,
-    rpgm_mv,
-    rpgm_mz,
-    rpgm_vx,
-    unity,
-    unreal,
-    html,
-    flash,
-    java,
-    wolf_rpg,
-    qsp,
-    tyranobuilder,
-    twine,
-    other,
-    unknown,
-
-    pub fn fromStr(s: []const u8) Engine {
-        if (std.mem.eql(u8, s, "renpy")) return .renpy;
-        if (std.mem.eql(u8, s, "rpgm-mv") or std.mem.eql(u8, s, "rpgm_mv")) return .rpgm_mv;
-        if (std.mem.eql(u8, s, "rpgm-mz") or std.mem.eql(u8, s, "rpgm_mz")) return .rpgm_mz;
-        if (std.mem.eql(u8, s, "rpgm-vx") or std.mem.eql(u8, s, "rpgm_vx")) return .rpgm_vx;
-        if (std.mem.eql(u8, s, "unity")) return .unity;
-        if (std.mem.eql(u8, s, "unreal")) return .unreal;
-        if (std.mem.eql(u8, s, "html")) return .html;
-        if (std.mem.eql(u8, s, "flash")) return .flash;
-        if (std.mem.eql(u8, s, "java")) return .java;
-        if (std.mem.eql(u8, s, "wolf_rpg") or std.mem.eql(u8, s, "wolf-rpg")) return .wolf_rpg;
-        if (std.mem.eql(u8, s, "qsp")) return .qsp;
-        if (std.mem.eql(u8, s, "tyranobuilder")) return .tyranobuilder;
-        if (std.mem.eql(u8, s, "twine")) return .twine;
-        if (std.mem.eql(u8, s, "other")) return .other;
-        return .unknown;
-    }
-
-    /// Best-effort match for the kind of bracket tokens F95 thread
-    /// titles use ("Ren'Py", "RPGM MV", "Unity"). Strips apostrophes
-    /// and whitespace so "Ren'Py" / "RenPy" / "Ren Py" all match.
-    pub fn fromBracket(token: []const u8) Engine {
-        var buf: [32]u8 = undefined;
-        var n: usize = 0;
-        for (token) |c| {
-            if (std.ascii.isAlphanumeric(c) and n < buf.len) {
-                buf[n] = std.ascii.toLower(c);
-                n += 1;
-            }
-        }
-        const norm = buf[0..n];
-        if (std.mem.eql(u8, norm, "renpy")) return .renpy;
-        if (std.mem.eql(u8, norm, "rpgmmv") or std.mem.eql(u8, norm, "rpgmakermv")) return .rpgm_mv;
-        if (std.mem.eql(u8, norm, "rpgmmz") or std.mem.eql(u8, norm, "rpgmakermz")) return .rpgm_mz;
-        if (std.mem.eql(u8, norm, "rpgmvx") or std.mem.eql(u8, norm, "rpgmakervx") or std.mem.eql(u8, norm, "rpgmakervxace")) return .rpgm_vx;
-        if (std.mem.eql(u8, norm, "rpgm") or std.mem.eql(u8, norm, "rpgmaker")) return .rpgm_mv;
-        if (std.mem.eql(u8, norm, "unity")) return .unity;
-        if (std.mem.eql(u8, norm, "unrealengine") or std.mem.eql(u8, norm, "unreal") or std.mem.eql(u8, norm, "ue4") or std.mem.eql(u8, norm, "ue5")) return .unreal;
-        if (std.mem.eql(u8, norm, "html") or std.mem.eql(u8, norm, "html5")) return .html;
-        if (std.mem.eql(u8, norm, "flash")) return .flash;
-        if (std.mem.eql(u8, norm, "java")) return .java;
-        if (std.mem.eql(u8, norm, "wolfrpg") or std.mem.eql(u8, norm, "wolfrpgeditor")) return .wolf_rpg;
-        if (std.mem.eql(u8, norm, "qsp")) return .qsp;
-        if (std.mem.eql(u8, norm, "tyranobuilder") or std.mem.eql(u8, norm, "tyrano")) return .tyranobuilder;
-        if (std.mem.eql(u8, norm, "twine")) return .twine;
-        if (std.mem.eql(u8, norm, "others") or std.mem.eql(u8, norm, "other")) return .other;
-        return .unknown;
-    }
-};
+/// Canonical Engine lives in `util_domain` so every context shares
+/// the same variants (and the same `fromStr`/`fromBracket` parsers).
+pub const Engine = @import("util_domain").Engine;
 
 /// Per-game tri-state for the sandbox setting; overrides AppConfig.sandbox_default.
 pub const SandboxOverride = enum { use_default, always, never };
