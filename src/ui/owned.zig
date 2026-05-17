@@ -330,18 +330,15 @@ pub const ImageJob = struct {
     aggregate_done: *std.atomic.Value(u32),
 };
 
-pub const BookmarksJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the bookmarks-pull worker (walk /watched/threads).
+/// Generic carrier (phase, cancel, thread, allocator, dvui window)
+/// provided by `Job(...)`; this struct holds the per-task inputs +
+/// worker output + live-insert staging.
+pub const BookmarksPayload = struct {
     f95_svc: *f95.Service,
-    win: *dvui.Window,
     /// Page progress — worker writes, UI thread reads each frame.
     progress_current: std.atomic.Value(u32) = .init(0),
     progress_total: std.atomic.Value(u32) = .init(0),
-    /// UI sets this true to ask the worker to stop. Worker checks
-    /// between pages, exits cleanly with `Cancelled`, frees its
-    /// partial state.
-    cancel: std.atomic.Value(bool) = .init(false),
     /// Bookmark entries (alloc-owned). Filled on `.done`. Carries the
     /// title in addition to the thread id, so drainBookmarks can seed
     /// the row with a real name (parsed via `parseTitleParts`) instead
@@ -349,7 +346,6 @@ pub const BookmarksJob = struct {
     entries: ?[]f95.BookmarkEntry = null,
     /// Static error name on `.failed`.
     err_name: ?[]const u8 = null,
-    thr: std.Thread,
 
     // ---- live-insert staging ----
     //
@@ -367,6 +363,7 @@ pub const BookmarksJob = struct {
     live_skipped: std.atomic.Value(u32) = .init(0),
     live_dropped: std.atomic.Value(u32) = .init(0),
 };
+pub const BookmarksJob = Job(BookmarksPayload);
 
 pub const TestInstallJob = struct {
     phase: std.atomic.Value(u8),
