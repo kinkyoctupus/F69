@@ -7,6 +7,7 @@
 const std = @import("std");
 const dom = @import("domain.zig");
 const errs = @import("errors.zig");
+const atomic_io = @import("util_atomic_io");
 
 /// Cap on a single recipe's source size. Real recipes are well under
 /// 64 KiB; the limit is a safety net against malformed files.
@@ -119,16 +120,7 @@ fn saveAny(comptime T: type, io: std.Io, alloc: std.mem.Allocator, path: []const
     var aw: std.Io.Writer.Allocating = std.Io.Writer.Allocating.initCapacity(alloc, 4096) catch return errs.Error.OutOfMemory;
     defer aw.deinit();
     std.zon.stringify.serialize(recipe.*, .{}, &aw.writer) catch return errs.Error.SaveFailed;
-
-    var tmp_buf: [1024]u8 = undefined;
-    const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path}) catch return errs.Error.SaveFailed;
-    var tmp = std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true }) catch return errs.Error.SaveFailed;
-    defer tmp.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = tmp.writer(io, &fw_buf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return errs.Error.SaveFailed;
-    fw.interface.flush() catch return errs.Error.SaveFailed;
-    std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), path, io) catch return errs.Error.SaveFailed;
+    atomic_io.writeFileAtomic(io, path, aw.writer.buffered()) catch return errs.Error.SaveFailed;
 }
 
 fn readFileSentinel(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ![:0]u8 {

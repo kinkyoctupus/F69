@@ -1,7 +1,6 @@
 // Public API of the downloads context.
 
 const dom = @import("domain.zig");
-const svc = @import("service.zig");
 const mgr = @import("manager.zig");
 const hnd = @import("handler.zig");
 const arc = @import("archive.zig");
@@ -14,7 +13,6 @@ pub const Job = dom.Job;
 pub const JobKind = dom.JobKind;
 pub const JobStatus = dom.JobStatus;
 
-pub const Service = svc.Service;
 pub const Manager = mgr.Manager;
 pub const Handler = hnd.Handler;
 

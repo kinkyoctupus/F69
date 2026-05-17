@@ -8,7 +8,7 @@ const log = std.log.scoped(.f95_client);
 const errs = @import("errors.zig");
 
 pub const BASE_URL = "https://f95zone.to";
-pub const USER_AGENT = "f69/0.0";
+pub const USER_AGENT = "f69/" ++ @import("build_options").version;
 
 pub const Client = struct {
     alloc: std.mem.Allocator,

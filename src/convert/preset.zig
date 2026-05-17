@@ -15,6 +15,7 @@
 const std = @import("std");
 const dom = @import("domain.zig");
 const errs = @import("errors.zig");
+const atomic_io = @import("util_atomic_io");
 
 pub const Preset = struct {
     /// Stable identifier — `nwjs-codecs`, `renpy-standard`, etc.
@@ -197,20 +198,9 @@ pub fn save(
     defer aw.deinit();
     std.zon.stringify.serialize(preset.*, .{}, &aw.writer) catch return errs.Error.WriteFailed;
 
-    std.Io.Dir.cwd().createDirPath(io, user_dir) catch return errs.Error.WriteFailed;
-
     const path = std.fmt.allocPrint(parent_alloc, "{s}/{s}{s}", .{ user_dir, preset.id, PRESET_FILE_SUFFIX }) catch return errs.Error.OutOfMemory;
     defer parent_alloc.free(path);
-    const tmp = std.fmt.allocPrint(parent_alloc, "{s}.tmp", .{path}) catch return errs.Error.OutOfMemory;
-    defer parent_alloc.free(tmp);
-
-    var f = std.Io.Dir.cwd().createFile(io, tmp, .{ .truncate = true }) catch return errs.Error.WriteFailed;
-    defer f.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = f.writer(io, &fw_buf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return errs.Error.WriteFailed;
-    fw.interface.flush() catch return errs.Error.WriteFailed;
-    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io) catch return errs.Error.WriteFailed;
+    atomic_io.writeFileAtomic(io, path, aw.writer.buffered()) catch return errs.Error.WriteFailed;
 }
 
 // ============================================================

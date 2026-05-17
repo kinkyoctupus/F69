@@ -25,6 +25,7 @@ const installer = @import("installer");
 const library = @import("library");
 const recipe = @import("recipe");
 const dvui = @import("dvui");
+const atomic_io = @import("util_atomic_io");
 
 const log = std.log.scoped(.mod_job_queue);
 
@@ -403,17 +404,7 @@ pub const Queue = struct {
         defer aw.deinit();
         std.json.Stringify.value(payload, .{ .whitespace = .indent_2 }, &aw.writer) catch return error.WriteFailed;
 
-        if (std.fs.path.dirname(path)) |d| std.Io.Dir.cwd().createDirPath(self.io, d) catch return error.WriteFailed;
-
-        var tmp_buf: [1024]u8 = undefined;
-        const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path}) catch return error.WriteFailed;
-        var tmp = std.Io.Dir.cwd().createFile(self.io, tmp_path, .{ .truncate = true }) catch return error.WriteFailed;
-        defer tmp.close(self.io);
-        var fw_buf: [4096]u8 = undefined;
-        var fw = tmp.writer(self.io, &fw_buf);
-        fw.interface.writeAll(aw.writer.buffered()) catch return error.WriteFailed;
-        fw.interface.flush() catch return error.WriteFailed;
-        std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), path, self.io) catch return error.WriteFailed;
+        atomic_io.writeFileAtomic(self.io, path, aw.writer.buffered()) catch return error.WriteFailed;
     }
 
     /// Returns the parsed persisted state. Caller must `deinitRecovered`

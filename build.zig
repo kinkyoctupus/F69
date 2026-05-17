@@ -38,11 +38,10 @@ pub fn build(b: *std.Build) void {
     const zqlite_dep = b.dependency("zqlite", .{ .target = target, .optimize = optimize });
     const util_db_mod = mod(b, "util_db", "src/util/db.zig", target, optimize);
     util_db_mod.addImport("zqlite", zqlite_dep.module("zqlite"));
-    const util_spsc_mod = mod(b, "util_spsc", "src/util/spsc.zig", target, optimize);
-    const util_snapshot_mod = mod(b, "util_snapshot", "src/util/snapshot.zig", target, optimize);
     const util_crash_mod = mod(b, "util_crash", "src/util/crash.zig", target, optimize);
     const util_version_mod = mod(b, "util_version", "src/util/version.zig", target, optimize);
     const util_renpy_mod = mod(b, "util_renpy", "src/util/renpy.zig", target, optimize);
+    const util_atomic_io_mod = mod(b, "util_atomic_io", "src/util/atomic_io.zig", target, optimize);
 
     // util_archive: thin Zig wrapper around libarchive's read API.
     // Used by downloads/archive.zig for the formats stdlib doesn't
@@ -122,6 +121,7 @@ pub fn build(b: *std.Build) void {
 
     const recipe_mod = mod(b, "recipe", "src/recipe/recipe.zig", target, optimize);
     recipe_mod.addImport("util_version", util_version_mod);
+    recipe_mod.addImport("util_atomic_io", util_atomic_io_mod);
 
     const resolver_mod = mod(b, "resolver", "src/resolver/resolver.zig", target, optimize);
     resolver_mod.addImport("recipe", recipe_mod);
@@ -129,6 +129,8 @@ pub fn build(b: *std.Build) void {
     resolver_mod.addImport("util_version", util_version_mod);
 
     const f95_mod_ = mod(b, "f95", "src/f95/f95.zig", target, optimize);
+    f95_mod_.addImport("util_atomic_io", util_atomic_io_mod);
+    f95_mod_.addImport("build_options", build_opts_mod);
 
     // Image decoding context. Wraps libavif so the sync worker can
     // transcode F95Zone CDN's AVIF screenshots to RGBA and re-encode
@@ -149,6 +151,8 @@ pub fn build(b: *std.Build) void {
     downloads_mod.addImport("recipe", recipe_mod);
     downloads_mod.addImport("util_version", util_version_mod);
     downloads_mod.addImport("util_archive", util_archive_mod);
+    downloads_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    downloads_mod.addImport("build_options", build_opts_mod);
 
     const installer_mod = mod(b, "installer", "src/installer/installer.zig", target, optimize);
     installer_mod.addImport("library", library_mod);
@@ -156,6 +160,7 @@ pub fn build(b: *std.Build) void {
     installer_mod.addImport("resolver", resolver_mod);
     installer_mod.addImport("downloads", downloads_mod);
     installer_mod.addImport("util_archive", util_archive_mod);
+    installer_mod.addImport("util_atomic_io", util_atomic_io_mod);
 
     // Importers — read F95Checker SQLite + xLibrary JSON config files
     // and translate to library.Game shape. Settings UI invokes these.
@@ -164,6 +169,8 @@ pub fn build(b: *std.Build) void {
 
     const convert_mod = mod(b, "convert", "src/convert/convert.zig", target, optimize);
     convert_mod.addImport("util_renpy", util_renpy_mod);
+    convert_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    convert_mod.addImport("build_options", build_opts_mod);
 
     const compat_mod = mod(b, "compat", "src/compat/compat.zig", target, optimize);
     compat_mod.addImport("util_version", util_version_mod);
@@ -190,6 +197,7 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("image", image_mod);
     ui_mod.addImport("util_version", util_version_mod);
     ui_mod.addImport("util_file_picker", file_picker_mod);
+    ui_mod.addImport("util_atomic_io", util_atomic_io_mod);
     ui_mod.addImport("build_options", build_opts_mod);
 
     // ----- executable -----
@@ -334,8 +342,8 @@ pub fn build(b: *std.Build) void {
         server_mod,        ui_mod,            config_mod,      image_mod,
         importers_mod,     compat_mod,
         util_paths_mod,    util_kahn_mod,     util_db_mod,
-        util_spsc_mod,     util_snapshot_mod, util_crash_mod,  util_version_mod,
-        util_renpy_mod,
+        util_crash_mod,    util_version_mod,
+        util_renpy_mod,    util_atomic_io_mod,
         file_picker_mod,   util_archive_mod,
     };
     const test_step = b.step("test", "Run unit tests");
