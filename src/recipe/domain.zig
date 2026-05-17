@@ -53,6 +53,26 @@ pub const InstallStep = union(enum) {
     // No run/exec/script. Anti-RCE by schema.
 };
 
+/// Visitor over `InstallStep` — centralises the per-variant dispatch
+/// that simulate / apply / validator all need. `visitor` is duck-typed
+/// (`anytype`); it must implement `onExtract`, `onExtractInner`,
+/// `onCopy`, `onMove`, `onDelete`, `onChmodX`, each returning the same
+/// error set as the caller's `try`. The compiler enforces presence —
+/// adding a new InstallStep variant is a compile error in every
+/// visitor that hasn't grown a handler.
+///
+/// Walk stops on the first error from a visitor method.
+pub fn walkSteps(steps: []const InstallStep, visitor: anytype) !void {
+    for (steps) |step| switch (step) {
+        .extract => |x| try visitor.onExtract(x),
+        .extract_inner => |x| try visitor.onExtractInner(x),
+        .copy => |x| try visitor.onCopy(x),
+        .move => |x| try visitor.onMove(x),
+        .delete => |x| try visitor.onDelete(x),
+        .chmod_x => |x| try visitor.onChmodX(x),
+    };
+}
+
 /// Canonical Engine lives in `util_domain` — same enum across recipe,
 /// library, convert, compat.
 pub const Engine = @import("util_domain").Engine;
