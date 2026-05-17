@@ -20,17 +20,11 @@ pub const Severity = enum {
     optional,
 };
 
-pub const Os = enum { linux, windows, macos };
-
-/// Engines recognised by the `engine_fingerprint` detector. Kept aligned
-/// with `recipe.Engine` even though we don't import it (compat is a leaf
-/// module).
-pub const Engine = enum {
-    renpy,
-    rpgm_mv,
-    rpgm_mz,
-    unity,
-};
+/// Canonical Os + Engine live in `util_domain`. Compat previously
+/// declared its own subset of Engine variants which was a divergence
+/// hazard (the subset was missing `unknown`).
+pub const Os = @import("util_domain").Os;
+pub const Engine = @import("util_domain").Engine;
 
 /// Recursive Detect tree. ZON deserializes nested arrays of `Detect`
 /// without issue (each element is a fresh value, arena-allocated).

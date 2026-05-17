@@ -4,7 +4,8 @@
 
 const std = @import("std");
 
-pub const Distro = enum { nixos, arch, debian, ubuntu, fedora, other };
+/// Canonical Distro lives in `util_domain`.
+pub const Distro = @import("util_domain").Distro;
 
 /// Host-side environment data the bwrap backend needs to wire up the
 /// sandbox's display + audio sockets. Caller fills from

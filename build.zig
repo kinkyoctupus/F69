@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const util_version_mod = mod(b, "util_version", "src/util/version.zig", target, optimize);
     const util_renpy_mod = mod(b, "util_renpy", "src/util/renpy.zig", target, optimize);
     const util_atomic_io_mod = mod(b, "util_atomic_io", "src/util/atomic_io.zig", target, optimize);
+    const util_domain_mod = mod(b, "util_domain", "src/util/domain.zig", target, optimize);
 
     // util_archive: thin Zig wrapper around libarchive's read API.
     // Used by downloads/archive.zig for the formats stdlib doesn't
@@ -118,10 +119,12 @@ pub fn build(b: *std.Build) void {
     const library_mod = mod(b, "library", "src/library/library.zig", target, optimize);
     library_mod.addImport("util_db", util_db_mod);
     library_mod.addImport("util_version", util_version_mod);
+    library_mod.addImport("util_domain", util_domain_mod);
 
     const recipe_mod = mod(b, "recipe", "src/recipe/recipe.zig", target, optimize);
     recipe_mod.addImport("util_version", util_version_mod);
     recipe_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    recipe_mod.addImport("util_domain", util_domain_mod);
 
     const resolver_mod = mod(b, "resolver", "src/resolver/resolver.zig", target, optimize);
     resolver_mod.addImport("recipe", recipe_mod);
@@ -170,15 +173,18 @@ pub fn build(b: *std.Build) void {
     const convert_mod = mod(b, "convert", "src/convert/convert.zig", target, optimize);
     convert_mod.addImport("util_renpy", util_renpy_mod);
     convert_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    convert_mod.addImport("util_domain", util_domain_mod);
     convert_mod.addImport("build_options", build_opts_mod);
 
     const compat_mod = mod(b, "compat", "src/compat/compat.zig", target, optimize);
     compat_mod.addImport("util_version", util_version_mod);
     compat_mod.addImport("util_renpy", util_renpy_mod);
+    compat_mod.addImport("util_domain", util_domain_mod);
 
     const sandbox_mod = mod(b, "sandbox", "src/sandbox/sandbox.zig", target, optimize);
     sandbox_mod.addImport("library", library_mod);
     sandbox_mod.addImport("util_paths", util_paths_mod);
+    sandbox_mod.addImport("util_domain", util_domain_mod);
 
     const server_mod = mod(b, "server", "src/server/server.zig", target, optimize);
     server_mod.addImport("library", library_mod);
@@ -343,7 +349,7 @@ pub fn build(b: *std.Build) void {
         importers_mod,     compat_mod,
         util_paths_mod,    util_kahn_mod,     util_db_mod,
         util_crash_mod,    util_version_mod,
-        util_renpy_mod,    util_atomic_io_mod,
+        util_renpy_mod,    util_atomic_io_mod, util_domain_mod,
         file_picker_mod,   util_archive_mod,
     };
     const test_step = b.step("test", "Run unit tests");
