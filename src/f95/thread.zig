@@ -1320,6 +1320,31 @@ test "extractDownloadsSection: bold spans inline, links preserved" {
     try std.testing.expect(std.mem.indexOf(u8, out, "[LINK=https://mediafire.com/b]MediaFire[/LINK]") != null);
 }
 
+test "extractDownloadsSection: <br> inside <a> collapses to space (LINK span stays on one line)" {
+    const alloc = std.testing.allocator;
+    // F95 posts occasionally insert a `<br>` inside the anchor body
+    // (e.g., a multi-line cheat-mod label). Splitting the resulting
+    // `[LINK=URL]label[/LINK]` across two output lines would defeat
+    // the renderer's line-by-line marker matcher and leak raw BBcode.
+    const html =
+        "<article class=\"message-threadStarterPost\"><div class=\"bbWrapper\">" ++
+        "<b>DOWNLOAD</b><br>" ++
+        "Extras: CHEAT MOD - " ++
+        "<a href=\"https://example.com/x\">Shawn's<br>Walkthrough Improvements + Cheat Mod</a>" ++
+        "</div></article>";
+    const out_opt = try extractDownloadsSection(alloc, html);
+    defer if (out_opt) |s| alloc.free(s);
+    const out = out_opt.?;
+    try std.testing.expect(std.mem.indexOf(u8, out, "[LINK=https://example.com/x]Shawn's Walkthrough Improvements + Cheat Mod[/LINK]") != null);
+    // Sanity: the open marker must not be stranded on a line of its own.
+    var it = std.mem.splitScalar(u8, out, '\n');
+    while (it.next()) |line| {
+        if (std.mem.indexOf(u8, line, "[LINK=") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, line, "[/LINK]") != null);
+        }
+    }
+}
+
 /// Same as `extractSectionByHeaders` but pipes the HTML through
 /// `formatStructuredHtml` instead of `stripHtmlToText`. That preserves
 /// version headings, bullet items, spoiler foldouts, and hyperlinks
@@ -1651,6 +1676,16 @@ pub fn formatStructuredHtmlOpts(
 
             // --- Plain block separators ---
             if (asciiEq(name, "br") or asciiEq(name, "p") or asciiEq(name, "tr")) {
+                // Inside an open `[LINK=URL]…[/LINK]` span we must not
+                // emit a newline — the renderer matches markers
+                // line-by-line and a split span would leak raw BBcode
+                // to the user (and degenerate label text → 0-len slices
+                // confuse dvui's textLayout). Collapse to a single space.
+                if (link_open) {
+                    const last = if (out.items.len > 0) out.items[out.items.len - 1] else ' ';
+                    if (last != ' ' and last != '\n') try out.append(alloc, ' ');
+                    continue;
+                }
                 try ensureNewline(&out, alloc);
                 continue;
             }
