@@ -1,0 +1,14 @@
+// RPGM MV standard convert. Auto-detect nwjs version from `nw.dll`'s
+// embedded Chrome string, install matching nwjs, swap `libffmpeg.so`
+// for codec support, bundle system libs.
+.{
+    .id = "rpgm-mv-standard",
+    .name = "RPGM MV (nwjs + codecs)",
+    .description = "Auto-pick nwjs by Chrome version, swap libffmpeg for codec support, bundle syslibs.",
+    .engine_hint = .rpgm_mv,
+    .spec = .{ .rpgm = .{
+        .ffmpeg_codecs = true,
+        .bundle_syslibs = true,
+    } },
+    .weight = 1.0,
+}

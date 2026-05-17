@@ -1,0 +1,17 @@
+pub const Error = error{
+    NoHandlerForUrl,
+    HostUnreachable,
+    HashMismatch,
+    AuthRequired,
+    Cancelled,
+    DiskFull,
+    ExtractionFailed,
+    OutOfMemory,
+    AriaSpawnFailed,
+    AriaStartTimeout,
+    AriaRpcError,
+    AriaInvalidResponse,
+    NetworkError,
+    NotFound,
+    RpdlInvalidResponse,
+};

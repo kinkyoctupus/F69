@@ -1,0 +1,26 @@
+// RPGM MV patch — archive contains `www/` (and sometimes `package.json`).
+// Extract at the install root so `www/data/`, `www/img/`, etc. overlay
+// the vanilla install's `www/` tree.
+.{
+    .id = "rpgm-mv-patch",
+    .name = "RPGM MV www/ patch",
+    .description = "Overlays files under <install>/www/",
+    .engine_hint = .rpgm_mv,
+
+    .match = .{
+        .requires = .{
+            "www/**/*",
+        },
+        .forbids = .{
+            "game/**/*.rpy",
+            "BepInEx/**/*",
+        },
+        .min_confidence = 0.5,
+    },
+
+    .install = .{
+        .{ .extract = .{ .to = ".", .strip = 0 } },
+    },
+
+    .weight = 1.0,
+}

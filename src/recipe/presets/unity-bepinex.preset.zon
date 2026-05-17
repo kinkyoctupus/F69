@@ -1,0 +1,26 @@
+// Unity BepInEx plugin pack. Recognizes the BepInEx/plugins layout
+// shipped by the most common Unity mod-loader ecosystem.
+.{
+    .id = "unity-bepinex",
+    .name = "Unity BepInEx plugin",
+    .description = "Drops a BepInEx plugin / patcher into the install root",
+    .engine_hint = .unity,
+
+    .match = .{
+        .requires = .{
+            "BepInEx/plugins/**/*.dll",
+        },
+        .forbids = .{
+            "game/**/*.rpy",
+            "www/**/*",
+            "data/**/*.json",
+        },
+        .min_confidence = 0.5,
+    },
+
+    .install = .{
+        .{ .extract = .{ .to = ".", .strip = 0 } },
+    },
+
+    .weight = 1.0,
+}

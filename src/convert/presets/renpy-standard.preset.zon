@@ -1,0 +1,11 @@
+// Ren'Py standard convert. Auto-detect the SDK version from the
+// install's `renpy/__init__.py` / `vc_version.py`, copy matching
+// Linux libs from the cached SDK, write a `.sh` launcher.
+.{
+    .id = "renpy-standard",
+    .name = "Ren'Py (auto-detect SDK)",
+    .description = "Detect Ren'Py version from disk, install matching Linux libs, write launcher.",
+    .engine_hint = .renpy,
+    .spec = .{ .renpy = .{} },
+    .weight = 1.0,
+}

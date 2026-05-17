@@ -1,0 +1,22 @@
+// Last-resort catch-all. Matches any archive (zero `requires` →
+// confidence 1.0) but with low weight so any engine-specific preset
+// wins. Used when nothing else fits and the user just wants to
+// extract the archive on top of the install dir.
+.{
+    .id = "generic-overlay",
+    .name = "Generic install-root overlay",
+    .description = "Extracts archive contents over <install_path>",
+
+    .match = .{
+        .requires = .{},
+        .min_confidence = 0.0,
+    },
+
+    .install = .{
+        .{ .extract = .{ .to = ".", .strip = 0 } },
+    },
+
+    // Weight below 1.0 so any matching engine-specific preset beats
+    // this. The fallback should never displace a confident match.
+    .weight = 0.1,
+}

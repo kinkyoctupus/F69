@@ -1,0 +1,179 @@
+/// This is a widget that forwards all parent calls to its parent.  Useful
+/// where you want to wrap widgets but only to adjust their IDs.
+const std = @import("std");
+const dvui = @import("../dvui.zig");
+
+const Event = dvui.Event;
+const Options = dvui.Options;
+const Rect = dvui.Rect;
+const RectScale = dvui.RectScale;
+const Size = dvui.Size;
+const Widget = dvui.Widget;
+const WidgetData = dvui.WidgetData;
+
+const FocusGroupWidget = @This();
+
+init_opts: InitOptions,
+wd: WidgetData,
+child_rect_union: ?Rect = null,
+
+last_focus: dvui.Id,
+
+remember_focus: ?dvui.Id,
+tab_index_prev: []dvui.TabIndex,
+tab_index: std.ArrayListUnmanaged(dvui.TabIndex) = .empty,
+tab_index_group: dvui.Id,
+
+pub const InitOptions = struct {
+    /// If true wrap focus around the first/last.  If false, focus stops at
+    /// first/last.
+    wrap: bool = false,
+    /// If non-null, only handles navigation using the keys for this direction -
+    /// left/right for horizontal, and up/down for vertical.
+    nav_key_dir: ?dvui.enums.Direction = null,
+};
+
+pub fn init(self: *FocusGroupWidget, src: std.builtin.SourceLocation, init_opts: InitOptions, opts: Options) void {
+    const id = dvui.parentGet().extendId(src, opts.idExtra());
+    const rect: Rect = dvui.dataGet(null, id, "_rect", Rect) orelse .{};
+    const defaults = Options{ .name = "Focus Group", .rect = rect, .expand = if (rect.empty()) .both else .none };
+    self.* = .{
+        .init_opts = init_opts,
+        .wd = WidgetData.init(src, .{}, defaults.override(opts)),
+        .last_focus = dvui.lastFocusedIdInFrame(),
+        .tab_index_prev = dvui.dataGetSlice(null, id, "_tab_prev", []dvui.TabIndex) orelse &.{},
+        .remember_focus = dvui.dataGet(null, id, "_remember_focus", dvui.Id) orelse null,
+        .tab_index_group = dvui.TabIndexGroup.current,
+    };
+    dvui.parentSet(self.widget());
+    self.data().register();
+
+    // only register ourselves if there is no focus group already registered
+    const cw = dvui.currentWindow();
+    if (cw.subwindows.get(dvui.subwindowCurrentId())) |sw| {
+        if (sw.focus_group == null) {
+
+            // put ourselves in the tab index so the whole focus group can be focused by tab
+            // but only if we contain focusable widgets
+            if (self.tab_index_prev.len > 0)
+                dvui.tabIndexSet(self.data().id, self.data().options.tab_index, self.data().rectScale().r);
+
+            if (self.data().id == dvui.focusedWidgetId()) {
+                // if we got focused, focus our remembered focus or first id
+                if (self.remember_focus) |focused_id| {
+                    dvui.focusWidget(focused_id, null, null);
+                } else {
+                    self.focusNext(null);
+                }
+            }
+
+            sw.focus_group = self;
+            //std.debug.print("subwindow {x} focus group {x}\n", .{ sw.id.asU64(), self.data().id.asU64() });
+        }
+    }
+}
+
+pub fn focusNext(self: *FocusGroupWidget, event_num: ?u16) void {
+    dvui.tabIndexNextEx(event_num, self.tab_index_prev, self.tab_index_group, true);
+}
+
+pub fn focusPrev(self: *FocusGroupWidget, event_num: ?u16) void {
+    dvui.tabIndexPrevEx(event_num, self.tab_index_prev, self.tab_index_group, true);
+}
+
+pub fn widget(self: *FocusGroupWidget) Widget {
+    return Widget.init(self, data, rectFor, screenRectScale, minSizeForChild);
+}
+
+pub fn data(self: *FocusGroupWidget) *WidgetData {
+    return self.wd.validate();
+}
+
+pub fn rectFor(self: *FocusGroupWidget, id: dvui.Id, min_size: Size, e: Options.Expand, g: Options.Gravity) Rect {
+    const ret = self.data().parent.rectFor(id, min_size, e, g);
+    if (self.child_rect_union) |u| {
+        self.child_rect_union = u.unionWith(ret);
+    } else {
+        self.child_rect_union = ret;
+    }
+    return ret;
+}
+
+pub fn screenRectScale(self: *FocusGroupWidget, rect: Rect) RectScale {
+    return self.data().parent.screenRectScale(rect);
+}
+
+pub fn minSizeForChild(self: *FocusGroupWidget, s: Size) void {
+    self.data().parent.minSizeForChild(s);
+}
+
+pub fn deinit(self: *FocusGroupWidget) void {
+    defer if (dvui.widgetIsAllocated(self)) dvui.widgetFree(self);
+    defer self.* = undefined;
+
+    const cw = dvui.currentWindow();
+
+    // only deregister ourselves if we were the one registered
+    // also do unhandled arrow events
+    if (cw.subwindows.get(dvui.subwindowCurrentId())) |sw| {
+        if (sw.focus_group == self) {
+            sw.focus_group = null;
+            //std.debug.print("subwindow {x} focus group null\n", .{sw.id.asU64()});
+
+            const focus_id = dvui.lastFocusedIdInFrameSince(self.last_focus);
+            if (focus_id) |fid| dvui.dataSet(null, self.data().id, "_remember_focus", fid);
+            const evts = dvui.events();
+            for (evts) |*e| {
+                if (!dvui.eventMatch(e, .{ .id = self.data().id, .focus_id = focus_id, .r = self.data().borderRectScale().r }))
+                    continue;
+
+                switch (e.evt) {
+                    .key => |ke| {
+                        if (ke.action != .down and ke.action != .repeat)
+                            continue;
+
+                        const key_dir = self.init_opts.nav_key_dir;
+                        if ((ke.code == .up and key_dir != .horizontal) or (ke.code == .left and key_dir != .vertical)) {
+                            e.handle(@src(), self.data());
+                            self.focusPrev(e.num);
+                            if (dvui.focusedWidgetId() == null) {
+                                if (self.init_opts.wrap) {
+                                    // wrap around
+                                    self.focusPrev(e.num);
+                                } else {
+                                    // go back to where we were
+                                    self.focusNext(e.num);
+                                }
+                            }
+                        } else if ((ke.code == .down and key_dir != .horizontal) or (ke.code == .right and key_dir != .vertical)) {
+                            e.handle(@src(), self.data());
+                            self.focusNext(e.num);
+                            if (dvui.focusedWidgetId() == null) {
+                                if (self.init_opts.wrap) {
+                                    // wrap around
+                                    self.focusNext(e.num);
+                                } else {
+                                    // go back to where we were
+                                    self.focusPrev(e.num);
+                                }
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    dvui.dataSetSlice(null, self.data().id, "_tab_prev", self.tab_index.items);
+    self.tab_index.deinit(cw.arena());
+
+    if (self.child_rect_union) |u| {
+        dvui.dataSet(null, self.data().id, "_rect", u);
+    }
+    dvui.parentReset(self.data().id, self.data().parent);
+}
+
+test {
+    @import("std").testing.refAllDecls(@This());
+}
