@@ -365,12 +365,13 @@ pub const BookmarksPayload = struct {
 };
 pub const BookmarksJob = Job(BookmarksPayload);
 
-pub const TestInstallJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the wizard's "Test install (real)" worker — extract
+/// the recipe's install plan into a scratch dir and report file/byte
+/// counts. Generic carrier (phase, cancel, thread, allocator, dvui
+/// window) provided by `Job(...)`; this struct holds the per-task
+/// inputs + worker output.
+pub const TestInstallPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
 
     /// Source archive on disk. Owned.
     archive_path: []u8,
@@ -388,6 +389,7 @@ pub const TestInstallJob = struct {
     /// steps_arena so the lifetime matches the job).
     err_name: ?[]const u8 = null,
 };
+pub const TestInstallJob = Job(TestInstallPayload);
 
 pub const PostInstallJob = struct {
     phase: std.atomic.Value(u8),
