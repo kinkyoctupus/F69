@@ -69,13 +69,6 @@ pub const DownloadLink = struct {
     is_mod: bool = false,
 };
 
-pub const UpdateEntry = struct {
-    title: []const u8,
-    thread_id: []const u8,
-    version: []const u8,
-    timestamp: i64,
-};
-
 pub const BookmarkEntry = struct {
     thread_id: []const u8,
     title: []const u8,

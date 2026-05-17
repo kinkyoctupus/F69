@@ -1,0 +1,85 @@
+// RPGM-MV / RPGM-MZ games on non-FHS Linux. They ship a bundled
+// nwjs (Node-Webkit / Chromium) runtime that dlopens the full
+// Chromium client stack — NSS for crypto, GTK3 for window
+// chrome, libgbm/mesa for GL, X11 client libs (composite, damage,
+// randr, …) for the surface. On NixOS / minimal containers the
+// loader can't find these libraries in its standard path.
+//
+// The bundle (`rpgm-mv-fhs-libs` in flake.nix) was distilled from
+// the field-tested `fix-linux-games.sh` helper — it covers the
+// runtime-dlopen'd NSS internals (`libsoftokn3.so`, `libfreebl3.so`,
+// `libssl3.so`, `libnssckbi.so`) that ldd alone misses.
+//
+// Detector triggers on the NSS / GTK / GBM sonames that are the
+// usual first-failures. `host_lacks_any_soname` means a host that
+// has GTK but lacks NSS still trips the recipe.
+.{
+    .id = "linux.rpgm-mv.nwjs-fhs",
+    .title = "RPGM-MV/MZ: bundled nwjs cannot find Chromium runtime libs",
+    .explain =
+        \\RPGM-MV and RPGM-MZ games ship a bundled nwjs (Node-Webkit)
+        \\runtime that dlopens Chromium's sandbox / GTK / GL libraries
+        \\at startup. On hosts without these libraries in the standard
+        \\loader path (NixOS, minimal containers), nwjs aborts before
+        \\the game JS can run. The fix prepends LD_LIBRARY_PATH with a
+        \\curated nwjs-friendly bundle AND forces GDK_BACKEND=x11 so
+        \\nwjs's Chromium runtime doesn't try to talk Wayland (older
+        \\nwjs builds lack Wayland support; the X11 backend with
+        \\XWayland is reliable across compositors).
+        \\
+        \\No game files are modified. The fix can be undone at any time.
+    ,
+    .severity = .blocker,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .any = .{
+        // RPGM-MV: `www/js/rpg_managers.js`
+        .{ .all = .{
+            .{ .engine_fingerprint = .rpgm_mv },
+            .{ .host_lacks_any_soname = .{
+                "libnss3.so",
+                "libgtk-3.so.0",
+                "libgbm.so.1",
+                "libcups.so.2",
+                "libatk-1.0.so.0",
+                "libdrm.so.2",
+            } },
+        } },
+        // RPGM-MZ: `js/rmmz_managers.js`
+        .{ .all = .{
+            .{ .engine_fingerprint = .rpgm_mz },
+            .{ .host_lacks_any_soname = .{
+                "libnss3.so",
+                "libgtk-3.so.0",
+                "libgbm.so.1",
+                "libcups.so.2",
+                "libatk-1.0.so.0",
+                "libdrm.so.2",
+            } },
+        } },
+    } },
+    .apply = .{
+        .{ .env_prepend = .{
+            .name = "LD_LIBRARY_PATH",
+            .from_resource = "rpgm-mv-fhs-libs",
+            .relpath = "lib",
+            .sep = ":",
+        } },
+        // Force GTK to use the X11 backend. nwjs's bundled Chromium
+        // either lacks Wayland support outright (old nwjs / Chrome <
+        // 96) or fails on the Wayland init with newer XDG portal
+        // protocols. X11 via XWayland works on every compositor.
+        // Mirrors what `fix-linux-games.sh` does in its launcher.
+        .{ .env_set = .{
+            .name = "GDK_BACKEND",
+            .value = "x11",
+        } },
+    },
+    .required_resources = .{ "rpgm-mv-fhs-libs" },
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Enable `programs.nix-ld.enable = true;` and add nss/gtk3/at-spi/libdrm/cups to `programs.nix-ld.libraries`. Alternatively wrap launches in `steam-run`." },
+        .{ .via = "pacman", .command = "Should not trigger on Arch — file an issue if it does." },
+        .{ .via = "apt",    .command = "Install `libnss3 libgtk-3-0 libgbm1 libdrm2 libcups2 libatk1.0-0` if you see this on Debian/Ubuntu." },
+        .{ .via = "dnf",    .command = "Install `nss gtk3 libgbm libdrm cups-libs atk` if you see this on Fedora." },
+    },
+}

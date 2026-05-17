@@ -21,10 +21,17 @@ pub fn build(b: *std.Build) void {
 
     const config_mod = mod(b, "config", "src/config.zig", target, optimize);
 
+    // Build-time options surface — version string read from build.zig.zon
+    // is currently the only entry. UI's Diagnostics screen imports this
+    // to show "f69 vX.Y.Z" so bug reports identify the build.
+    const app_version: []const u8 = "0.9.0";
+    const build_opts = b.addOptions();
+    build_opts.addOption([]const u8, "version", app_version);
+    const build_opts_mod = build_opts.createModule();
+
     // ----- util modules -----
 
     const util_paths_mod = mod(b, "util_paths", "src/util/paths.zig", target, optimize);
-    const util_secret_mod = mod(b, "util_secret", "src/util/secret.zig", target, optimize);
     const util_kahn_mod = mod(b, "util_kahn", "src/util/kahn.zig", target, optimize);
     // zqlite (karlseguin/zqlite.zig) bundles a static sqlite3 — no system
     // sqlite3 dependency needed. Module name in dvui's pkg cache: "zqlite".
@@ -35,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const util_snapshot_mod = mod(b, "util_snapshot", "src/util/snapshot.zig", target, optimize);
     const util_crash_mod = mod(b, "util_crash", "src/util/crash.zig", target, optimize);
     const util_version_mod = mod(b, "util_version", "src/util/version.zig", target, optimize);
+    const util_renpy_mod = mod(b, "util_renpy", "src/util/renpy.zig", target, optimize);
 
     // util_archive: thin Zig wrapper around libarchive's read API.
     // Used by downloads/archive.zig for the formats stdlib doesn't
@@ -121,7 +129,6 @@ pub fn build(b: *std.Build) void {
     resolver_mod.addImport("util_version", util_version_mod);
 
     const f95_mod_ = mod(b, "f95", "src/f95/f95.zig", target, optimize);
-    f95_mod_.addImport("util_secret", util_secret_mod);
 
     // Image decoding context. Wraps libavif so the sync worker can
     // transcode F95Zone CDN's AVIF screenshots to RGBA and re-encode
@@ -156,8 +163,11 @@ pub fn build(b: *std.Build) void {
     importers_mod.addImport("util_db", util_db_mod);
 
     const convert_mod = mod(b, "convert", "src/convert/convert.zig", target, optimize);
+    convert_mod.addImport("util_renpy", util_renpy_mod);
 
     const compat_mod = mod(b, "compat", "src/compat/compat.zig", target, optimize);
+    compat_mod.addImport("util_version", util_version_mod);
+    compat_mod.addImport("util_renpy", util_renpy_mod);
 
     const sandbox_mod = mod(b, "sandbox", "src/sandbox/sandbox.zig", target, optimize);
     sandbox_mod.addImport("library", library_mod);
@@ -180,6 +190,7 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("image", image_mod);
     ui_mod.addImport("util_version", util_version_mod);
     ui_mod.addImport("util_file_picker", file_picker_mod);
+    ui_mod.addImport("build_options", build_opts_mod);
 
     // ----- executable -----
     //
@@ -242,7 +253,10 @@ pub fn build(b: *std.Build) void {
     // bundle — the runtime detector still fires, the apply step
     // then reports `ResourceNotMaterialized` instead of silently
     // doing the wrong thing.
-    installCompatResource(b, "renpy-fhs-libs", "F69_COMPAT_RENPY_FHS_LIBS");
+    installCompatResource(b, "renpy7-fhs-libs", "F69_COMPAT_RENPY7_FHS_LIBS");
+    installCompatResource(b, "renpy8-fhs-libs", "F69_COMPAT_RENPY8_FHS_LIBS");
+    installCompatResource(b, "rpgm-mv-fhs-libs", "F69_COMPAT_RPGM_MV_FHS_LIBS");
+    installCompatResource(b, "unity-fhs-libs", "F69_COMPAT_UNITY_FHS_LIBS");
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -319,8 +333,9 @@ pub fn build(b: *std.Build) void {
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
         server_mod,        ui_mod,            config_mod,      image_mod,
         importers_mod,     compat_mod,
-        util_paths_mod,    util_secret_mod,   util_kahn_mod,   util_db_mod,
+        util_paths_mod,    util_kahn_mod,     util_db_mod,
         util_spsc_mod,     util_snapshot_mod, util_crash_mod,  util_version_mod,
+        util_renpy_mod,
         file_picker_mod,   util_archive_mod,
     };
     const test_step = b.step("test", "Run unit tests");

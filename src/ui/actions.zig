@@ -407,42 +407,32 @@ fn syncWorker(job: *SyncJob) void {
         job.alloc.free(scraped.download_links);
     }
 
-    // Image-fetch gate. F95 OPs almost never gain or lose images
-    // after the initial post, so re-fetching every sync is wasteful
-    // (each image ≥ 1.5s through the rate limiter). Skip the entire
-    // image-fetch block when the on-disk state already matches the
-    // scrape: cover file present AND `<tid>.s1` … `<tid>.s<N>` all
-    // present AND `<tid>.s<N+1>` absent. Any mismatch falls through
-    // to the full fetch.
+    // Phase-1 work in this worker is intentionally minimal: text +
+    // cover only. Screenshots are deferred to a background image
+    // worker (see ImageJob / drainImageQueue) so the library row
+    // becomes usable as soon as the cover + metadata commit. The
+    // image-fetch phase used to dominate wall time (≥1.5s per shot
+    // through the rate limiter) and blocked the row from showing
+    // until the very last screenshot landed.
     const want_cover = scraped.cover_url != null;
-    const want_count: usize = scraped.screenshots.len;
-    const images_up_to_date = imagesAlreadyFetched(
-        job.io,
-        job.covers_dir,
-        job.thread_id,
-        want_cover,
-        want_count,
-    );
+    var cover_path_buf: [256]u8 = undefined;
+    const cover_present = if (want_cover) blk: {
+        const cp = std.fmt.bufPrint(&cover_path_buf, "{s}/{d}", .{ job.covers_dir, job.thread_id }) catch break :blk false;
+        break :blk fileExists(job.io, cp);
+    } else true;
 
     const t_before_images = nowMs(job.io);
-    if (images_up_to_date) {
-        log.info(
-            "sync tid={d} images_cached cover_planned={any} shots={d}",
-            .{ job.thread_id, want_cover, want_count },
-        );
-        // Cached fast-path: leave `progress_total` at its initial 1
-        // so the banner's "step k/N" sub-label never renders for this
-        // game. Previously we set total=N on entry and then bumped
-        // done=N here — that one-frame appearance + disappearance is
-        // what made the banner flicker when ripping through a queue
-        // of already-cached games.
-        // Cover URL was duped by the scraper; we owe it a free.
+    if (!want_cover or cover_present) {
+        // Nothing to fetch in this worker. Leave `progress_total` at
+        // its initial 1 so the banner's sub-progress doesn't flicker.
         if (scraped.cover_url) |cu| job.alloc.free(cu);
+        log.info(
+            "sync tid={d} cover_cached={any} shots_deferred={d}",
+            .{ job.thread_id, want_cover and cover_present, scraped.screenshots.len },
+        );
     } else {
-        // Image work coming up — publish the planned step count now
-        // so the banner's sub-progress can render.
-        const total_steps: u32 = 1 + (if (want_cover) @as(u32, 1) else 0) + @as(u32, @intCast(want_count));
-        job.progress_total.store(total_steps, .release);
+        // Cover work coming up — publish the planned step count.
+        job.progress_total.store(2, .release);
         job.progress_done.store(1, .release);
         dvui.refresh(job.win, @src(), null);
         if (scraped.cover_url) |cu| {
@@ -457,28 +447,6 @@ fn syncWorker(job: *SyncJob) void {
                 } else |_| {
                     log.info("sync tid={d} cover FAIL elapsed_ms={d}", .{ job.thread_id, nowMs(job.io) - t_c0 });
                 }
-                _ = job.progress_done.fetchAdd(1, .release);
-                dvui.refresh(job.win, @src(), null);
-            }
-        }
-
-        // Fetch each screenshot to disk under `<covers_dir>/<tid>.s<n>`.
-        // Each GET is rate-limited via f95.Client. Cancel between
-        // screenshots so a long batch is interruptible.
-        if (scraped.screenshots.len > 0) {
-            for (scraped.screenshots, 0..) |sshot_url, idx| {
-                if (job.cancel.load(.acquire)) {
-                    log.info("sync tid={d} cancelled at screenshot {d}", .{ job.thread_id, idx + 1 });
-                    break;
-                }
-                const t_s0 = nowMs(job.io);
-                fetchAndWriteScreenshot(job, sshot_url, idx + 1) catch |e| {
-                    std.log.scoped(.ui_actions).warn(
-                        "screenshot {d} fetch failed: {s}",
-                        .{ idx + 1, @errorName(e) },
-                    );
-                };
-                log.info("sync tid={d} shot[{d}]_ms={d}", .{ job.thread_id, idx + 1, nowMs(job.io) - t_s0 });
                 _ = job.progress_done.fetchAdd(1, .release);
                 dvui.refresh(job.win, @src(), null);
             }
@@ -1117,6 +1085,15 @@ pub fn drainSync(frame: *Frame) void {
         std.fmt.bufPrint(&msgbuf, "synced: \xE2\x98\x85 {?d:.2} ({?d} votes)", .{ game.rating, game.vote_count }) catch "synced";
     state.setSyncMsg(m);
 
+    // Phase 2: hand the just-scraped screenshot list to the background
+    // image worker so the row is fully populated in the background.
+    // game.screenshots is library-owned and stable; the enqueue copy
+    // happens lazily on spawn (drainImageQueue dupes for the worker).
+    // Idempotent — `enqueueImageFetch` no-ops on dupes.
+    if (game.screenshots.len > 0) {
+        enqueueImageFetch(frame, game.f95_thread_id, game.screenshots.len);
+    }
+
     cleanup(job, state);
     // If a batch is in flight, kick off the next item.
     if (state.sync_queue != null) advanceSyncQueue(frame);
@@ -1602,6 +1579,9 @@ pub fn cancelAllWorkers(state: *types.State) void {
         const j: *SyncJob = @ptrCast(@alignCast(opaque_job));
         j.cancel.store(true, .release);
     }
+    // Phase-2 image worker: shared cancel flag covers both the active
+    // job and any tids still queued.
+    state.image_cancel.store(true, .release);
     if (state.pending_bookmarks) |opaque_job| {
         const j: *BookmarksJob = @ptrCast(@alignCast(opaque_job));
         j.cancel.store(true, .release);
@@ -1619,6 +1599,8 @@ pub fn cancelAllWorkers(state: *types.State) void {
 /// everything clears.
 pub fn workersBusy(state: *const types.State) bool {
     if (state.pending_sync != null) return true;
+    if (state.image_active != null) return true;
+    if (state.image_queue != null and state.image_queue_head < state.image_queue_len) return true;
     if (state.pending_bookmarks != null) return true;
     if (state.pending_update_check != null) return true;
     if (state.pending_rpdl_download != null) return true;
@@ -2558,6 +2540,18 @@ pub fn cancelSync(frame: *Frame) void {
         state.sync_queue_started = 0;
         state.sync_queue_total = 0;
     }
+    // Phase-2 piggybacks: cancelling a sync drops queued image work
+    // too. `drainImageQueue` reaps the active job, clears the queue,
+    // and resets `image_cancel` to false once everything's torn down.
+    state.image_cancel.store(true, .release);
+}
+
+/// Cancel ONLY the phase-2 image fetch queue. Leaves any in-flight
+/// sync alone — used by the dedicated "Cancel images" banner button
+/// that shows after phase-1 has wrapped up.
+pub fn cancelImageQueue(frame: *Frame) void {
+    frame.state.image_cancel.store(true, .release);
+    log.info("cancelImageQueue: flag set", .{});
 }
 
 /// Pop the next thread_id off the queue and spawn its SyncJob. Frees
@@ -2600,6 +2594,356 @@ pub fn advanceSyncQueue(frame: *Frame) void {
         return;
     };
     syncGame(frame, game);
+}
+
+// ============================================================
+//  phase-2: background screenshot fetch
+// ============================================================
+//
+// Why this exists: phase-1 (`syncWorker`) used to fetch the cover AND
+// every screenshot serially before marking the row .done. Each image
+// is rate-limited at ≥1.5s through `f95.Client`, so a popular OP with
+// 20 screenshots blocked the row from showing for ~30s, and a sync-
+// all of 1500 games was effectively unusable.
+//
+// Phase-2 splits the work: as soon as phase-1 commits text+cover
+// (`applyScrape`), `drainSync` enqueues the tid here. A single
+// background worker walks the FIFO, refetching only the screenshots
+// the OP advertises. The library is fully usable in the meantime —
+// the detail page already lazy-loads screenshots from disk and
+// renders placeholders for missing slides.
+//
+// Concurrency: ONE image job in flight at a time. The rate limiter
+// serializes per-host requests anyway, so parallel workers would just
+// queue behind each other. Single-worker means simpler state.
+
+const ImageJobPhase = enum(u8) { pending, done };
+
+pub const ImageJob = struct {
+    phase: std.atomic.Value(u8),
+    thread_id: u64,
+    /// Screenshot URLs to fetch in order, mapped to `.s1` .. `.sN`.
+    /// Outer slice + each inner string job.alloc-owned.
+    urls: []const []const u8,
+    /// Display name (for the banner row). job.alloc-owned; may be "".
+    name: []const u8,
+    /// Per-job counter for the "X/Y" sub-progress. Worker increments;
+    /// drainImageQueue tears down when phase == done.
+    progress_done: std.atomic.Value(u32) = .init(0),
+    progress_total: u32 = 0,
+    thr: std.Thread,
+    alloc: std.mem.Allocator,
+    f95_svc: *f95.Service,
+    win: *dvui.Window,
+    covers_dir: []u8,
+    io: std.Io,
+    /// Points into `state.image_cancel` so a single Cancel click
+    /// aborts the active job AND prevents further pops from the queue.
+    cancel: *std.atomic.Value(bool),
+    /// Points into `state.image_done` — worker bumps after each
+    /// fetched (or skipped-because-already-on-disk) screenshot, so
+    /// the banner shows aggregate progress across the whole batch
+    /// instead of just the current job.
+    aggregate_done: *std.atomic.Value(u32),
+};
+
+fn imageWorker(job: *ImageJob) void {
+    const t_start = nowMs(job.io);
+    var ok: u32 = 0;
+    var fail: u32 = 0;
+    var skipped: u32 = 0;
+    defer log.info(
+        "imgworker tid={d} TOTAL_ms={d} ok={d} fail={d} skipped={d}",
+        .{ job.thread_id, nowMs(job.io) - t_start, ok, fail, skipped },
+    );
+
+    for (job.urls, 0..) |url, idx| {
+        if (job.cancel.load(.acquire)) {
+            log.info("imgworker tid={d} cancelled at shot {d}", .{ job.thread_id, idx + 1 });
+            break;
+        }
+
+        // Skip when the file is already on disk — re-running sync over
+        // a partially-fetched tid should not re-download what we have.
+        var path_buf: [256]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ job.covers_dir, job.thread_id, idx + 1 }) catch {
+            fail += 1;
+            _ = job.aggregate_done.fetchAdd(1, .release);
+            _ = job.progress_done.fetchAdd(1, .release);
+            dvui.refresh(job.win, @src(), null);
+            continue;
+        };
+        if (fileExists(job.io, path)) {
+            skipped += 1;
+            _ = job.aggregate_done.fetchAdd(1, .release);
+            _ = job.progress_done.fetchAdd(1, .release);
+            dvui.refresh(job.win, @src(), null);
+            continue;
+        }
+
+        const t_s0 = nowMs(job.io);
+        // Reuse phase-1's helper. It writes `<covers>/<tid>.s<idx>`
+        // atomically + a thumb beside it; identical layout to before
+        // the phase split, so detail-page slide loads keep working.
+        fetchAndWriteScreenshotForImage(job, url, idx + 1) catch |e| {
+            std.log.scoped(.ui_actions).warn(
+                "phase2 screenshot {d} fetch failed: {s}",
+                .{ idx + 1, @errorName(e) },
+            );
+            fail += 1;
+            _ = job.aggregate_done.fetchAdd(1, .release);
+            _ = job.progress_done.fetchAdd(1, .release);
+            dvui.refresh(job.win, @src(), null);
+            continue;
+        };
+        log.info("imgworker tid={d} shot[{d}]_ms={d}", .{ job.thread_id, idx + 1, nowMs(job.io) - t_s0 });
+        ok += 1;
+        _ = job.aggregate_done.fetchAdd(1, .release);
+        _ = job.progress_done.fetchAdd(1, .release);
+        dvui.refresh(job.win, @src(), null);
+    }
+
+    job.phase.store(@intFromEnum(ImageJobPhase.done), .release);
+    dvui.refresh(job.win, @src(), null);
+}
+
+/// Thin wrapper to call `fetchAndWriteScreenshot` from an `ImageJob`
+/// (which doesn't carry a `SyncJob`). Same byte format on disk so
+/// slide-cache reads work unchanged.
+fn fetchAndWriteScreenshotForImage(job: *ImageJob, url: []const u8, idx: usize) !void {
+    const raw = try job.f95_svc.client.getImage(url);
+    defer job.alloc.free(raw);
+    const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
+        std.log.scoped(.ui_actions).warn("phase2 screenshot {d} transcode failed ({s}): {s}", .{ idx, @errorName(e), url });
+        return e;
+    };
+    defer job.alloc.free(ready);
+
+    var path_buf: [256]u8 = undefined;
+    const path = try screenshotPath(&path_buf, job.covers_dir, job.thread_id, idx);
+    try writeAtomic(job.io, path, ready);
+
+    writeThumbBeside(job.alloc, job.io, path, ready) catch |e| {
+        std.log.scoped(.ui_actions).warn("phase2 screenshot thumb gen failed: {s}", .{@errorName(e)});
+    };
+}
+
+/// Enqueue a tid for phase-2 screenshot fetch. UI-thread only; called
+/// from `drainSync` after `applyScrape` succeeds. Idempotent: a tid
+/// already pending is left alone (the worker reads URLs from the
+/// current Library row anyway, so a duplicate enqueue would just
+/// fetch the same thing twice). Grows the queue geometrically.
+pub fn enqueueImageFetch(frame: *Frame, thread_id: u64, planned_urls: usize) void {
+    const state = frame.state;
+    if (planned_urls == 0) return;
+
+    // Dedup: scan pending range. Cheap — sync-all batches are typically
+    // a few hundred items max and most have ~5 screenshots.
+    if (state.image_queue) |q| {
+        var i: usize = state.image_queue_head;
+        while (i < state.image_queue_len) : (i += 1) {
+            if (q[i] == thread_id) return;
+        }
+    }
+
+    // Grow when full. Start at 32 slots; double thereafter.
+    if (state.image_queue == null or state.image_queue_len == state.image_queue_cap) {
+        const new_cap: usize = if (state.image_queue_cap == 0) 32 else state.image_queue_cap * 2;
+        const new_buf = frame.lib.alloc.alloc(u64, new_cap) catch {
+            log.warn("enqueueImageFetch: queue alloc failed for tid={d}", .{thread_id});
+            return;
+        };
+        if (state.image_queue) |old| {
+            @memcpy(new_buf[0..state.image_queue_len], old[0..state.image_queue_len]);
+            frame.lib.alloc.free(old);
+        }
+        state.image_queue = new_buf;
+        state.image_queue_cap = new_cap;
+    }
+    state.image_queue.?[state.image_queue_len] = thread_id;
+    state.image_queue_len += 1;
+    state.image_total += @intCast(planned_urls);
+    log.info("enqueueImageFetch tid={d} urls={d} queue_len={d} total={d}", .{ thread_id, planned_urls, state.image_queue_len - state.image_queue_head, state.image_total });
+}
+
+/// Per-frame: spawn the next image job when idle, and tear down a
+/// completed one. Mirrors `drainSync`'s shape. Safe to call every
+/// frame even when no work is pending.
+pub fn drainImageQueue(frame: *Frame) void {
+    const state = frame.state;
+
+    // Reap a finished job first so we can chain into the next.
+    if (state.image_active) |opaque_job| {
+        const job: *ImageJob = @ptrCast(@alignCast(opaque_job));
+        const phase: ImageJobPhase = @enumFromInt(job.phase.load(.acquire));
+        if (phase == .done) {
+            // Worker is exiting — detach so the OS reaps the thread.
+            // (Already detached at spawn; nothing to join.)
+            log.info("drainImageQueue: tid={d} job done", .{job.thread_id});
+
+            // If the user is on the detail page for this tid, dump the
+            // slide / thumb caches so the freshly-fetched bytes show
+            // up on the next paint instead of the cached placeholders.
+            if (state.slide_cache_thread == job.thread_id) {
+                freeSlideCache(state, frame.lib.alloc);
+            }
+            if (state.thumb_cache_thread == job.thread_id) {
+                freeThumbCache(state, frame.lib.alloc);
+            }
+
+            // Free job-owned memory. `name` may be the empty literal
+            // fallback when dupe failed — skip the free in that case.
+            for (job.urls) |u| job.alloc.free(u);
+            job.alloc.free(job.urls);
+            if (job.name.len > 0) job.alloc.free(job.name);
+            job.alloc.free(job.covers_dir);
+            job.alloc.destroy(job);
+            state.image_active = null;
+            state.image_active_name_len = 0;
+        } else {
+            // Still running — wait for next frame.
+            return;
+        }
+    }
+
+    // If the user cancelled, drop the rest of the queue NOW (after the
+    // active job has been reaped) and reset counters/cancel flag.
+    if (state.image_cancel.load(.acquire)) {
+        if (state.image_queue) |q| {
+            frame.lib.alloc.free(q);
+            state.image_queue = null;
+            state.image_queue_cap = 0;
+        }
+        state.image_queue_head = 0;
+        state.image_queue_len = 0;
+        state.image_total = 0;
+        state.image_done.store(0, .release);
+        state.image_cancel.store(false, .release);
+        log.info("drainImageQueue: cancelled, queue cleared", .{});
+        return;
+    }
+
+    // Pop next pending tid.
+    if (state.image_queue == null) return;
+    if (state.image_queue_head >= state.image_queue_len) {
+        // Drained. Free buffer, reset counters so the banner row
+        // disappears on the next frame.
+        frame.lib.alloc.free(state.image_queue.?);
+        state.image_queue = null;
+        state.image_queue_head = 0;
+        state.image_queue_len = 0;
+        state.image_queue_cap = 0;
+        state.image_total = 0;
+        state.image_done.store(0, .release);
+        log.info("drainImageQueue: batch complete", .{});
+        return;
+    }
+
+    const tid = state.image_queue.?[state.image_queue_head];
+    state.image_queue_head += 1;
+
+    // Look up the game row to read its screenshot URL list.
+    var target: ?*const library.Game = null;
+    for (frame.games) |*gg| {
+        if (gg.f95_thread_id == tid) {
+            target = gg;
+            break;
+        }
+    }
+    const game = target orelse {
+        log.info("drainImageQueue: tid={d} not in games list, skipping", .{tid});
+        return;
+    };
+
+    const urls_src = game.screenshots;
+    if (urls_src.len == 0) {
+        // No screenshots advertised — nothing to fetch. Skip cleanly;
+        // we already charged `image_total` for this tid at enqueue
+        // time. (We over-charged; subtract back so the bar stays
+        // honest. enqueueImageFetch returned early when urls==0, so
+        // this only triggers if the DB lost shots between enqueue and
+        // drain — exotic but worth handling.)
+        log.info("drainImageQueue: tid={d} has 0 screenshots, skipping", .{tid});
+        return;
+    }
+
+    // Spawn the worker. URLs + name + covers_dir all live on the job's
+    // allocator (lib.alloc) so the heap stays single-source.
+    const job = frame.lib.alloc.create(ImageJob) catch {
+        log.warn("drainImageQueue: ImageJob alloc failed for tid={d}", .{tid});
+        return;
+    };
+    var alloc_failed = false;
+    const urls_dup = blk: {
+        const outer = frame.lib.alloc.alloc([]const u8, urls_src.len) catch {
+            alloc_failed = true;
+            break :blk @as([]const []const u8, &.{});
+        };
+        var n: usize = 0;
+        for (urls_src) |u| {
+            const dup = frame.lib.alloc.dupe(u8, u) catch {
+                alloc_failed = true;
+                break;
+            };
+            outer[n] = dup;
+            n += 1;
+        }
+        if (alloc_failed) {
+            for (outer[0..n]) |u| frame.lib.alloc.free(u);
+            frame.lib.alloc.free(outer);
+            break :blk @as([]const []const u8, &.{});
+        }
+        break :blk @as([]const []const u8, outer);
+    };
+    if (alloc_failed) {
+        frame.lib.alloc.destroy(job);
+        log.warn("drainImageQueue: URL dup failed for tid={d}", .{tid});
+        return;
+    }
+    const name_dup = frame.lib.alloc.dupe(u8, game.name) catch "";
+    const covers_dup = frame.lib.alloc.dupe(u8, frame.info.covers_dir) catch {
+        for (urls_dup) |u| frame.lib.alloc.free(u);
+        frame.lib.alloc.free(@constCast(urls_dup));
+        if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
+        frame.lib.alloc.destroy(job);
+        log.warn("drainImageQueue: covers_dir dup failed for tid={d}", .{tid});
+        return;
+    };
+
+    job.* = .{
+        .phase = .init(@intFromEnum(ImageJobPhase.pending)),
+        .thread_id = tid,
+        .urls = urls_dup,
+        .name = name_dup,
+        .progress_done = .init(0),
+        .progress_total = @intCast(urls_dup.len),
+        .thr = undefined,
+        .alloc = frame.lib.alloc,
+        .f95_svc = frame.f95_svc,
+        .win = frame.win,
+        .covers_dir = covers_dup,
+        .io = frame.io,
+        .cancel = &state.image_cancel,
+        .aggregate_done = &state.image_done,
+    };
+
+    state.image_active = job;
+    state.setCurrentImageName(name_dup);
+
+    job.thr = std.Thread.spawn(.{}, imageWorker, .{job}) catch {
+        log.warn("drainImageQueue: thread spawn failed for tid={d}", .{tid});
+        // Roll back the job allocation so we don't leak.
+        for (urls_dup) |u| frame.lib.alloc.free(u);
+        frame.lib.alloc.free(@constCast(urls_dup));
+        if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
+        frame.lib.alloc.free(covers_dup);
+        frame.lib.alloc.destroy(job);
+        state.image_active = null;
+        state.image_active_name_len = 0;
+        return;
+    };
+    job.thr.detach();
+    log.info("drainImageQueue: spawned tid={d} urls={d}", .{ tid, urls_dup.len });
 }
 
 // ============================================================
@@ -3139,7 +3483,7 @@ pub const BookmarksJob = struct {
     err_name: ?[]const u8 = null,
     thr: std.Thread,
 
-    // ---- live-insert staging (Round 43 / item 6) ----
+    // ---- live-insert staging ----
     //
     // The worker's `on_page` callback dupes each page's entries here
     // under `staged_mu`. The UI thread's `drainBookmarks` pulls the
@@ -3704,8 +4048,8 @@ pub fn doDownloadGame(frame: *Frame, game: *const library.Game) void {
         return;
     }
 
-    // Start the fallback chain at source index 0 (Round 27 wires the
-    // .failed observer that bumps this on each mirror failure).
+    // Start the fallback chain at source index 0; the `.failed`
+    // observer bumps this on each mirror failure.
     resetAttempt(frame, game.f95_thread_id);
     const src = parsed.recipe.sources[0];
 
@@ -4924,6 +5268,12 @@ pub fn drainModJobs(frame: *Frame) void {
         state.pushToast(toast_kind, msg);
     }
 
+    // Any terminal mod-job transition (install / uninstall, success or
+    // failure) may have mutated the install tracker — drop the
+    // mods-page render cache so the next frame reads fresh installed/
+    // load_index state.
+    if (toast_n > 0) freeModsPageCacheState(state, frame.lib.alloc);
+
     frame.mod_jobs.drainFinished();
 }
 
@@ -5281,6 +5631,249 @@ pub fn freeModfileCacheState(state: *State, alloc: std.mem.Allocator) void {
         state.modfile_cache = null;
         state.modfile_cache_thread = null;
     }
+    // The mods-page cache piggybacks on the modfile cache's lifetime:
+    // every mutating action that calls `refreshModfileCache` /
+    // `dropModfileCache` already invalidates this too. Free here so
+    // shutdown paths don't leak the parsed-recipe arenas.
+    freeModsPageCacheState(state, alloc);
+}
+
+// ----- Mods page render-data cache -----
+// Built once per (thread_id, install_id) and reused across frames
+// until a mutating action drops it. Lets the mouse-move-driven
+// rerenders skip the full recipes-dir scan + per-mod tracker load.
+
+pub const ModsTabCounts = struct {
+    installed: usize = 0,
+    ready: usize = 0,
+    needs_archive: usize = 0,
+    needs_recipe: usize = 0,
+};
+
+pub const ModsPageCache = struct {
+    /// nullable: null when no `.game.zon` exists for this thread_id.
+    game_parsed: ?recipe.ParsedGame,
+    /// Parsed mod recipes targeting `game_parsed.recipe.id`. Empty
+    /// when `game_parsed == null` or there genuinely are none.
+    mods: []recipe.ParsedMod,
+    /// Pre-computed counters for the four tab labels.
+    counts: ModsTabCounts,
+    /// Parallel to `mods` — each flag answers the same predicates
+    /// the row renderer asks (`have_archive`, `installed`,
+    /// `load_index` from the resolver). Owned by `alloc`.
+    have_archive: []bool,
+    archive_paths: []?[]u8,
+    installed: []bool,
+    load_index: []?u32,
+    alloc: std.mem.Allocator,
+};
+
+fn castModsPageCache(p: *anyopaque) *ModsPageCache {
+    return @ptrCast(@alignCast(p));
+}
+
+pub fn dropModsPageCache(frame: *Frame) void {
+    freeModsPageCacheState(frame.state, frame.lib.alloc);
+}
+
+pub fn freeModsPageCacheState(state: *State, alloc: std.mem.Allocator) void {
+    if (state.mods_page_cache) |p| {
+        const c = castModsPageCache(p);
+        // Recipe arenas + duped strings.
+        if (c.game_parsed) |*gp| gp.deinit();
+        for (c.mods) |*pm| pm.deinit();
+        if (c.mods.len > 0) alloc.free(c.mods);
+        // Parallel arrays — archive_paths owns its strings.
+        for (c.archive_paths) |maybe_p| if (maybe_p) |s| alloc.free(s);
+        if (c.archive_paths.len > 0) alloc.free(c.archive_paths);
+        if (c.have_archive.len > 0) alloc.free(c.have_archive);
+        if (c.installed.len > 0) alloc.free(c.installed);
+        if (c.load_index.len > 0) alloc.free(c.load_index);
+        alloc.destroy(c);
+        state.mods_page_cache = null;
+        state.mods_page_cache_thread = null;
+        state.mods_page_cache_install_id_len = 0;
+    }
+}
+
+/// Build (or rebuild) the mods page cache for `(game, current install)`.
+/// Always returns a valid pointer — on disk-iter errors it falls back
+/// to an empty cache (counts.needs_recipe still counts orphan archives,
+/// which are read from the already-cached modfile list).
+pub fn modsPageCache(frame: *Frame, game: *const library.Game) *ModsPageCache {
+    const state = frame.state;
+    const alloc = frame.lib.alloc;
+
+    // Resolve current install (used as cache key + for installed/load_index).
+    const install_opt = resolveModsPageInstall(frame, game.f95_thread_id);
+    defer if (install_opt) |i| frame.lib.freeInstall(i);
+    const install_id_slice: []const u8 = if (install_opt) |i| i.id[0..] else &[_]u8{};
+
+    // Cache hit check: same thread + same install id.
+    if (state.mods_page_cache) |p| {
+        const cached = castModsPageCache(p);
+        const same_thread = (state.mods_page_cache_thread orelse 0) == game.f95_thread_id and
+            state.mods_page_cache_thread != null;
+        const cached_install = state.mods_page_cache_install_id_buf[0..state.mods_page_cache_install_id_len];
+        if (same_thread and std.mem.eql(u8, cached_install, install_id_slice)) {
+            return cached;
+        }
+        // Different game / install — drop and rebuild.
+        freeModsPageCacheState(state, alloc);
+    }
+
+    const cache = alloc.create(ModsPageCache) catch return makeEmptyModsPageCache(state, alloc);
+    cache.* = .{
+        .game_parsed = null,
+        .mods = &.{},
+        .counts = .{},
+        .have_archive = &.{},
+        .archive_paths = &.{},
+        .installed = &.{},
+        .load_index = &.{},
+        .alloc = alloc,
+    };
+
+    // Orphan archive count is recipe-independent — read from the
+    // (already-cached) modfile list.
+    const modfiles = modfilesForGame(frame, game);
+    for (modfiles) |m| {
+        if (m.recipe_ids.len == 0) cache.counts.needs_recipe += 1;
+    }
+
+    // Load game recipe + mod recipes.
+    cache.game_parsed = frame.recipe_repo.findGameByThread(game.f95_thread_id) catch null;
+    if (cache.game_parsed) |gp| {
+        cache.mods = frame.recipe_repo.listModsForGame(gp.recipe.id) catch blk: {
+            const empty: []recipe.ParsedMod = &.{};
+            break :blk empty;
+        };
+
+        if (cache.mods.len > 0) {
+            cache.have_archive = alloc.alloc(bool, cache.mods.len) catch &.{};
+            cache.archive_paths = alloc.alloc(?[]u8, cache.mods.len) catch &.{};
+            cache.installed = alloc.alloc(bool, cache.mods.len) catch &.{};
+            cache.load_index = alloc.alloc(?u32, cache.mods.len) catch &.{};
+            // Defaults — any alloc that returned `&.{}` is detected by
+            // checking length; we tolerate length-mismatch downstream
+            // by treating empty arrays as "all false / null".
+            if (cache.have_archive.len == cache.mods.len) @memset(cache.have_archive, false);
+            if (cache.archive_paths.len == cache.mods.len) @memset(cache.archive_paths, null);
+            if (cache.installed.len == cache.mods.len) @memset(cache.installed, false);
+            if (cache.load_index.len == cache.mods.len) @memset(cache.load_index, null);
+
+            // Archive presence per mod (also captures path so row
+            // renderer can show it without another disk scan).
+            for (cache.mods, 0..) |*pm, i| {
+                if (findRegisteredModArchive(frame, game, &pm.recipe)) |path| {
+                    if (cache.archive_paths.len == cache.mods.len) cache.archive_paths[i] = path else alloc.free(path);
+                    if (cache.have_archive.len == cache.mods.len) cache.have_archive[i] = true;
+                }
+            }
+
+            // Install-dependent: tracker load (once) + resolver run.
+            var any_installed: bool = false;
+            if (install_opt) |install| {
+                const layout_opt = modTrackerLayout(frame.io, alloc, install.install_path) catch null;
+                defer if (layout_opt) |l| freeModTrackerLayout(alloc, l);
+                if (layout_opt) |layout| {
+                    var log_obj = installer_mod.Tracker.load(alloc, frame.io, layout.tracker_path) catch installer_mod.InstallLog{ .entries = &.{} };
+                    defer log_obj.deinit(alloc);
+                    for (log_obj.entries) |e| {
+                        if (e.mod_id.len == 0) continue;
+                        const tid = std.fmt.parseUnsigned(u64, e.mod_id, 10) catch continue;
+                        for (cache.mods, 0..) |*pm, i| {
+                            if (pm.recipe.f95_thread == tid) {
+                                if (cache.installed.len == cache.mods.len and !cache.installed[i]) {
+                                    cache.installed[i] = true;
+                                    any_installed = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (any_installed) {
+                    // Throwaway arena for resolver scratch.
+                    var arena = std.heap.ArenaAllocator.init(alloc);
+                    defer arena.deinit();
+                    const aalloc = arena.allocator();
+
+                    var requested: std.ArrayList(recipe.ModRecipe) = .empty;
+                    var available: std.ArrayList(recipe.ModRecipe) = .empty;
+                    for (cache.mods, 0..) |*pm, i| {
+                        available.append(aalloc, pm.recipe) catch {};
+                        if (cache.installed.len == cache.mods.len and cache.installed[i]) {
+                            requested.append(aalloc, pm.recipe) catch {};
+                        }
+                    }
+                    var result = resolver.solveExplained(aalloc, .{
+                        .requested = requested.items,
+                        .available = available.items,
+                        .game_version = install.version,
+                    }) catch null;
+                    if (result) |*r| {
+                        switch (r.*) {
+                            .ok => |plan| {
+                                for (plan.steps) |step| {
+                                    // Match by recipe.id back to the cache slot.
+                                    for (cache.mods, 0..) |*pm2, j| {
+                                        if (std.mem.eql(u8, pm2.recipe.id, step.mod_id)) {
+                                            if (cache.load_index.len == cache.mods.len) cache.load_index[j] = step.load_index;
+                                            break;
+                                        }
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                        r.deinit(aalloc);
+                    }
+                }
+            }
+
+            // Tab counts roll up the flags.
+            for (cache.mods, 0..) |_, i| {
+                const inst = cache.installed.len == cache.mods.len and cache.installed[i];
+                const have = cache.have_archive.len == cache.mods.len and cache.have_archive[i];
+                if (inst) {
+                    cache.counts.installed += 1;
+                } else if (have) {
+                    cache.counts.ready += 1;
+                } else {
+                    cache.counts.needs_archive += 1;
+                }
+            }
+        }
+    }
+
+    // Publish to state + remember cache keys.
+    state.mods_page_cache = cache;
+    state.mods_page_cache_thread = game.f95_thread_id;
+    const n = @min(install_id_slice.len, state.mods_page_cache_install_id_buf.len);
+    @memcpy(state.mods_page_cache_install_id_buf[0..n], install_id_slice[0..n]);
+    state.mods_page_cache_install_id_len = n;
+    return cache;
+}
+
+/// Fallback path for OOM during cache build — returns a stub cache
+/// that's harmless to render against. NOT published to state so the
+/// next frame will try to rebuild.
+fn makeEmptyModsPageCache(state: *State, alloc: std.mem.Allocator) *ModsPageCache {
+    _ = state;
+    const c = alloc.create(ModsPageCache) catch unreachable;
+    c.* = .{
+        .game_parsed = null,
+        .mods = &.{},
+        .counts = .{},
+        .have_archive = &.{},
+        .archive_paths = &.{},
+        .installed = &.{},
+        .load_index = &.{},
+        .alloc = alloc,
+    };
+    return c;
 }
 
 /// Unlink any modfile index entry whose `recipe_id` no longer points

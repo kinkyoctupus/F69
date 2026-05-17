@@ -17,101 +17,18 @@ const Io = std.Io;
 const log = std.log.scoped(.convert_renpy);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
+const util_renpy = @import("util_renpy");
 
-/// Detect the Ren'Py version that built this game. Tries the modern
-/// `renpy/vc_version.py` (Ren'Py ≥7.4 ships it) first; falls back to
-/// `renpy/__init__.py`'s `version_tuple = (...)`. Returns "X.Y.Z" — or
-/// `null` when neither file is parseable.
+/// Detect the Ren'Py version that built this game. Thin shim over
+/// `util_renpy.detectVersion` — the actual parsers live in the util
+/// module so `compat/detect.zig` can share them without taking a
+/// dependency on the (non-leaf) `convert` module.
 pub fn detectVersion(
     alloc: std.mem.Allocator,
     io: Io,
     install_dir: []const u8,
 ) errs.Error!?[]u8 {
-    // ---- vc_version.py: `version = u'7.6.1.23060707'` ----
-    {
-        var path_buf: [512]u8 = undefined;
-        const vc_path = std.fmt.bufPrint(&path_buf, "{s}/renpy/vc_version.py", .{install_dir}) catch return errs.Error.OutOfMemory;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, vc_path, alloc, .limited(64 * 1024)) catch |e| switch (e) {
-            error.FileNotFound => null,
-            else => return errs.Error.VersionDetectFailed,
-        };
-        if (content) |c| {
-            defer alloc.free(c);
-            if (parseVcVersion(c)) |raw| {
-                return takeMajMinPatch(alloc, raw) catch errs.Error.OutOfMemory;
-            }
-        }
-    }
-
-    // ---- __init__.py: `version_tuple = (7, 5, 3, vc_version)` ----
-    {
-        var path_buf: [512]u8 = undefined;
-        const init_path = std.fmt.bufPrint(&path_buf, "{s}/renpy/__init__.py", .{install_dir}) catch return errs.Error.OutOfMemory;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, init_path, alloc, .limited(256 * 1024)) catch |e| switch (e) {
-            error.FileNotFound => null,
-            else => return errs.Error.VersionDetectFailed,
-        };
-        if (content) |c| {
-            defer alloc.free(c);
-            return parseVersionTuple(alloc, c) catch errs.Error.OutOfMemory;
-        }
-    }
-
-    return null;
-}
-
-/// Pure. Parses `version = u'X.Y.Z.BUILD'` or `version = 'X.Y.Z.BUILD'`.
-/// Returns the inner literal (borrowed from `content`).
-pub fn parseVcVersion(content: []const u8) ?[]const u8 {
-    const marker_a = "version = u'";
-    const marker_b = "version = '";
-    const start_a = std.mem.indexOf(u8, content, marker_a);
-    const start_b = std.mem.indexOf(u8, content, marker_b);
-    const start, const marker_len = blk: {
-        if (start_a) |a| break :blk .{ a, marker_a.len };
-        if (start_b) |b| break :blk .{ b, marker_b.len };
-        return null;
-    };
-    const value_start = start + marker_len;
-    const end = std.mem.indexOfScalarPos(u8, content, value_start, '\'') orelse return null;
-    return content[value_start..end];
-}
-
-/// Pure. "7.6.1.23060707" → "7.6.1" (allocates). Strings shorter than
-/// 3 dot-separated parts are returned as a dup of `raw`.
-pub fn takeMajMinPatch(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var parts: [3][]const u8 = undefined;
-    var n: usize = 0;
-    var it = std.mem.splitScalar(u8, raw, '.');
-    while (it.next()) |p| : (n += 1) {
-        if (n >= 3) break;
-        parts[n] = p;
-    }
-    if (n < 3) return alloc.dupe(u8, raw);
-    return std.fmt.allocPrint(alloc, "{s}.{s}.{s}", .{ parts[0], parts[1], parts[2] });
-}
-
-/// Pure. Parses `version_tuple = (7, 5, 3, vc_version)` style.
-/// Returns allocator-owned "X.Y.Z" or null.
-pub fn parseVersionTuple(alloc: std.mem.Allocator, content: []const u8) !?[]u8 {
-    const marker = "version_tuple = (";
-    const start = std.mem.indexOf(u8, content, marker) orelse return null;
-    const open = start + marker.len;
-    const close = std.mem.indexOfScalarPos(u8, content, open, ')') orelse return null;
-    const inside = content[open..close];
-
-    var nums: [3]u32 = .{ 0, 0, 0 };
-    var n: usize = 0;
-    var it = std.mem.splitScalar(u8, inside, ',');
-    while (it.next()) |raw_part| {
-        if (n >= 3) break;
-        const t = std.mem.trim(u8, raw_part, " \t");
-        const v = std.fmt.parseInt(u32, t, 10) catch continue;
-        nums[n] = v;
-        n += 1;
-    }
-    if (n == 0) return null;
-    return try std.fmt.allocPrint(alloc, "{d}.{d}.{d}", .{ nums[0], nums[1], nums[2] });
+    return util_renpy.detectVersion(alloc, io, install_dir) catch return errs.Error.OutOfMemory;
 }
 
 // ============================================================
@@ -361,58 +278,7 @@ pub fn alreadyConverted(io: Io, install_dir: []const u8, launcher_base: []const 
 
 const testing = std.testing;
 
-test "parseVcVersion: u-prefixed" {
-    const v = parseVcVersion("# top\nversion = u'7.6.1.23060707'\nfoo = 1");
-    try testing.expect(v != null);
-    try testing.expectEqualStrings("7.6.1.23060707", v.?);
-}
-
-test "parseVcVersion: plain quotes" {
-    const v = parseVcVersion("version = '8.1.0.1234567'");
-    try testing.expect(v != null);
-    try testing.expectEqualStrings("8.1.0.1234567", v.?);
-}
-
-test "parseVcVersion: missing → null" {
-    try testing.expect(parseVcVersion("nope") == null);
-}
-
-test "takeMajMinPatch: 4 components → 3" {
-    const v = try takeMajMinPatch(testing.allocator, "7.6.1.23060707");
-    defer testing.allocator.free(v);
-    try testing.expectEqualStrings("7.6.1", v);
-}
-
-test "takeMajMinPatch: already 3" {
-    const v = try takeMajMinPatch(testing.allocator, "7.5.3");
-    defer testing.allocator.free(v);
-    try testing.expectEqualStrings("7.5.3", v);
-}
-
-test "takeMajMinPatch: less than 3 → dup of raw" {
-    const v = try takeMajMinPatch(testing.allocator, "7.5");
-    defer testing.allocator.free(v);
-    try testing.expectEqualStrings("7.5", v);
-}
-
-test "parseVersionTuple: classic" {
-    const v = try parseVersionTuple(testing.allocator, "version_tuple = (7, 5, 3, vc_version)");
-    try testing.expect(v != null);
-    defer testing.allocator.free(v.?);
-    try testing.expectEqualStrings("7.5.3", v.?);
-}
-
-test "parseVersionTuple: missing → null" {
-    const v = try parseVersionTuple(testing.allocator, "no tuple here");
-    try testing.expect(v == null);
-}
-
-test "parseVersionTuple: extra spaces tolerated" {
-    const v = try parseVersionTuple(testing.allocator, "version_tuple = (  8 ,  0 , 1 , vc)");
-    try testing.expect(v != null);
-    defer testing.allocator.free(v.?);
-    try testing.expectEqualStrings("8.0.1", v.?);
-}
+// Parser tests live in `util/renpy.zig` next to the implementations.
 
 test "renderLauncher: NixOS steam-run wrap" {
     const out = try renderLauncher(testing.allocator, "MyGame", true);

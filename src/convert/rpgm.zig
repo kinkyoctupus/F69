@@ -20,15 +20,64 @@ const syslibs = @import("syslibs.zig");
 
 /// Map Chrome major → nwjs version per https://nwjs.io/versions.json.
 /// Keep the table here; new RPGM-era games extend it.
+///
+/// Mapping ported verbatim from the field-tested `fix-linux-games.sh`
+/// — every Chrome major from 80 through 131 has a matching nwjs
+/// release on dl.nwjs.io. Stick with these exact pairings; reaching
+/// for "close enough" versions breaks games (Chromium 95 game on
+/// nwjs 0.55 boots fine, on nwjs 0.50 crashes on icudtl version
+/// skew — every Chrome major rebuilds icudtl).
 pub fn chromeToNwjs(chrome_major: u16) ?[]const u8 {
     return switch (chrome_major) {
         41 => "0.12.3",
         80 => "0.44.6",
+        85 => "0.48.4",
+        86 => "0.49.2",
+        87 => "0.50.3",
+        88 => "0.51.2",
+        89 => "0.52.2",
         90 => "0.53.1",
+        91 => "0.54.1",
+        92 => "0.55.0",
+        93 => "0.56.1",
+        94 => "0.57.1",
+        95 => "0.58.0",
+        96 => "0.59.1",
+        97 => "0.60.0",
+        98 => "0.61.1",
+        99 => "0.62.2",
         100 => "0.63.1",
+        101 => "0.64.1",
+        102 => "0.65.1",
+        103 => "0.66.1",
+        104 => "0.67.1",
+        105 => "0.68.1",
+        106 => "0.69.1",
+        107 => "0.70.1",
+        108 => "0.71.1",
+        109 => "0.72.0",
         110 => "0.73.0",
+        111 => "0.74.0",
+        112 => "0.75.0",
+        113 => "0.76.1",
+        114 => "0.77.0",
+        115 => "0.78.1",
+        116 => "0.79.1",
+        117 => "0.80.0",
+        118 => "0.81.0",
+        119 => "0.82.0",
         120 => "0.83.0",
+        121 => "0.84.0",
+        122 => "0.85.0",
+        123 => "0.86.0",
+        124 => "0.87.0",
+        125 => "0.88.0",
+        126 => "0.89.0",
+        127 => "0.90.0",
+        128 => "0.91.0",
+        129 => "0.92.0",
         130 => "0.93.0",
+        131 => "0.94.0",
         else => null,
     };
 }

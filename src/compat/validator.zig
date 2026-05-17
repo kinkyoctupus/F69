@@ -31,7 +31,14 @@ fn validateDetect(d: *const dom.Detect) errs.Error!void {
             if (list.len == 0) return errs.Error.InvalidRecipe;
             for (list) |s| if (s.len == 0) return errs.Error.InvalidRecipe;
         },
+        .host_lacks_any_soname => |list| {
+            if (list.len == 0) return errs.Error.InvalidRecipe;
+            for (list) |s| if (s.len == 0) return errs.Error.InvalidRecipe;
+        },
         .engine_fingerprint => {},
+        .engine_version_at_most, .engine_version_at_least => |b| {
+            if (b.version.len == 0) return errs.Error.InvalidRecipe;
+        },
         .all, .any => |list| {
             if (list.len == 0) return errs.Error.InvalidRecipe;
             for (list) |*child| try validateDetect(child);

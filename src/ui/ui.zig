@@ -144,15 +144,15 @@ pub fn runMainLoop(
         _ = sr_slice;
     }
 
-    // Master tag list — best-effort disk load. A missing file is
-    // expected on first run; the user clicks Refresh in Settings →
-    // Library to populate it.
-    if (f95.tags.loadFromDisk(lib.alloc, io, info.tags_master_path)) |cached| {
+    // Master tag list — disk first, embedded build-time snapshot as
+    // first-run fallback. The user's Refresh button in Settings →
+    // Library overwrites the disk copy; after that, disk always wins.
+    if (f95.tags.loadOrSeed(lib.alloc, io, info.tags_master_path)) |cached| {
         state.tags_master = cached.tags;
         state.tags_master_fetched_at = cached.fetched_at;
-        std.log.info("tags.txt: loaded {d} tags (fetched_at={d})", .{ cached.tags.len, cached.fetched_at });
+        std.log.info("tags: loaded {d} (fetched_at={d})", .{ cached.tags.len, cached.fetched_at });
     } else |e| {
-        std.log.warn("tags.txt load failed: {s}", .{@errorName(e)});
+        std.log.warn("tags load failed: {s}", .{@errorName(e)});
     }
     if (initial_rpdl_token) |t| {
         state.rpdl_token = try lib.alloc.dupe(u8, t);
@@ -258,6 +258,7 @@ pub fn runMainLoop(
             const SHUTDOWN_DRAIN_TICKS: u32 = 120; // × 50ms = 6 s
             while (actions.workersBusy(&state) and spin < SHUTDOWN_DRAIN_TICKS) : (spin += 1) {
                 actions.drainSync(&shutdown_frame);
+                actions.drainImageQueue(&shutdown_frame);
                 actions.drainBookmarks(&shutdown_frame);
                 actions.drainUpdateCheck(&shutdown_frame);
                 actions.drainPostInstall(&shutdown_frame);
@@ -317,6 +318,7 @@ pub fn runMainLoop(
 
 fn guiFrame(frame: *Frame) !bool {
     actions.drainSync(frame);
+    actions.drainImageQueue(frame);
     actions.drainBookmarks(frame);
     actions.drainUpdateCheck(frame);
     actions.drainRpdlDownload(frame);

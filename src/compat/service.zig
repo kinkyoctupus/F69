@@ -402,7 +402,7 @@ pub fn deserializeBackups(alloc: std.mem.Allocator, json_bytes: []const u8) errs
 //  is deterministic regardless of the host distro.
 // -----------------------------------------------------------------
 
-const test_recipe_id = "linux.renpy.sdl-fhs";
+const test_recipe_id = "linux.renpy7.sdl-fhs";
 
 fn touchTestFile(io: std.Io, dir: []const u8, sub: []const u8) !void {
     var p: [512]u8 = undefined;
@@ -412,13 +412,28 @@ fn touchTestFile(io: std.Io, dir: []const u8, sub: []const u8) !void {
     f.close(io);
 }
 
+/// Write a synthetic `renpy/vc_version.py` so engine_version_at_*
+/// detectors can resolve. `ver_literal` is the inner value of
+/// `version = u'…'`.
+fn writeRenpyVcVersion(io: std.Io, install_root: []const u8, ver_literal: []const u8) !void {
+    var p: [512]u8 = undefined;
+    const full = try std.fmt.bufPrint(&p, "{s}/renpy/vc_version.py", .{install_root});
+    if (std.fs.path.dirname(full)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
+    var f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+    defer f.close(io);
+    var w_buf: [256]u8 = undefined;
+    var fw = f.writer(io, &w_buf);
+    try fw.interface.print("version = u'{s}'\n", .{ver_literal});
+    try fw.interface.flush();
+}
+
 test "service scan + apply + composeEnv against synthetic Ren'Py install" {
     const ta = std.testing.allocator;
     var tio = std.Io.Threaded.init(ta, .{});
     defer tio.deinit();
     const io = tio.io();
 
-    // Lay out: <tmp>/install (renpy game), <tmp>/resources/renpy-fhs-libs/lib,
+    // Lay out: <tmp>/install (renpy game), <tmp>/resources/renpy7-fhs-libs/lib,
     // <tmp>/backups.
     var path_buf: [256]u8 = undefined;
     const tmp_root = try std.fmt.bufPrint(&path_buf, "/tmp/f69-compat-svc-scan", .{});
@@ -431,10 +446,14 @@ test "service scan + apply + composeEnv against synthetic Ren'Py install" {
     try std.Io.Dir.cwd().createDirPath(io, install_root);
     try touchTestFile(io, install_root, "renpy/bootstrap.py");
     try touchTestFile(io, install_root, "lib/linux-x86_64/libSDL2-2.0.so.0");
+    // Pin the synthetic install to Ren'Py 7 so `engine_version_at_most
+    // 7.99` in the renpy7 recipe matches (and the renpy8 recipe stays
+    // dormant).
+    try writeRenpyVcVersion(io, install_root, "7.5.3.23060707");
 
     const resources_root = try std.fmt.allocPrint(ta, "{s}/resources", .{tmp_root});
     defer ta.free(resources_root);
-    const fhs_dir = try std.fmt.allocPrint(ta, "{s}/renpy-fhs-libs/lib", .{resources_root});
+    const fhs_dir = try std.fmt.allocPrint(ta, "{s}/renpy7-fhs-libs/lib", .{resources_root});
     defer ta.free(fhs_dir);
     try std.Io.Dir.cwd().createDirPath(io, fhs_dir);
     // touch a marker file so the resolver's access() succeeds
@@ -490,14 +509,20 @@ test "service scan + apply + composeEnv against synthetic Ren'Py install" {
     try std.testing.expectEqual(@as(usize, 1), issues2.len);
     try std.testing.expectEqual(dom.IssueStatus.fixed, issues2[0].status);
 
-    // Compose env — should produce one LD_LIBRARY_PATH override.
+    // Compose env — recipe ships TWO env actions: an env_prepend for
+    // LD_LIBRARY_PATH (the FHS bundle) and an env_set for
+    // SDL_VIDEODRIVER=x11.
     var outcome = try svc.composeEnv(id_slice);
     defer outcome.deinit();
-    try std.testing.expectEqual(@as(usize, 1), outcome.env_pairs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), outcome.env_pairs.items.len);
+    // First pair is the env_prepend (recipe action order is preserved).
     try std.testing.expectEqualStrings("LD_LIBRARY_PATH", outcome.env_pairs.items[0].name);
     try std.testing.expect(outcome.env_pairs.items[0].prepend);
-    // Value should point inside our test resources dir.
-    try std.testing.expect(std.mem.indexOf(u8, outcome.env_pairs.items[0].value, "renpy-fhs-libs/lib") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.env_pairs.items[0].value, "renpy7-fhs-libs/lib") != null);
+    // Second pair is the env_set.
+    try std.testing.expectEqualStrings("SDL_VIDEODRIVER", outcome.env_pairs.items[1].name);
+    try std.testing.expect(!outcome.env_pairs.items[1].prepend);
+    try std.testing.expectEqualStrings("x11", outcome.env_pairs.items[1].value);
 }
 
 test "serialize then deserialize backups round-trips" {

@@ -8,9 +8,9 @@
 //   4. Copy hits into `<install>/lib/` so the game finds them via the
 //      launcher's `LD_LIBRARY_PATH` override.
 //
-// Single pass for Round 32; transitive deps (a libffmpeg copied in
-// might itself need other host libs) are a follow-up — re-running
-// ldd after the first round catches them.
+// Single pass only; transitive deps (a libffmpeg copied in might itself
+// need other host libs) are a follow-up — re-running ldd after the first
+// round catches them.
 //
 // NixOS games sidestep this entirely via the launcher's `steam-run`
 // wrap, so this is mostly Debian/Arch/Fedora territory.
@@ -93,10 +93,10 @@ pub fn searchPathsFor(distro: dom.Distro) []const []const u8 {
     };
 }
 
-/// Round 32: walk install dir for the main binary, run ldd, parse,
-/// resolve, copy. Best-effort. `binary_hint` is the relative path to
-/// the binary to probe (`"nw"` for RPGM, `"lib/python..."` for Ren'Py).
-/// Caller picks the hint based on engine.
+/// Walk install dir for the main binary, run ldd, parse, resolve, copy.
+/// Best-effort. `binary_hint` is the relative path to the binary to
+/// probe (`"nw"` for RPGM, `"lib/python..."` for Ren'Py). Caller picks
+/// the hint based on engine.
 pub fn bundle(
     alloc: std.mem.Allocator,
     io: Io,

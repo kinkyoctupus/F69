@@ -10,7 +10,6 @@ pub const errors = @import("errors.zig");
 pub const ScrapedThread = dom.ScrapedThread;
 pub const DownloadHost = dom.DownloadHost;
 pub const DownloadLink = dom.DownloadLink;
-pub const UpdateEntry = dom.UpdateEntry;
 pub const BookmarkEntry = dom.BookmarkEntry;
 
 pub const Client = cli.Client;

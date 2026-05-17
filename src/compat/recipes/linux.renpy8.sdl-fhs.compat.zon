@@ -1,0 +1,57 @@
+// Ren'Py 8 games on non-FHS Linux loaders. Same SDL2 dlopen failure
+// as Ren'Py 7, but Ren'Py 8 dropped GLEW (uses SDL2 directly) so
+// libGLEW.so.1.7 / libXmu / libGLU are NOT needed — and shipping
+// them anyway would just bloat LD_LIBRARY_PATH for no reason.
+//
+// Fix: prepend the resource-provided Ren'Py-8 FHS bundle to
+// LD_LIBRARY_PATH. Slimmer than the Ren'Py 7 bundle; identical apply
+// shape otherwise.
+.{
+    .id = "linux.renpy8.sdl-fhs",
+    .title = "Ren'Py 8: bundled SDL2 cannot find X11/Wayland on this host",
+    .explain =
+        \\Ren'Py 8 ships its own SDL2 which loads X11/Wayland libraries
+        \\by name at runtime. This host does not expose those libraries
+        \\through the standard dynamic-loader search path (typical on
+        \\NixOS and minimal containers). The fix prepends
+        \\LD_LIBRARY_PATH with a curated bundle of X11/Wayland/GL/audio
+        \\libraries when the game launches. Slimmer than the Ren'Py 7
+        \\fix because Ren'Py 8 dropped GLEW.
+        \\
+        \\No game files are modified. The fix can be undone at any time.
+    ,
+    .severity = .blocker,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .all = .{
+        .{ .engine_fingerprint = .renpy },
+        .{ .engine_version_at_least = .{ .engine = .renpy, .version = "8.0" } },
+        .{ .file_exists_any = .{
+            "lib/linux-x86_64/libSDL2-2.0.so.0",
+            "lib/py3-linux-x86_64/libSDL2-2.0.so.0",
+        } },
+        .{ .host_lacks_any_soname = .{
+            "libX11.so.6",
+            "libwayland-client.so.0",
+        } },
+    } },
+    .apply = .{
+        .{ .env_prepend = .{
+            .name = "LD_LIBRARY_PATH",
+            .from_resource = "renpy8-fhs-libs",
+            .relpath = "lib",
+            .sep = ":",
+        } },
+        .{ .env_set = .{
+            .name = "SDL_VIDEODRIVER",
+            .value = "x11",
+        } },
+    },
+    .required_resources = .{ "renpy8-fhs-libs" },
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Enable `programs.nix-ld.enable = true;` and add the listed X11/Wayland packages to `programs.nix-ld.libraries` in your NixOS configuration." },
+        .{ .via = "pacman", .command = "Should not trigger on Arch — file an issue if it does." },
+        .{ .via = "apt",    .command = "Should not trigger on Debian/Ubuntu — file an issue if it does." },
+        .{ .via = "dnf",    .command = "Should not trigger on Fedora — file an issue if it does." },
+    },
+}
