@@ -2511,13 +2511,11 @@ fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) b
     switch (state.filters.installed) {
         .all => {},
         .installed => {
-            if (state.installed_set == null) return false;
-            const set: *const std.AutoHashMap(u64, void) = @ptrCast(@alignCast(state.installed_set.?));
+            const set = state.installed_set orelse return false;
             if (!set.contains(g.f95_thread_id)) return false;
         },
         .not_installed => {
-            if (state.installed_set) |p| {
-                const set: *const std.AutoHashMap(u64, void) = @ptrCast(@alignCast(p));
+            if (state.installed_set) |set| {
                 if (set.contains(g.f95_thread_id)) return false;
             }
         },

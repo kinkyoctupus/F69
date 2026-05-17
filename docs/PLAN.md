@@ -862,19 +862,19 @@ I want this documented so we don't relitigate.
 
 ### Status of the refactor (2026-05-17)
 
-7 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
+8 of 11 phases shipped as separate commits (find with `git log --grep="refactor R"`):
 
 | Phase | Status | Commit | Scope |
 |---|---|---|---|
 | R1 | ✅ shipped | `c690f31` | `util/atomic_io.zig` + dead Service deleted + `util/spsc`/`util/snapshot` deleted + USER_AGENT from `build_options.version` + RPDL JSON via `std.json.Stringify` |
 | R2 | ✅ shipped | `8bbcec2` | `util/domain.zig` shared kernel (`Engine` 4× → 1×, `Distro` 2× → 1×, `Os`); compat's missing `unknown` variant is gone |
 | R3 | ✅ shipped | `1686abd` | `src/ui/buf.zig` `MessageBuf(N)`; 9 paired `_buf`+`_len` fields collapsed |
+| R4 | ✅ shipped | `36f94f9` + `c44f7ea` | `src/ui/owned.zig` — all 25 `?*anyopaque` slots on `State` retyped, **0** remain. Part 1 (`36f94f9`) covered containers + caches; part 2 (`c44f7ea`) covered jobs + modal. `@ptrCast(@alignCast)` in `actions.zig` dropped 39 → 5 (the 5 remaining are legit thread-spawn / vtable boundaries — writer ctx, BookmarksJob worker entry, RunnerCtx, mod_job_queue.Job worker entry). **R6 now unblocked.** |
 | R5 | ✅ shipped | `6f0ed4b` | `util/http.zig` + `util/proc.zig` primitives; **call-site migrations are a follow-up — 5 HTTP and 14 process-spawn sites still in their original shape** |
 | R7 | ✅ shipped | `3c94d21` | `recipe.walkSteps` Visitor primitive + `recipe/validator.zig` demo migration; simulate/apply/ui-actions switches deliberately left as-is (step-local state doesn't compose with the duck-typed visitor) |
 | R10 | ✅ shipped | `be6d7aa` | `util/setting.zig` (`readSingleLine`, `parseBool`, `loadBool`, `loadInt`, `loadFloat`); **main.zig's 15 bespoke `loadX` helpers still in place — migration is a follow-up** |
 | R11 | ✅ shipped | `ba35fa9` | `util/test_env.zig` `TestEnv` (auto-cleanup tmpdir + writeFile/touchFile/path helpers); **existing tests still use their bespoke fixtures — migration is a follow-up** |
-| R4 | ⏳ remaining | — | `src/ui/owned.zig` — kill 25+ `*anyopaque` fields + ~50 `@ptrCast(@alignCast)` sites. **Prerequisite for R6.** |
-| R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. Depends on R4. Touches every one of 12+ Job structs. |
+| R6 | ⏳ remaining | — | `Job(Payload)` template + `spawnJob` + `drainBackgroundJob` + `worker_registry`. R4 prerequisite is now in. Touches every one of 12+ Job structs (all in `owned.zig` now). |
 | R8 | ⏳ remaining | — | Split `screens.zig` (9001 LOC) into 8 per-screen files + `components.zig`. Pure organisation. |
 | R9 | ⏳ remaining | — | Split `actions.zig` (10154 LOC) into 10 per-domain files. Pure organisation. |
 
@@ -883,6 +883,7 @@ I want this documented so we don't relitigate.
 - R10: 15 `main.zig` settings (aria2_port, ui_scale, auto_check, …) should migrate to `util/setting`.
 - R11: existing tests should migrate to `util/test_env.TestEnv`.
 - R3: remaining `_buf`+`_len` pairs (err_msg in WizardBlock, aria2_port_msg / aria2_seed_ratio_msg with inline memcpy, modfile_id, for_game).
+- R4: phase enums other than `SyncJobPhase`/`ImageJobPhase` (UpdateCheckPhase, RpdlDownloadPhase, DonorDownloadPhase, RefreshTagsPhase, TestInstallPhase, ManualInstallPhase, PostInstallPhase, BookmarksJobPhase) stayed file-local in `actions.zig` — nothing reads them outside actions, so moving would be churn.
 
 **To resume in a fresh session**: read this status table first, then `git log --grep="refactor R" --oneline` to see history, then pick a remaining phase from the plan below.
 
