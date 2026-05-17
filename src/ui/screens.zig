@@ -718,8 +718,7 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
         // accepted the job. `setDownloadMsg` is overwritten by
         // `startManualInstall` either way, so we use the panel state
         // to tell which side won.
-        if (frame.state.manual_install_jobs) |opaque_ptr| {
-            const list_ptr: *const @import("actions.zig").ManualInstallJobsList = @ptrCast(@alignCast(opaque_ptr));
+        if (frame.state.manual_install_jobs) |list_ptr| {
             if (list_ptr.items.len > 0) {
                 state.resetManualInstallFields();
                 state.manual_install_open = false;
@@ -1183,8 +1182,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
     // cancel is requested, we replace the sub-step indicator with
     // a plain "cancelling…" hint so the percentage doesn't keep
     // ticking up after the user clicked Cancel.
-    if (state.pending_sync) |opaque_job| {
-        const j: *actions.SyncJob = @ptrCast(@alignCast(opaque_job));
+    if (state.pending_sync) |j| {
         const cancelling = j.cancel.load(.acquire);
         if (cancelling) {
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
@@ -1214,8 +1212,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
     // between phases — a single page fetch can stall for seconds).
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
     const sync_cancelling: bool = blk: {
-        if (state.pending_sync) |opaque_job| {
-            const j: *actions.SyncJob = @ptrCast(@alignCast(opaque_job));
+        if (state.pending_sync) |j| {
             break :blk j.cancel.load(.acquire);
         }
         break :blk false;
@@ -1494,8 +1491,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
         // between pages — a single in-flight page fetch can run for
         // several seconds, so without this the UI looks frozen.
         const cancelling: bool = blk: {
-            const opaque_job = state.pending_bookmarks orelse break :blk false;
-            const j: *actions.BookmarksJob = @ptrCast(@alignCast(opaque_job));
+            const j = state.pending_bookmarks orelse break :blk false;
             break :blk j.cancel.load(.acquire);
         };
 
@@ -6098,8 +6094,7 @@ fn renderSettingsImport(frame: *Frame) void {
 /// Banner under the import buttons while a job runs. Source name +
 /// phase + per-game progress + cancel.
 fn renderImportBanner(frame: *Frame) void {
-    const opaque_ptr = frame.state.import_job orelse return;
-    const job: *import_job_mod.Job = @ptrCast(@alignCast(opaque_ptr));
+    const job = frame.state.import_job orelse return;
 
     var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .horizontal,
