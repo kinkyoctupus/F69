@@ -19,6 +19,7 @@ const version_mod = @import("util_version");
 const dvui = @import("dvui");
 const types = @import("../types.zig");
 const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const installer_act = @import("installer.zig");
 
@@ -30,6 +31,7 @@ const DonorRetriesMap = owned_types.DonorRetriesMap;
 const DonorTickState = owned_types.DonorTickState;
 const DonorTickLog = owned_types.DonorTickLog;
 
+pub const RpdlDownloadPayload = owned_types.RpdlDownloadPayload;
 pub const RpdlDownloadJob = owned_types.RpdlDownloadJob;
 pub const DonorDownloadJob = owned_types.DonorDownloadJob;
 
@@ -43,8 +45,6 @@ pub const DonorDownloadJob = owned_types.DonorDownloadJob;
 // 2.0 from daemon-wide defaults). All network work runs on a
 // detached worker thread; `drainRpdlDownload` finishes the handoff
 // on the UI thread.
-
-const RpdlDownloadPhase = enum(u8) { pending, done, failed };
 
 /// Spawn the RPDL search → fetch worker. No-op when:
 ///   - another RPDL job is already running for any game (we
@@ -87,37 +87,27 @@ pub fn startRpdlDownload(frame: *Frame, game: *const library.Game) void {
     };
     const version_dup: ?[]u8 = if (game.latest_version) |v| (alloc.dupe(u8, v) catch null) else null;
 
-    const job = alloc.create(RpdlDownloadJob) catch {
-        log.err("startRpdlDownload: job alloc OOM", .{});
+    _ = job_mod.spawnJob(
+        RpdlDownloadPayload,
+        rpdlDownloadWorker,
+        alloc,
+        frame.win,
+        .{
+            .io = frame.io,
+            .token = token_dup,
+            .game_name = name_dup,
+            .game_version = version_dup,
+            .thread_id = game.f95_thread_id,
+        },
+        &state.pending_rpdl_download,
+    ) catch |e| {
+        log.err("startRpdlDownload: job alloc/spawn failed: {s}", .{@errorName(e)});
         alloc.free(name_dup);
         alloc.free(token_dup);
         if (version_dup) |v| alloc.free(v);
         return;
     };
-    job.* = .{
-        .phase = .init(@intFromEnum(RpdlDownloadPhase.pending)),
-        .alloc = alloc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .token = token_dup,
-        .game_name = name_dup,
-        .game_version = version_dup,
-        .thread_id = game.f95_thread_id,
-    };
-
-    job.thr = std.Thread.spawn(.{}, rpdlDownloadWorker, .{job}) catch |e| {
-        log.err("startRpdlDownload: thread spawn failed: {s}", .{@errorName(e)});
-        alloc.free(job.token);
-        alloc.free(job.game_name);
-        if (job.game_version) |v| alloc.free(v);
-        alloc.destroy(job);
-        return;
-    };
-    job.thr.detach();
     log.info("startRpdlDownload: worker thread spawned + detached", .{});
-
-    state.pending_rpdl_download = job;
     log.info("startRpdlDownload: state.pending_rpdl_download set — awaiting drain", .{});
     var msg_buf: [128]u8 = undefined;
     const m = std.fmt.bufPrint(&msg_buf, "RPDL: searching for '{s}'…", .{game.name}) catch "RPDL: searching…";
@@ -125,93 +115,99 @@ pub fn startRpdlDownload(frame: *Frame, game: *const library.Game) void {
 }
 
 fn rpdlDownloadWorker(job: *RpdlDownloadJob) void {
+    const p = &job.payload;
     const fail = struct {
         fn run(j: *RpdlDownloadJob, err: []const u8) void {
-            j.err_name = err;
-            j.phase.store(@intFromEnum(RpdlDownloadPhase.failed), .release);
-            dvui.refresh(j.win, @src(), null);
+            j.payload.err_name = err;
+            j.markFailed();
         }
     }.run;
 
-    const t_search = std.Io.Clock.Timestamp.now(job.io, .real).raw.toMilliseconds();
-    log.info("rpdl worker: tid={d} starting search for '{s}'", .{ job.thread_id, job.game_name });
-    const results = downloads.rpdl.search(job.alloc, job.io, job.game_name) catch |e| {
+    const t_search = std.Io.Clock.Timestamp.now(p.io, .real).raw.toMilliseconds();
+    log.info("rpdl worker: tid={d} starting search for '{s}'", .{ p.thread_id, p.game_name });
+    const results = downloads.rpdl.search(job.alloc, p.io, p.game_name) catch |e| {
         log.warn("rpdl search failed: {s}", .{@errorName(e)});
         fail(job, @errorName(e));
         return;
     };
     defer downloads.rpdl.freeSearchResults(job.alloc, results);
-    const t_after_search = std.Io.Clock.Timestamp.now(job.io, .real).raw.toMilliseconds();
-    log.info("rpdl worker: tid={d} search_ms={d} returned {d} result(s)", .{ job.thread_id, t_after_search - t_search, results.len });
+    const t_after_search = std.Io.Clock.Timestamp.now(p.io, .real).raw.toMilliseconds();
+    log.info("rpdl worker: tid={d} search_ms={d} returned {d} result(s)", .{ p.thread_id, t_after_search - t_search, results.len });
 
     if (results.len == 0) {
-        log.warn("rpdl worker: tid={d} no search results", .{job.thread_id});
+        log.warn("rpdl worker: tid={d} no search results", .{p.thread_id});
         fail(job, "NoMatches");
         return;
     }
 
-    const ver_opt: ?[]const u8 = if (job.game_version) |v| v else null;
-    const picked = downloads.rpdl.pickBestMatch(results, job.game_name, ver_opt) orelse {
-        log.warn("rpdl worker: tid={d} all candidates rejected (zero-seed or name mismatch)", .{job.thread_id});
+    const ver_opt: ?[]const u8 = if (p.game_version) |v| v else null;
+    const picked = downloads.rpdl.pickBestMatch(results, p.game_name, ver_opt) orelse {
+        log.warn("rpdl worker: tid={d} all candidates rejected (zero-seed or name mismatch)", .{p.thread_id});
         fail(job, "NoSeeders");
         return;
     };
 
-    job.picked_id = picked.id;
-    job.picked_title = job.alloc.dupe(u8, picked.title) catch {
+    p.picked_id = picked.id;
+    p.picked_title = job.alloc.dupe(u8, picked.title) catch {
         fail(job, "OutOfMemory");
         return;
     };
 
-    log.info("rpdl worker: tid={d} fetching .torrent for picked id={d}", .{ job.thread_id, picked.id });
-    const t_fetch = std.Io.Clock.Timestamp.now(job.io, .real).raw.toMilliseconds();
-    const bytes = downloads.rpdl.fetchTorrent(job.alloc, job.io, job.token, picked.id) catch |e| {
+    log.info("rpdl worker: tid={d} fetching .torrent for picked id={d}", .{ p.thread_id, picked.id });
+    const t_fetch = std.Io.Clock.Timestamp.now(p.io, .real).raw.toMilliseconds();
+    const bytes = downloads.rpdl.fetchTorrent(job.alloc, p.io, p.token, picked.id) catch |e| {
         log.warn("rpdl fetchTorrent failed: {s}", .{@errorName(e)});
         fail(job, @errorName(e));
         return;
     };
-    const t_done = std.Io.Clock.Timestamp.now(job.io, .real).raw.toMilliseconds();
+    const t_done = std.Io.Clock.Timestamp.now(p.io, .real).raw.toMilliseconds();
     log.info("rpdl worker: tid={d} fetched {d} torrent bytes in {d}ms (total elapsed {d}ms)", .{
-        job.thread_id, bytes.len, t_done - t_fetch, t_done - t_search,
+        p.thread_id, bytes.len, t_done - t_fetch, t_done - t_search,
     });
-    job.torrent_bytes = bytes;
-    job.phase.store(@intFromEnum(RpdlDownloadPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    p.torrent_bytes = bytes;
+    job.markDone();
 }
 
 /// Drain the RPDL search/fetch worker each frame. On done: hand the
 /// .torrent bytes to the download Manager (which spawns aria2 if
 /// needed). On failed: surface the error in `download_msg`.
 pub fn drainRpdlDownload(frame: *Frame) void {
+    job_mod.drainBackgroundJob(
+        RpdlDownloadPayload,
+        onRpdlDownloadDone,
+        onRpdlDownloadFailed,
+        frame,
+        &frame.state.pending_rpdl_download,
+    );
+}
+
+fn freeRpdlPayload(job: *RpdlDownloadJob) void {
+    const p = &job.payload;
+    job.alloc.free(p.token);
+    job.alloc.free(p.game_name);
+    if (p.game_version) |v| job.alloc.free(v);
+    if (p.picked_title) |t| job.alloc.free(t);
+    if (p.torrent_bytes) |b| job.alloc.free(b);
+}
+
+fn onRpdlDownloadFailed(frame: *Frame, job: *RpdlDownloadJob) void {
     const state = frame.state;
-    const job = state.pending_rpdl_download orelse return;
-    const phase: RpdlDownloadPhase = @enumFromInt(job.phase.load(.acquire));
-    if (phase == .pending) return;
-    log.info("drainRpdlDownload: observed phase={s} tid={d}", .{ @tagName(phase), job.thread_id });
+    const p = &job.payload;
+    defer freeRpdlPayload(job);
+    log.info("drainRpdlDownload: observed phase=failed tid={d}", .{p.thread_id});
+    var emsg: [160]u8 = undefined;
+    const m = std.fmt.bufPrint(&emsg, "RPDL: {s}", .{rpdlErrorMessage(p.err_name orelse "?")}) catch "RPDL failed";
+    state.setDownloadMsg(m);
+}
 
-    const cleanup = struct {
-        fn run(j: *RpdlDownloadJob, s: *types.State) void {
-            j.alloc.free(j.token);
-            j.alloc.free(j.game_name);
-            if (j.game_version) |v| j.alloc.free(v);
-            if (j.picked_title) |t| j.alloc.free(t);
-            if (j.torrent_bytes) |b| j.alloc.free(b);
-            j.alloc.destroy(j);
-            s.pending_rpdl_download = null;
-        }
-    }.run;
+fn onRpdlDownloadDone(frame: *Frame, job: *RpdlDownloadJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeRpdlPayload(job);
+    log.info("drainRpdlDownload: observed phase=done tid={d}", .{p.thread_id});
 
-    if (phase == .failed) {
-        var emsg: [160]u8 = undefined;
-        const m = std.fmt.bufPrint(&emsg, "RPDL: {s}", .{rpdlErrorMessage(job.err_name orelse "?")}) catch "RPDL failed";
-        state.setDownloadMsg(m);
-        cleanup(job, state);
-        return;
-    }
-
-    const bytes = job.torrent_bytes orelse {
+    const bytes = p.torrent_bytes orelse {
         state.setDownloadMsg("RPDL: internal error — no torrent bytes");
-        cleanup(job, state);
         return;
     };
 
@@ -220,34 +216,31 @@ pub fn drainRpdlDownload(frame: *Frame) void {
     // Capture the RPDL-derived version from the torrent title so the
     // install row records the exact build the user downloaded.
     var label_buf: [96]u8 = undefined;
-    const label = std.fmt.bufPrint(&label_buf, "rpdl:{d}", .{job.picked_id}) catch "rpdl";
-    const picked_version: ?[]const u8 = if (job.picked_title) |t|
+    const label = std.fmt.bufPrint(&label_buf, "rpdl:{d}", .{p.picked_id}) catch "rpdl";
+    const picked_version: ?[]const u8 = if (p.picked_title) |t|
         version_mod.extractFromTitle(t)
     else
         null;
     if (picked_version) |v| {
-        log.info("rpdl: tid={d} captured version='{s}' from torrent title", .{ job.thread_id, v });
+        log.info("rpdl: tid={d} captured version='{s}' from torrent title", .{ p.thread_id, v });
     } else {
-        log.warn("rpdl: tid={d} no version segment in torrent title", .{job.thread_id});
+        log.warn("rpdl: tid={d} no version segment in torrent title", .{p.thread_id});
     }
-    const dl_id = frame.dl_mgr.enqueueTorrent(label, bytes, .game, job.thread_id, null, null, picked_version) catch |e| {
+    const dl_id = frame.dl_mgr.enqueueTorrent(label, bytes, .game, p.thread_id, null, null, picked_version) catch |e| {
         var emsg: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&emsg, "RPDL: enqueue failed: {s}", .{@errorName(e)}) catch "RPDL: enqueue failed";
         state.setDownloadMsg(m);
-        cleanup(job, state);
         return;
     };
 
     var ok_buf: [192]u8 = undefined;
-    const title = job.picked_title orelse "(unknown title)";
+    const title = p.picked_title orelse "(unknown title)";
     const m = std.fmt.bufPrint(
         &ok_buf,
         "RPDL: queued '{s}' (torrent #{d}) as download {d} — seeding to 2.0 ratio when done",
-        .{ title, job.picked_id, dl_id },
+        .{ title, p.picked_id, dl_id },
     ) catch "RPDL: queued";
     state.setDownloadMsg(m);
-
-    cleanup(job, state);
 }
 
 /// Human-friendly error names for the RPDL flow. Falls through to
