@@ -33,6 +33,7 @@ const DonorTickLog = owned_types.DonorTickLog;
 
 pub const RpdlDownloadPayload = owned_types.RpdlDownloadPayload;
 pub const RpdlDownloadJob = owned_types.RpdlDownloadJob;
+pub const DonorDownloadPayload = owned_types.DonorDownloadPayload;
 pub const DonorDownloadJob = owned_types.DonorDownloadJob;
 
 // ============================================================
@@ -275,7 +276,6 @@ fn rpdlErrorMessage(name: []const u8) []const u8 {
 // at MAX_DONOR_AUTO_RETRIES per thread per session so a permanently
 // dead URL doesn't spin forever.
 
-const DonorDownloadPhase = enum(u8) { pending, done, failed };
 const MAX_DONOR_AUTO_RETRIES: u8 = 2;
 
 // `DonorJobsMap` / `DonorRetriesMap` aliased from `owned.zig` at the
@@ -474,35 +474,26 @@ pub fn startDonorDownload(frame: *Frame, game: *const library.Game) void {
     };
     const version_dup: ?[]u8 = if (game.latest_version) |v| (alloc.dupe(u8, v) catch null) else null;
 
-    const job = alloc.create(DonorDownloadJob) catch {
-        log.err("startDonorDownload: job alloc OOM", .{});
+    _ = job_mod.spawnJob(
+        DonorDownloadPayload,
+        donorDownloadWorker,
+        alloc,
+        frame.win,
+        .{
+            .io = frame.io,
+            .f95_client = frame.f95_svc.client,
+            .game_name = name_dup,
+            .game_version = version_dup,
+            .thread_id = game.f95_thread_id,
+        },
+        &state.pending_donor_download,
+    ) catch |e| {
+        log.err("startDonorDownload: job alloc/spawn failed: {s}", .{@errorName(e)});
         alloc.free(name_dup);
         if (version_dup) |v| alloc.free(v);
         return;
     };
-    job.* = .{
-        .phase = .init(@intFromEnum(DonorDownloadPhase.pending)),
-        .alloc = alloc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .f95_client = frame.f95_svc.client,
-        .game_name = name_dup,
-        .game_version = version_dup,
-        .thread_id = game.f95_thread_id,
-    };
-
-    job.thr = std.Thread.spawn(.{}, donorDownloadWorker, .{job}) catch |e| {
-        log.err("startDonorDownload: thread spawn failed: {s}", .{@errorName(e)});
-        alloc.free(job.game_name);
-        if (job.game_version) |v| alloc.free(v);
-        alloc.destroy(job);
-        return;
-    };
-    job.thr.detach();
     log.info("startDonorDownload: worker thread spawned + detached", .{});
-
-    state.pending_donor_download = job;
     log.info("startDonorDownload: state.pending_donor_download set — awaiting drain", .{});
     var msg_buf: [128]u8 = undefined;
     const m = std.fmt.bufPrint(&msg_buf, "donor DDL: requesting signed URL for '{s}'…", .{game.name}) catch "donor DDL: requesting…";
@@ -510,61 +501,61 @@ pub fn startDonorDownload(frame: *Frame, game: *const library.Game) void {
 }
 
 fn donorDownloadWorker(job: *DonorDownloadJob) void {
-    const fail = struct {
-        fn run(j: *DonorDownloadJob, err: []const u8) void {
-            j.err_name = err;
-            j.phase.store(@intFromEnum(DonorDownloadPhase.failed), .release);
-            dvui.refresh(j.win, @src(), null);
-        }
-    }.run;
-
-    log.info("donor worker: tid={d} starting two-step DDL flow", .{job.thread_id});
-    const dl = f95.donor_ddl.requestDownload(job.alloc, job.f95_client, job.thread_id) catch |e| {
-        log.warn("donor worker: tid={d} flow failed: {s}", .{ job.thread_id, @errorName(e) });
-        fail(job, @errorName(e));
+    const p = &job.payload;
+    log.info("donor worker: tid={d} starting two-step DDL flow", .{p.thread_id});
+    const dl = f95.donor_ddl.requestDownload(job.alloc, p.f95_client, p.thread_id) catch |e| {
+        log.warn("donor worker: tid={d} flow failed: {s}", .{ p.thread_id, @errorName(e) });
+        p.err_name = @errorName(e);
+        job.markFailed();
         return;
     };
     log.info(
         "donor worker: tid={d} got URL+cookie (url-len={d}, cookie-len={d}, file='{s}')",
-        .{ job.thread_id, dl.url.len, dl.cookie.len, dl.filename },
+        .{ p.thread_id, dl.url.len, dl.cookie.len, dl.filename },
     );
-    job.signed_url = dl.url;
-    job.signed_cookie = dl.cookie;
-    job.signed_filename = dl.filename;
-    job.phase.store(@intFromEnum(DonorDownloadPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    p.signed_url = dl.url;
+    p.signed_cookie = dl.cookie;
+    p.signed_filename = dl.filename;
+    job.markDone();
 }
 
 pub fn drainDonorDownload(frame: *Frame) void {
+    job_mod.drainBackgroundJob(
+        DonorDownloadPayload,
+        onDonorDownloadDone,
+        onDonorDownloadFailed,
+        frame,
+        &frame.state.pending_donor_download,
+    );
+}
+
+fn freeDonorPayload(job: *DonorDownloadJob) void {
+    const p = &job.payload;
+    job.alloc.free(p.game_name);
+    if (p.game_version) |v| job.alloc.free(v);
+    if (p.signed_url) |u| job.alloc.free(u);
+    if (p.signed_cookie) |c| job.alloc.free(c);
+    if (p.signed_filename) |fn_| job.alloc.free(fn_);
+}
+
+fn onDonorDownloadFailed(frame: *Frame, job: *DonorDownloadJob) void {
     const state = frame.state;
-    const job = state.pending_donor_download orelse return;
-    const phase: DonorDownloadPhase = @enumFromInt(job.phase.load(.acquire));
-    if (phase == .pending) return;
-    log.info("drainDonorDownload: observed phase={s} tid={d}", .{ @tagName(phase), job.thread_id });
+    const p = &job.payload;
+    defer freeDonorPayload(job);
+    log.info("drainDonorDownload: observed phase=failed tid={d}", .{p.thread_id});
+    var emsg: [160]u8 = undefined;
+    const m = std.fmt.bufPrint(&emsg, "donor DDL: {s}", .{donorErrorMessage(p.err_name orelse "?")}) catch "donor DDL failed";
+    state.setDownloadMsg(m);
+}
 
-    const cleanup = struct {
-        fn run(j: *DonorDownloadJob, s: *State) void {
-            j.alloc.free(j.game_name);
-            if (j.game_version) |v| j.alloc.free(v);
-            if (j.signed_url) |u| j.alloc.free(u);
-            if (j.signed_cookie) |c| j.alloc.free(c);
-            if (j.signed_filename) |fn_| j.alloc.free(fn_);
-            j.alloc.destroy(j);
-            s.pending_donor_download = null;
-        }
-    }.run;
+fn onDonorDownloadDone(frame: *Frame, job: *DonorDownloadJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeDonorPayload(job);
+    log.info("drainDonorDownload: observed phase=done tid={d}", .{p.thread_id});
 
-    if (phase == .failed) {
-        var emsg: [160]u8 = undefined;
-        const m = std.fmt.bufPrint(&emsg, "donor DDL: {s}", .{donorErrorMessage(job.err_name orelse "?")}) catch "donor DDL failed";
-        state.setDownloadMsg(m);
-        cleanup(job, state);
-        return;
-    }
-
-    const url = job.signed_url orelse {
+    const url = p.signed_url orelse {
         state.setDownloadMsg("donor DDL: internal error — no signed URL");
-        cleanup(job, state);
         return;
     };
 
@@ -574,7 +565,7 @@ pub fn drainDonorDownload(frame: *Frame) void {
     // is built on the stack; aria2 sees just one header for now.
     var cookie_hdr_buf: [4096]u8 = undefined;
     const headers: []const []const u8 = blk: {
-        const cookie = job.signed_cookie orelse break :blk &.{};
+        const cookie = p.signed_cookie orelse break :blk &.{};
         if (cookie.len == 0) break :blk &.{};
         const hdr = std.fmt.bufPrint(&cookie_hdr_buf, "Cookie: {s}", .{cookie}) catch {
             log.warn("donor: cookie too large to fit in header buffer ({d} bytes); proceeding without it", .{cookie.len});
@@ -604,26 +595,23 @@ pub fn drainDonorDownload(frame: *Frame) void {
     const cookie_len: usize = if (headers.len > 0) headers[0].len else 0;
     log.info(
         "donor enqueue: tid={d} host='{s}' url_len={d} cookie_hdr_len={d} version={?s} max_conn=8 split=8 retry_wait=3s",
-        .{ job.thread_id, url_host, url.len, cookie_len, job.game_version },
+        .{ p.thread_id, url_host, url.len, cookie_len, p.game_version },
     );
-    const dl_id = frame.dl_mgr.enqueueUrl(url, .game, job.thread_id, null, null, job.game_version, http_opts) catch |e| {
+    const dl_id = frame.dl_mgr.enqueueUrl(url, .game, p.thread_id, null, null, p.game_version, http_opts) catch |e| {
         var emsg: [128]u8 = undefined;
         const m = std.fmt.bufPrint(&emsg, "donor DDL: enqueue failed: {s}", .{@errorName(e)}) catch "donor DDL: enqueue failed";
         state.setDownloadMsg(m);
-        cleanup(job, state);
         return;
     };
 
     // Register the job-id ↔ thread-id mapping so on aria2 failure we
     // can re-POST for a fresh signed URL (the donor link has a TTL).
-    donorJobsMap(frame).put(dl_id, job.thread_id) catch {};
-    log.info("donor enqueue: tid={d} → aria2 job_id={d} (registered for URL-expiry retry)", .{ job.thread_id, dl_id });
+    donorJobsMap(frame).put(dl_id, p.thread_id) catch {};
+    log.info("donor enqueue: tid={d} → aria2 job_id={d} (registered for URL-expiry retry)", .{ p.thread_id, dl_id });
 
     var ok_buf: [160]u8 = undefined;
     const m = std.fmt.bufPrint(&ok_buf, "donor DDL: queued as download {d}", .{dl_id}) catch "donor DDL: queued";
     state.setDownloadMsg(m);
-
-    cleanup(job, state);
 }
 
 /// Human-friendly error names for the donor-DDL flow.

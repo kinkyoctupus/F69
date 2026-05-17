@@ -239,12 +239,12 @@ pub const RpdlDownloadPayload = struct {
 };
 pub const RpdlDownloadJob = Job(RpdlDownloadPayload);
 
-pub const DonorDownloadJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the F95 donor DDL flow worker (POST /sam/dddl.php
+/// for a signed URL + cookie). Generic carrier (phase, cancel,
+/// thread, allocator, dvui window) provided by `Job(...)`; this
+/// struct holds the per-task inputs + worker output.
+pub const DonorDownloadPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     f95_client: *f95.Client,
     game_name: []u8, // owned
     /// Snapshot of the F95-scraped version at click time. Owned.
@@ -263,6 +263,7 @@ pub const DonorDownloadJob = struct {
     signed_filename: ?[]u8 = null,
     err_name: ?[]const u8 = null,
 };
+pub const DonorDownloadJob = Job(DonorDownloadPayload);
 
 pub const DonorTickState = struct {
     /// Wall-clock ms of the last verbose log line for this job.
