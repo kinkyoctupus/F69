@@ -28,6 +28,12 @@ const recipe = @import("recipe");
 const library = @import("library");
 const f95 = @import("f95");
 const dvui = @import("dvui");
+const job_mod = @import("job.zig");
+
+/// Re-export so `state.zig` + `actions/*.zig` see one common
+/// `owned.Job`. Generic worker-job primitive; see `src/ui/job.zig`
+/// for the lifecycle contract.
+pub const Job = job_mod.Job;
 
 // ---- R4a: simple containers ------------------------------------
 
@@ -295,12 +301,12 @@ pub const DonorTickState = struct {
 
 pub const DonorTickLog = std.AutoHashMap(u64, DonorTickState);
 
-pub const RefreshTagsJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the master-tag-list refresh worker. Generic carrier
+/// (atomic phase, cancel flag, thread, allocator, dvui window) is
+/// provided by `Job(...)`; this struct holds the per-task inputs +
+/// worker output.
+pub const RefreshTagsPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     f95_svc: *f95.Service,
     /// Worker output. Owns the slice + inner strings on success;
     /// drain transfers ownership into `state.tags_master`.
@@ -308,6 +314,7 @@ pub const RefreshTagsJob = struct {
     fetched_at: i64 = 0,
     err_name: ?[]const u8 = null,
 };
+pub const RefreshTagsJob = Job(RefreshTagsPayload);
 
 pub const ImageJobPhase = enum(u8) { pending, done };
 
