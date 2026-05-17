@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
     util_http_mod.addImport("build_options", build_opts_mod);
     const util_proc_mod = mod(b, "util_proc", "src/util/proc.zig", target, optimize);
     const util_setting_mod = mod(b, "util_setting", "src/util/setting.zig", target, optimize);
+    const util_test_env_mod = mod(b, "util_test_env", "src/util/test_env.zig", target, optimize);
 
     // util_archive: thin Zig wrapper around libarchive's read API.
     // Used by downloads/archive.zig for the formats stdlib doesn't
@@ -355,6 +356,7 @@ pub fn build(b: *std.Build) void {
         util_crash_mod,    util_version_mod,
         util_renpy_mod,    util_atomic_io_mod, util_domain_mod,
         util_http_mod,     util_proc_mod,      util_setting_mod,
+        util_test_env_mod,
         file_picker_mod,   util_archive_mod,
     };
     const test_step = b.step("test", "Run unit tests");
