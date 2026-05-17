@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const dom = @import("domain.zig");
+const atomic_io = @import("util_atomic_io");
 const errs = @import("errors.zig");
 
 /// Detection spec attached to a preset. The staged archive's flat path
@@ -468,20 +469,9 @@ pub fn saveUserPreset(
     defer aw.deinit();
     std.zon.stringify.serialize(preset.*, .{}, &aw.writer) catch return errs.Error.SaveFailed;
 
-    std.Io.Dir.cwd().createDirPath(io, user_dir) catch return errs.Error.SaveFailed;
-
     const path = std.fmt.allocPrint(parent_alloc, "{s}/{s}{s}", .{ user_dir, preset.id, PRESET_FILE_SUFFIX }) catch return errs.Error.OutOfMemory;
     defer parent_alloc.free(path);
-    const tmp = std.fmt.allocPrint(parent_alloc, "{s}.tmp", .{path}) catch return errs.Error.OutOfMemory;
-    defer parent_alloc.free(tmp);
-
-    var f = std.Io.Dir.cwd().createFile(io, tmp, .{ .truncate = true }) catch return errs.Error.SaveFailed;
-    defer f.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = f.writer(io, &fw_buf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return errs.Error.SaveFailed;
-    fw.interface.flush() catch return errs.Error.SaveFailed;
-    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io) catch return errs.Error.SaveFailed;
+    atomic_io.writeFileAtomic(io, path, aw.writer.buffered()) catch return errs.Error.SaveFailed;
 }
 
 // ============================================================

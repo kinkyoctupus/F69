@@ -22,6 +22,7 @@
 const std = @import("std");
 const Io = std.Io;
 const log = std.log.scoped(.mod_archives);
+const atomic_io = @import("util_atomic_io");
 
 /// Recognized archive suffixes, longest first so `.tar.gz` matches
 /// before `.gz`.
@@ -372,16 +373,7 @@ pub fn saveIndex(
 
     const path = try indexPathAlloc(alloc, dest_root, game_thread_id);
     defer alloc.free(path);
-    const tmp = std.fmt.allocPrint(alloc, "{s}.tmp", .{path}) catch return Error.OutOfMemory;
-    defer alloc.free(tmp);
-
-    var f = std.Io.Dir.cwd().createFile(io, tmp, .{ .truncate = true }) catch return Error.WriteFailed;
-    defer f.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = f.writer(io, &fw_buf);
-    fw.interface.writeAll(aw.writer.buffered()) catch return Error.WriteFailed;
-    fw.interface.flush() catch return Error.WriteFailed;
-    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io) catch return Error.WriteFailed;
+    atomic_io.writeFileAtomic(io, path, aw.writer.buffered()) catch return Error.WriteFailed;
 }
 
 /// Write `s` as a JSON-quoted, escape-correct string. Basenames can

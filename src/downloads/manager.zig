@@ -16,6 +16,7 @@
 // pass aria2 catches every http/https URL directly.
 
 const std = @import("std");
+const atomic_io = @import("util_atomic_io");
 const log = std.log.scoped(.downloads);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
@@ -670,16 +671,7 @@ pub const Manager = struct {
         defer aw.deinit();
         std.json.Stringify.value(file, .{}, &aw.writer) catch return errs.Error.OutOfMemory;
 
-        // tmp + rename.
-        var tmp_buf: [1024]u8 = undefined;
-        const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path}) catch return errs.Error.OutOfMemory;
-        var tmp = std.Io.Dir.cwd().createFile(self.io, tmp_path, .{ .truncate = true }) catch return errs.Error.OutOfMemory;
-        defer tmp.close(self.io);
-        var fw_buf: [4096]u8 = undefined;
-        var fw = tmp.writer(self.io, &fw_buf);
-        fw.interface.writeAll(aw.writer.buffered()) catch return errs.Error.OutOfMemory;
-        fw.interface.flush() catch return errs.Error.OutOfMemory;
-        std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), path, self.io) catch return errs.Error.OutOfMemory;
+        atomic_io.writeFileAtomic(self.io, path, aw.writer.buffered()) catch return errs.Error.OutOfMemory;
     }
 
     /// Reload the jobs table from disk if present. Skips silently if

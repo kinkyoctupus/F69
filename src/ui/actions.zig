@@ -10,6 +10,7 @@
 // the post-import auto-sync trigger).
 
 const std = @import("std");
+const atomic_io = @import("util_atomic_io");
 const log = std.log.scoped(.ui_actions);
 const library = @import("library");
 const f95 = @import("f95");
@@ -514,19 +515,11 @@ fn fetchAndWriteCover(job: *SyncJob, cover_url: []const u8) !void {
     };
 }
 
-/// Write `bytes` to `path` atomically (tmp + rename). dvui reads
+/// Thin shim around `util/atomic_io.writeFileAtomic`. dvui reads
 /// images via stb, so a half-written file would render garbage —
 /// the rename ensures readers only ever see the complete file.
 fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8) !void {
-    var tmp_buf: [320]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
-    var tmp = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
-    defer tmp.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = tmp.writer(io, &fw_buf);
-    try fw.interface.writeAll(bytes);
-    try fw.interface.flush();
-    try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), path, io);
+    try atomic_io.writeFileAtomic(io, path, bytes);
 }
 
 /// Fetch a single screenshot to `<covers_dir>/<tid>.s<n>`. Same atomic

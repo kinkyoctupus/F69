@@ -26,7 +26,7 @@ pub const BASE_URL = "https://dl.rpdl.net";
 const LOGIN_URL = BASE_URL ++ "/api/user/login";
 const DOWNLOAD_URL_FMT = BASE_URL ++ "/api/torrent/download/{d}";
 const SEARCH_URL_FMT = BASE_URL ++ "/api/torrents?page_size=50&page=0&sort=uploaded_DESC&categories=&search={s}";
-const USER_AGENT = "f69/0.0";
+const USER_AGENT = "f69/" ++ @import("build_options").version;
 
 /// One torrent entry returned by `/api/torrents?search=…`.
 /// All slices are `alloc`-owned; caller frees via `freeSearchResults`.
@@ -67,13 +67,16 @@ pub fn login(
     var http: std.http.Client = .{ .allocator = alloc, .io = io };
     defer http.deinit();
 
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(alloc);
-    body.appendSlice(alloc, "{\"login\":\"") catch return errs.Error.OutOfMemory;
-    appendJsonStr(&body, alloc, username) catch return errs.Error.OutOfMemory;
-    body.appendSlice(alloc, "\",\"password\":\"") catch return errs.Error.OutOfMemory;
-    appendJsonStr(&body, alloc, password) catch return errs.Error.OutOfMemory;
-    body.appendSlice(alloc, "\"}") catch return errs.Error.OutOfMemory;
+    // Stdlib JSON does the escape for us — no need for a hand-rolled
+    // string formatter that re-implements the same rules.
+    var body_aw: Io.Writer.Allocating = .init(alloc);
+    defer body_aw.deinit();
+    std.json.Stringify.value(
+        .{ .login = username, .password = password },
+        .{},
+        &body_aw.writer,
+    ) catch return errs.Error.OutOfMemory;
+    const body_bytes = body_aw.writer.buffered();
 
     var resp_buf: Io.Writer.Allocating = .init(alloc);
     defer resp_buf.deinit();
@@ -86,7 +89,7 @@ pub fn login(
     const result = http.fetch(.{
         .location = .{ .url = LOGIN_URL },
         .response_writer = &resp_buf.writer,
-        .payload = body.items,
+        .payload = body_bytes,
         .headers = .{ .user_agent = .{ .override = USER_AGENT } },
         .extra_headers = &extra_headers,
         .keep_alive = false,
@@ -520,23 +523,8 @@ fn isBencodedDict(bytes: []const u8) bool {
     return bytes.len > 0 and bytes[0] == 'd';
 }
 
-fn appendJsonStr(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, value: []const u8) !void {
-    for (value) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(alloc, "\\\""),
-            '\\' => try buf.appendSlice(alloc, "\\\\"),
-            '\n' => try buf.appendSlice(alloc, "\\n"),
-            '\r' => try buf.appendSlice(alloc, "\\r"),
-            '\t' => try buf.appendSlice(alloc, "\\t"),
-            0...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
-                var hex: [6]u8 = undefined;
-                _ = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{c}) catch unreachable;
-                try buf.appendSlice(alloc, &hex);
-            },
-            else => try buf.append(alloc, c),
-        }
-    }
-}
+// `appendJsonStr` removed — login body now goes through
+// `std.json.Stringify.value` which does the escape itself.
 
 // ============================================================
 //  tests
@@ -593,13 +581,6 @@ test "isBencodedDict" {
     try std.testing.expect(!isBencodedDict("<html>"));
     try std.testing.expect(!isBencodedDict("{json}"));
     try std.testing.expect(!isBencodedDict(""));
-}
-
-test "appendJsonStr escapes" {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.testing.allocator);
-    try appendJsonStr(&buf, std.testing.allocator, "a\"b\\c\n\t");
-    try std.testing.expectEqualStrings("a\\\"b\\\\c\\n\\t", buf.items);
 }
 
 test "fetchTorrent: empty token rejected without network" {

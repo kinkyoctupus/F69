@@ -26,7 +26,7 @@ pub const Credentials = struct {
 
 const LOGIN_PAGE_URL = "https://f95zone.to/login/";
 const LOGIN_POST_URL = "https://f95zone.to/login/login";
-const USER_AGENT = "f69/0.0";
+const USER_AGENT = @import("client.zig").USER_AGENT;
 
 /// Run the full login dance. On success returns the combined
 /// `xf_*` cookie value (allocator-owned) and applies it to `client`.

@@ -24,6 +24,7 @@ const std = @import("std");
 const log = std.log.scoped(.f95_tags);
 const errs = @import("errors.zig");
 const Client = @import("client.zig").Client;
+const atomic_io = @import("util_atomic_io");
 
 const SEED_BYTES: []const u8 = @embedFile("tags_seed.txt");
 
@@ -133,18 +134,7 @@ pub fn saveToDisk(
         try buf.append(alloc, '\n');
     }
 
-    if (std.fs.path.dirname(path)) |dir| {
-        try std.Io.Dir.cwd().createDirPath(io, dir);
-    }
-    var tmp_buf: [512]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
-    var f = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
-    defer f.close(io);
-    var fw_buf: [4096]u8 = undefined;
-    var fw = f.writer(io, &fw_buf);
-    try fw.interface.writeAll(buf.items);
-    try fw.interface.flush();
-    try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), path, io);
+    try atomic_io.writeFileAtomic(io, path, buf.items);
 }
 
 /// Hit F95's `/tags/` index page and pull every `<a class="tagItem">`

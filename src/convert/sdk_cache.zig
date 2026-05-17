@@ -21,7 +21,7 @@ const dom = @import("domain.zig");
 /// safety net against pulling a wrong URL that returns something huge.
 pub const MAX_SDK_BYTES: usize = 1024 * 1024 * 1024;
 
-const USER_AGENT = "f69/0.0";
+const USER_AGENT = "f69/" ++ @import("build_options").version;
 
 pub const Cache = struct {
     alloc: std.mem.Allocator,
