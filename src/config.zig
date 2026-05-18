@@ -66,10 +66,15 @@ pub const Error = error{
     OutOfMemory,
 };
 
-/// Load config from disk (or defaults if file missing). Caller owns
-/// the returned struct; call `.deinit(alloc)` to release.
+/// **Not yet implemented.** This module is scaffolding for a planned
+/// TOML-driven config story; today f69 reads each setting via
+/// `util/setting.zig` helpers in `main.zig`. The struct + Error
+/// values stay so the eventual TOML loader has a fixed target, but
+/// `load()` itself intentionally panics so any accidental call
+/// produces a loud diagnostic rather than the misleading
+/// `Error.XdgPathUnavailable` it used to return.
 ///
-/// Migration flow:
+/// Migration flow (when wired):
 ///   1. Parse TOML, read `version`.
 ///   2. If `version > CURRENT_VERSION` → return SchemaTooNew.
 ///   3. If `version < CURRENT_VERSION` → back up to
@@ -78,5 +83,5 @@ pub const Error = error{
 ///   4. If file missing → write defaults at CURRENT_VERSION.
 pub fn load(alloc: std.mem.Allocator) Error!AppConfig {
     _ = alloc;
-    return Error.XdgPathUnavailable; // TODO
+    @panic("config.load is unimplemented; current f69 reads settings via util/setting.zig in main.zig");
 }

@@ -118,7 +118,7 @@ pub fn runMainLoop(
     try mod_jobs.start();
 
     var state: State = .{};
-    state.login_status = if (f95_svc.client.cookie != null) .logged_in else .logged_out;
+    state.login_status = if (f95_svc.client.hasCookie()) .logged_in else .logged_out;
     state.setBrowserPath(info.initial_browser_path);
     state.ui_scale = info.initial_ui_scale;
     state.ui_scale_persisted = info.initial_ui_scale;
