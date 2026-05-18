@@ -34,17 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        run: |
-          # Direct download from ziglang.org. The mlugg/setup-zig@v1
-          # action only handles dev/master builds reliably — released
-          # versions like 0.16 use the new `arch-os-version` filename
-          # ordering that v1 doesn't know about.
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-            | tar -xJf - -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
-      - name: Verify Zig
-        run: zig version
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - name: System deps
         run: |
           sudo apt-get update
@@ -62,17 +54,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        run: |
-          # Direct download from ziglang.org. The mlugg/setup-zig@v1
-          # action only handles dev/master builds reliably — released
-          # versions like 0.16 use the new `arch-os-version` filename
-          # ordering that v1 doesn't know about.
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-            | tar -xJf - -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
-      - name: Verify Zig
-        run: zig version
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - name: System deps
         run: |
           sudo apt-get update
@@ -99,17 +83,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        run: |
-          # Direct download from ziglang.org. The mlugg/setup-zig@v1
-          # action only handles dev/master builds reliably — released
-          # versions like 0.16 use the new `arch-os-version` filename
-          # ordering that v1 doesn't know about.
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-            | tar -xJf - -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
-      - name: Verify Zig
-        run: zig version
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - name: System deps
         run: |
           sudo apt-get update
