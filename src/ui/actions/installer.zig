@@ -40,6 +40,8 @@ const State = types.State;
 
 const PostInstalledSet = owned_types.PostInstalledSet;
 const PostInstallJobsList = owned_types.PostInstallJobsList;
+pub const PostInstallPayload = owned_types.PostInstallPayload;
+pub const ManualInstallPayload = owned_types.ManualInstallPayload;
 
 pub const TestInstallPayload = owned_types.TestInstallPayload;
 pub const TestInstallJob = owned_types.TestInstallJob;
@@ -1356,8 +1358,6 @@ fn reportResolverResult(state: *State, result: *const resolver.SolveResult) bool
 // UI thread (SQLite isn't multi-thread-write-safe at the app
 // layer), and frees the job allocation.
 
-const PostInstallPhase = enum(u8) { pending, done, failed };
-
 fn postInstallJobsList(frame: *Frame) ?*PostInstallJobsList {
     if (frame.state.post_install_jobs) |list_ptr| return list_ptr;
     const list_ptr = frame.lib.alloc.create(PostInstallJobsList) catch return null;
@@ -1386,9 +1386,8 @@ pub fn isExtracting(frame: *Frame, download_job_id: u64) bool {
     if (frame.state.post_install_jobs == null) return false;
     const list = postInstallJobsList(frame) orelse return false;
     for (list.items) |pij| {
-        if (pij.download_job_id != download_job_id) continue;
-        const phase: PostInstallPhase = @enumFromInt(pij.phase.load(.acquire));
-        return phase == .pending;
+        if (pij.payload.download_job_id != download_job_id) continue;
+        return pij.phaseGet() == .pending;
     }
     return false;
 }
@@ -1551,16 +1550,14 @@ pub fn startInstallFromDownload(frame: *Frame, game: *const library.Game) void {
 pub fn isInstallingForGame(frame: *Frame, thread_id: u64) bool {
     if (frame.state.post_install_jobs) |list| {
         for (list.items) |pij| {
-            if (pij.game_id != thread_id) continue;
-            const phase: PostInstallPhase = @enumFromInt(pij.phase.load(.acquire));
-            if (phase == .pending) return true;
+            if (pij.payload.game_id != thread_id) continue;
+            if (pij.phaseGet() == .pending) return true;
         }
     }
     if (frame.state.manual_install_jobs) |list| {
         for (list.items) |job| {
-            if (job.game_id != thread_id) continue;
-            const phase: ManualInstallPhase = @enumFromInt(job.phase.load(.acquire));
-            if (phase == .pending) return true;
+            if (job.payload.game_id != thread_id) continue;
+            if (job.phaseGet() == .pending) return true;
         }
     }
     return false;
@@ -1574,20 +1571,18 @@ pub fn isInstallingForGame(frame: *Frame, thread_id: u64) bool {
 pub fn extractProgressForGame(frame: *Frame, thread_id: u64) ?u8 {
     if (frame.state.post_install_jobs) |list| {
         for (list.items) |pij| {
-            if (pij.game_id != thread_id) continue;
-            const phase: PostInstallPhase = @enumFromInt(pij.phase.load(.acquire));
-            if (phase != .pending) continue;
-            if (pij.archive_size == 0) return null;
-            return pij.progress_pct.load(.acquire);
+            if (pij.payload.game_id != thread_id) continue;
+            if (pij.phaseGet() != .pending) continue;
+            if (pij.payload.archive_size == 0) return null;
+            return pij.payload.progress_pct.load(.acquire);
         }
     }
     if (frame.state.manual_install_jobs) |list| {
         for (list.items) |job| {
-            if (job.game_id != thread_id) continue;
-            const phase: ManualInstallPhase = @enumFromInt(job.phase.load(.acquire));
-            if (phase != .pending) continue;
-            if (job.archive_size == 0) return null;
-            return job.progress_pct.load(.acquire);
+            if (job.payload.game_id != thread_id) continue;
+            if (job.phaseGet() != .pending) continue;
+            if (job.payload.archive_size == 0) return null;
+            return job.payload.progress_pct.load(.acquire);
         }
     }
     return null;
@@ -1600,20 +1595,21 @@ pub fn extractProgressForGame(frame: *Frame, thread_id: u64) ?u8 {
 /// compression ratio of Ren'Py / RPGM archive payloads. Capped at 99
 /// so the UI doesn't claim "done" before the worker actually returns.
 fn extractProgressPoller(job: *PostInstallJob) void {
+    const p = &job.payload;
     // ×2 is a coarse fit for Ren'Py / RPGM zips. Smaller for raw
     // 7z (already-compressed assets) → progress moves slower but
     // never overshoots, which is the safer failure mode.
-    const denom: u64 = @max(1, job.archive_size * 2);
+    const denom: u64 = @max(1, p.archive_size * 2);
     const tick = std.Io.Duration.fromMilliseconds(250);
-    while (!job.progress_stop.load(.acquire)) {
-        const bytes = dirSizeBytes(job.io, job.dest_dir);
+    while (!p.progress_stop.load(.acquire)) {
+        const bytes = dirSizeBytes(p.io, p.dest_dir);
         const pct_u64: u64 = @min(99, @divTrunc(bytes * 100, denom));
-        job.progress_pct.store(@intCast(pct_u64), .release);
+        p.progress_pct.store(@intCast(pct_u64), .release);
         // Nudge dvui so the bar repaints even when no input event
         // arrives — without this the UI sits idle and the % only
         // updates when the user moves the mouse.
         dvui.refresh(job.win, @src(), null);
-        std.Io.sleep(job.io, tick, .awake) catch break;
+        std.Io.sleep(p.io, tick, .awake) catch break;
     }
 }
 
@@ -1783,92 +1779,100 @@ pub fn startPostInstall(
         break :blk .recipe;
     };
 
-    const pij = try alloc.create(PostInstallJob);
-    pij.* = .{
-        .phase = .init(@intFromEnum(PostInstallPhase.pending)),
-        .alloc = alloc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .download_job_id = download_job_id,
-        .game_id = game_id,
-        .file_path = file_path,
-        .dest_dir = dest_dir,
-        .version = version_str,
-        .recipe_id = recipe_id,
-        .have_recipe = have_recipe,
-        .expected_sha256 = expected_sha256,
-        .archive_size = archive_size,
-        .source = source_kind,
-    };
-
     const list = postInstallJobsList(frame) orelse return error.OutOfMemory;
-    try list.append(alloc, pij);
-
-    pij.thr = std.Thread.spawn(.{}, postInstallWorker, .{pij}) catch |e| {
-        _ = list.pop();
+    // spawnJob into a transient slot so the worker is detached
+    // before we add it to the list; if list.append fails we
+    // already have a running worker but the carrier still gets
+    // tracked locally so cleanup runs.
+    var slot: ?*PostInstallJob = null;
+    const pij = job_mod.spawnJob(
+        PostInstallPayload,
+        postInstallWorker,
+        alloc,
+        frame.win,
+        .{
+            .io = frame.io,
+            .download_job_id = download_job_id,
+            .game_id = game_id,
+            .file_path = file_path,
+            .dest_dir = dest_dir,
+            .version = version_str,
+            .recipe_id = recipe_id,
+            .have_recipe = have_recipe,
+            .expected_sha256 = expected_sha256,
+            .archive_size = archive_size,
+            .source = source_kind,
+        },
+        &slot,
+    ) catch |e| {
         alloc.free(file_path);
         alloc.free(dest_dir);
         alloc.free(version_str);
         alloc.free(recipe_id);
-        alloc.destroy(pij);
         return e;
     };
-    pij.thr.detach();
+    list.append(alloc, pij) catch |e| {
+        // Worker is already running — we can't unspawn. Request
+        // cancel (worker treats it as a soft fail) and let the
+        // next drain reap the carrier. Payload strings live on
+        // until drain frees them; appending failed so the list
+        // doesn't reference pij, but we still own it.
+        pij.requestCancel();
+        return e;
+    };
     log.info("post-install game-job {d}: worker spawned, extracting in background", .{download_job_id});
 }
 
 fn postInstallWorker(job: *PostInstallJob) void {
+    const p = &job.payload;
     const fail = struct {
         fn run(j: *PostInstallJob, name: []const u8) void {
-            j.err_name = name;
-            j.phase.store(@intFromEnum(PostInstallPhase.failed), .release);
-            dvui.refresh(j.win, @src(), null);
+            j.payload.err_name = name;
+            j.markFailed();
         }
     }.run;
 
-    if (job.expected_sha256) |want| {
-        downloads.verifyFile(job.io, job.file_path, want) catch {
-            log.warn("post-install game-job {d}: SHA-256 mismatch for {s}", .{ job.download_job_id, job.file_path });
+    if (p.expected_sha256) |want| {
+        downloads.verifyFile(p.io, p.file_path, want) catch {
+            log.warn("post-install game-job {d}: SHA-256 mismatch for {s}", .{ p.download_job_id, p.file_path });
             fail(job, "HashMismatch");
             return;
         };
     }
 
-    const fmt = downloads.detectFormat(job.file_path);
+    const fmt = downloads.detectFormat(p.file_path);
     if (fmt == .unknown) {
-        log.warn("post-install game-job {d}: unknown archive format for {s}", .{ job.download_job_id, job.file_path });
+        log.warn("post-install game-job {d}: unknown archive format for {s}", .{ p.download_job_id, p.file_path });
         fail(job, "UnknownFormat");
         return;
     }
 
-    log.info("post-install game-job {d}: extracting {s} → {s}", .{ job.download_job_id, job.file_path, job.dest_dir });
+    log.info("post-install game-job {d}: extracting {s} → {s}", .{ p.download_job_id, p.file_path, p.dest_dir });
 
     // Fire up the size-polling thread so the UI's "Installing —
     // extracting" strip shows a moving %. Worker keeps blocking in
     // std.zip/std.tar.extract; the poller watches dest_dir size and
-    // writes the estimate into job.progress_pct.
+    // writes the estimate into payload.progress_pct.
     var poller_thread: ?std.Thread = null;
-    if (job.archive_size > 0) {
+    if (p.archive_size > 0) {
         poller_thread = std.Thread.spawn(.{}, extractProgressPoller, .{job}) catch null;
     }
-    downloads.extract(job.alloc, job.io, job.file_path, job.dest_dir, .{ .strip = 0 }) catch {
+    downloads.extract(job.alloc, p.io, p.file_path, p.dest_dir, .{ .strip = 0 }) catch {
         if (poller_thread) |t| {
-            job.progress_stop.store(true, .release);
+            p.progress_stop.store(true, .release);
             t.join();
         }
         fail(job, "ExtractionFailed");
         return;
     };
     if (poller_thread) |t| {
-        job.progress_stop.store(true, .release);
+        p.progress_stop.store(true, .release);
         t.join();
     }
-    job.progress_pct.store(100, .release);
-    log.info("post-install game-job {d}: extract finished", .{job.download_job_id});
+    p.progress_pct.store(100, .release);
+    log.info("post-install game-job {d}: extract finished", .{p.download_job_id});
 
-    job.phase.store(@intFromEnum(PostInstallPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    job.markDone();
 }
 
 /// Each guiFrame: scan the in-flight list, do the DB upsert for
@@ -1881,16 +1885,17 @@ pub fn drainPostInstall(frame: *Frame) void {
     var i: usize = 0;
     while (i < list.items.len) {
         const pij = list.items[i];
-        const phase: PostInstallPhase = @enumFromInt(pij.phase.load(.acquire));
+        const phase = pij.phaseGet();
         if (phase == .pending) {
             i += 1;
             continue;
         }
+        const p = &pij.payload;
         if (phase == .done) {
             // Always write the install row — even raw-paste / no-
             // recipe extracts deserve an entry so they land in the
             // detail-page dropdown and the user can launch them.
-            doInstallUpsert(frame, pij.game_id, pij.version, pij.dest_dir, pij.recipe_id, pij.source);
+            doInstallUpsert(frame, p.game_id, p.version, p.dest_dir, p.recipe_id, p.source);
             // Refresh the per-frame install-set snapshot so the
             // InstallDot + detail page flip green immediately without
             // waiting for the next navigation event.
@@ -1900,15 +1905,15 @@ pub fn drainPostInstall(frame: *Frame) void {
             // convert_linux block (the convert spec needs an engine
             // pin; without a recipe we have nothing to feed Convert).
             if (frame.state.auto_convert) {
-                maybeAutoConvert(frame, pij.game_id, pij.dest_dir);
+                maybeAutoConvert(frame, p.game_id, p.dest_dir);
             }
         } else if (phase == .failed) {
-            log.warn("post-install game-job {d}: worker failed ({s})", .{ pij.download_job_id, pij.err_name orelse "?" });
+            log.warn("post-install game-job {d}: worker failed ({s})", .{ p.download_job_id, p.err_name orelse "?" });
         }
-        pij.alloc.free(pij.file_path);
-        pij.alloc.free(pij.dest_dir);
-        pij.alloc.free(pij.version);
-        pij.alloc.free(pij.recipe_id);
+        pij.alloc.free(p.file_path);
+        pij.alloc.free(p.dest_dir);
+        pij.alloc.free(p.version);
+        pij.alloc.free(p.recipe_id);
         pij.alloc.destroy(pij);
         _ = list.swapRemove(i);
         // Don't bump i — swapRemove may have moved a fresh entry
@@ -1976,7 +1981,7 @@ fn doInstallUpsert(
 //     show provenance and disambiguate two installs of the same
 //     version.
 
-const ManualInstallPhase = enum(u8) { pending, done, failed };
+// ManualInstall uses the canonical `Job.Phase` from `src/ui/job.zig`.
 
 fn manualInstallJobsList(frame: *Frame) ?*ManualInstallJobsList {
     if (frame.state.manual_install_jobs) |list_ptr| return list_ptr;
@@ -2107,26 +2112,7 @@ pub fn startManualInstall(
         break :blk st.size;
     };
 
-    const job = alloc.create(ManualInstallJob) catch {
-        state.setDownloadMsg("Out of memory.");
-        return;
-    };
-    job.* = .{
-        .phase = .init(@intFromEnum(ManualInstallPhase.pending)),
-        .alloc = alloc,
-        .io = frame.io,
-        .win = frame.win,
-        .thr = undefined,
-        .game_id = game_id,
-        .file_path = file_path_owned,
-        .dest_dir = dest_dir_owned,
-        .version = version_owned,
-        .name = name_owned,
-        .archive_size = archive_size,
-    };
-
     const list = manualInstallJobsList(frame) orelse {
-        alloc.destroy(job);
         alloc.free(file_path_owned);
         alloc.free(dest_dir_owned);
         alloc.free(version_owned);
@@ -2134,19 +2120,23 @@ pub fn startManualInstall(
         state.setDownloadMsg("Out of memory.");
         return;
     };
-    list.append(alloc, job) catch {
-        alloc.destroy(job);
-        alloc.free(file_path_owned);
-        alloc.free(dest_dir_owned);
-        alloc.free(version_owned);
-        if (name_owned) |s| alloc.free(s);
-        state.setDownloadMsg("Out of memory.");
-        return;
-    };
-
-    job.thr = std.Thread.spawn(.{}, manualInstallWorker, .{job}) catch |e| {
-        _ = list.pop();
-        alloc.destroy(job);
+    var slot: ?*ManualInstallJob = null;
+    const job = job_mod.spawnJob(
+        ManualInstallPayload,
+        manualInstallWorker,
+        alloc,
+        frame.win,
+        .{
+            .io = frame.io,
+            .game_id = game_id,
+            .file_path = file_path_owned,
+            .dest_dir = dest_dir_owned,
+            .version = version_owned,
+            .name = name_owned,
+            .archive_size = archive_size,
+        },
+        &slot,
+    ) catch |e| {
         alloc.free(file_path_owned);
         alloc.free(dest_dir_owned);
         alloc.free(version_owned);
@@ -2156,17 +2146,24 @@ pub fn startManualInstall(
         state.setDownloadMsg(msg);
         return;
     };
-    job.thr.detach();
+    list.append(alloc, job) catch {
+        // Worker is already running — request cancel and let the
+        // next drain reap it. The carrier still gets cleaned up via
+        // drainBackgroundJob's free path when phase flips terminal.
+        job.requestCancel();
+        state.setDownloadMsg("Out of memory.");
+        return;
+    };
     state.setDownloadMsg("Manual install: hashing + extracting…");
     log.info("manual-install: tid={d} src='{s}' dest='{s}' v='{s}'", .{ game_id, file_path_owned, dest_dir_owned, version_owned });
 }
 
 fn manualInstallWorker(job: *ManualInstallJob) void {
+    const p = &job.payload;
     const fail = struct {
         fn run(j: *ManualInstallJob, name: []const u8) void {
-            j.err_name = name;
-            j.phase.store(@intFromEnum(ManualInstallPhase.failed), .release);
-            dvui.refresh(j.win, @src(), null);
+            j.payload.err_name = name;
+            j.markFailed();
         }
     }.run;
 
@@ -2177,13 +2174,13 @@ fn manualInstallWorker(job: *ManualInstallJob) void {
     // a renamed copy.
     var hasher = downloads.Hasher.init();
     {
-        var f = std.Io.Dir.cwd().openFile(job.io, job.file_path, .{ .mode = .read_only }) catch {
+        var f = std.Io.Dir.cwd().openFile(p.io, p.file_path, .{ .mode = .read_only }) catch {
             fail(job, "OpenFailed");
             return;
         };
-        defer f.close(job.io);
+        defer f.close(p.io);
         var rd_buf: [64 * 1024]u8 = undefined;
-        var fr = f.reader(job.io, &rd_buf);
+        var fr = f.reader(p.io, &rd_buf);
         while (true) {
             var chunk: [64 * 1024]u8 = undefined;
             const got = fr.interface.readSliceShort(&chunk) catch {
@@ -2196,33 +2193,32 @@ fn manualInstallWorker(job: *ManualInstallJob) void {
     }
     const sha_bytes = hasher.finalize();
     const sha_hex = std.fmt.bytesToHex(sha_bytes, .lower);
-    @memcpy(job.archive_sha256_hex[0..], &sha_hex);
-    job.archive_sha256_set = true;
+    @memcpy(p.archive_sha256_hex[0..], &sha_hex);
+    p.archive_sha256_set = true;
 
     // ---- extract ----
     // Spawn the size-polling thread so the UI's "Installing —
     // extracting" strip shows a moving %. Same trick as the
     // post-install worker.
     var poller_thread: ?std.Thread = null;
-    if (job.archive_size > 0) {
+    if (p.archive_size > 0) {
         poller_thread = std.Thread.spawn(.{}, manualExtractProgressPoller, .{job}) catch null;
     }
-    downloads.extract(job.alloc, job.io, job.file_path, job.dest_dir, .{ .strip = 0 }) catch {
+    downloads.extract(job.alloc, p.io, p.file_path, p.dest_dir, .{ .strip = 0 }) catch {
         if (poller_thread) |t| {
-            job.progress_stop.store(true, .release);
+            p.progress_stop.store(true, .release);
             t.join();
         }
         fail(job, "ExtractionFailed");
         return;
     };
     if (poller_thread) |t| {
-        job.progress_stop.store(true, .release);
+        p.progress_stop.store(true, .release);
         t.join();
     }
-    job.progress_pct.store(100, .release);
+    p.progress_pct.store(100, .release);
 
-    job.phase.store(@intFromEnum(ManualInstallPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    job.markDone();
 }
 
 /// Mirror of `extractProgressPoller` for manual installs. Polls
@@ -2230,14 +2226,15 @@ fn manualInstallWorker(job: *ManualInstallJob) void {
 /// compression ratio) and updates `progress_pct` so the UI can
 /// render a moving bar.
 fn manualExtractProgressPoller(job: *ManualInstallJob) void {
-    const denom: u64 = @max(1, job.archive_size * 2);
+    const p = &job.payload;
+    const denom: u64 = @max(1, p.archive_size * 2);
     const tick = std.Io.Duration.fromMilliseconds(250);
-    while (!job.progress_stop.load(.acquire)) {
-        const bytes = dirSizeBytes(job.io, job.dest_dir);
+    while (!p.progress_stop.load(.acquire)) {
+        const bytes = dirSizeBytes(p.io, p.dest_dir);
         const pct_u64: u64 = @min(99, @divTrunc(bytes * 100, denom));
-        job.progress_pct.store(@intCast(pct_u64), .release);
+        p.progress_pct.store(@intCast(pct_u64), .release);
         dvui.refresh(job.win, @src(), null);
-        std.Io.sleep(job.io, tick, .awake) catch break;
+        std.Io.sleep(p.io, tick, .awake) catch break;
     }
 }
 
@@ -2252,25 +2249,26 @@ pub fn drainManualInstall(frame: *Frame) void {
     var i: usize = 0;
     while (i < list.items.len) {
         const job = list.items[i];
-        const phase: ManualInstallPhase = @enumFromInt(job.phase.load(.acquire));
+        const phase = job.phaseGet();
         if (phase == .pending) {
             i += 1;
             continue;
         }
+        const p = &job.payload;
         if (phase == .done) {
             var id_buf: [36]u8 = undefined;
             generateUuid(frame.io, &id_buf);
             const now = std.Io.Clock.Timestamp.now(frame.io, .real);
             const now_s: i64 = @intCast(@divTrunc(now.raw.toNanoseconds(), 1_000_000_000));
-            const sha_opt: ?[64]u8 = if (job.archive_sha256_set) job.archive_sha256_hex else null;
+            const sha_opt: ?[64]u8 = if (p.archive_sha256_set) p.archive_sha256_hex else null;
             frame.lib.upsertInstall(&.{
                 .id = id_buf,
-                .game_thread_id = job.game_id,
-                .version = job.version,
-                .install_path = job.dest_dir,
+                .game_thread_id = p.game_id,
+                .version = p.version,
+                .install_path = p.dest_dir,
                 .recipe_id = "",
                 .installed_at = now_s,
-                .name = job.name,
+                .name = p.name,
                 .source = .manual,
                 .archive_sha256 = sha_opt,
             }) catch |e| {
@@ -2281,21 +2279,21 @@ pub fn drainManualInstall(frame: *Frame) void {
             };
             common.refreshInstalledSet(frame);
             state.setDownloadMsg("Manual install: done.");
-            log.info("manual-install: tid={d} v='{s}' installed at '{s}'", .{ job.game_id, job.version, job.dest_dir });
+            log.info("manual-install: tid={d} v='{s}' installed at '{s}'", .{ p.game_id, p.version, p.dest_dir });
         } else if (phase == .failed) {
             var buf: [192]u8 = undefined;
             const msg = std.fmt.bufPrint(
                 &buf,
                 "Manual install failed: {s}",
-                .{job.err_name orelse "?"},
+                .{p.err_name orelse "?"},
             ) catch "Manual install failed";
             state.setDownloadMsg(msg);
-            log.warn("manual-install: tid={d} failed ({s})", .{ job.game_id, job.err_name orelse "?" });
+            log.warn("manual-install: tid={d} failed ({s})", .{ p.game_id, p.err_name orelse "?" });
         }
-        job.alloc.free(job.file_path);
-        job.alloc.free(job.dest_dir);
-        job.alloc.free(job.version);
-        if (job.name) |s| job.alloc.free(s);
+        job.alloc.free(p.file_path);
+        job.alloc.free(p.dest_dir);
+        job.alloc.free(p.version);
+        if (p.name) |s| job.alloc.free(s);
         job.alloc.destroy(job);
         _ = list.swapRemove(i);
     }

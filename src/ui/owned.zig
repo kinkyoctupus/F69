@@ -395,12 +395,16 @@ pub const TestInstallPayload = struct {
 };
 pub const TestInstallJob = Job(TestInstallPayload);
 
-pub const PostInstallJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the post-download install worker (sha-verify +
+/// extract). The worker spawns a paired poller thread for
+/// progress estimation; the poller reads `progress_stop` /
+/// `archive_size` and writes `progress_pct`. Those fields stay
+/// on the payload because the Job(P) carrier doesn't model
+/// paired-thread state — but the carrier itself fits the
+/// pending/done/failed phase shape this worker uses, so the
+/// migration just folds the per-task data into the payload.
+pub const PostInstallPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     download_job_id: u64,
     game_id: u64,
     /// All inputs heap-owned so the worker can outlive its frame.
@@ -434,15 +438,16 @@ pub const PostInstallJob = struct {
     /// (`startManualInstall`) and never touch this struct.
     source: library.InstallSource = .recipe,
 };
+pub const PostInstallJob = Job(PostInstallPayload);
 
 pub const PostInstallJobsList = std.ArrayList(*PostInstallJob);
 
-pub const ManualInstallJob = struct {
-    phase: std.atomic.Value(u8),
-    alloc: std.mem.Allocator,
+/// Payload for the manual-install worker. Same paired-poller shape
+/// as PostInstallPayload — both extract archives off-thread with a
+/// progress estimator running alongside — but with the SHA captured
+/// by the worker (rather than verified against an expected value).
+pub const ManualInstallPayload = struct {
     io: std.Io,
-    win: *dvui.Window,
-    thr: std.Thread,
     game_id: u64,
     /// Source archive on the user's disk — owned. Never modified.
     file_path: []u8,
@@ -458,7 +463,7 @@ pub const ManualInstallJob = struct {
     archive_sha256_hex: [64]u8 = [_]u8{0} ** 64,
     archive_sha256_set: bool = false,
     err_name: ?[]const u8 = null,
-    /// Extract-progress estimate (0..100). Same shape as PostInstallJob:
+    /// Extract-progress estimate (0..100). Same shape as PostInstall:
     /// the poller thread walks dest_dir size every ~250ms and writes
     /// the best guess here so the UI can render a moving bar.
     progress_pct: std.atomic.Value(u8) = .init(0),
@@ -470,6 +475,7 @@ pub const ManualInstallJob = struct {
     /// indeterminate animation.
     archive_size: u64 = 0,
 };
+pub const ManualInstallJob = Job(ManualInstallPayload);
 
 pub const ManualInstallJobsList = std.ArrayList(*ManualInstallJob);
 
