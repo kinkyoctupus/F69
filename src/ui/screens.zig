@@ -43,15 +43,3 @@ pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 pub const renderSyncRecapPopup = components.renderSyncRecapPopup;
 pub const renderToasts = components.renderToasts;
 pub const renderSyncBanner = components.renderSyncBanner;
-
-// ---- Public cover renderers (kept around even though unused
-// externally — they were part of screens.zig's pub surface before R8
-// and removing them would be a behaviour change). ----
-pub const renderCover = detail_screen.renderCover;
-pub const renderCoverThumb = detail_screen.renderCoverThumb;
-
-// ---- Public carousel + ribbon size constants ----
-pub const CAROUSEL_H = detail_screen.CAROUSEL_H;
-pub const RIBBON_THUMB_W = detail_screen.RIBBON_THUMB_W;
-pub const RIBBON_THUMB_H = detail_screen.RIBBON_THUMB_H;
-pub const RIBBON_H = detail_screen.RIBBON_H;

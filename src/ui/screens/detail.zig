@@ -1804,10 +1804,10 @@ fn downloadStatusText(job: downloads.Job) []const u8 {
 //  Carousel / ribbon / cover renderers
 // ============================================================
 
-pub const CAROUSEL_H: f32 = 360;
-pub const RIBBON_THUMB_W: f32 = 96;
-pub const RIBBON_THUMB_H: f32 = 54;
-pub const RIBBON_H: f32 = RIBBON_THUMB_H + 12;
+const CAROUSEL_H: f32 = 360;
+const RIBBON_THUMB_W: f32 = 96;
+const RIBBON_THUMB_H: f32 = 54;
+const RIBBON_H: f32 = RIBBON_THUMB_H + 12;
 
 const ICON_SIZE: dvui.Size = style.icon_size;
 const ICON_OPTS: dvui.IconRenderOptions = .{};
@@ -2018,7 +2018,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
     return null;
 }
 
-pub fn renderCover(bytes_opt: ?[]const u8) void {
+fn renderCover(bytes_opt: ?[]const u8) void {
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
             .source = .{ .imageFile = .{ .bytes = bytes, .name = "cover" } },
@@ -2044,7 +2044,7 @@ pub fn renderCover(bytes_opt: ?[]const u8) void {
     dvui.label(@src(), "(no cover)", .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
 }
 
-pub fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
+fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
             .source = .{ .imageFile = .{ .bytes = bytes, .name = "thumb" } },
