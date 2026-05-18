@@ -132,10 +132,15 @@ jobs:
             cp zig-out/aur/PKGBUILD ./
             # Patch source= to use the working-tree tarball.
             VER=$(awk -F= "/^pkgver=/ { print \$2 }" PKGBUILD)
+            # Write the tarball outside cwd, then move it back. Writing
+            # it in-place makes tar walk a dir whose contents change as
+            # the .tar.gz grows, triggering "file changed as we read it"
+            # and exit 1.
             tar --exclude=./.git --exclude=./.zig-cache --exclude=./zig-out \
                 --exclude=./dist --exclude=./.direnv \
                 --transform "s,^\\./,f69-${VER}/," \
-                -czf "f69-${VER}.tar.gz" .
+                -czf "/tmp/f69-${VER}.tar.gz" .
+            mv "/tmp/f69-${VER}.tar.gz" "f69-${VER}.tar.gz"
             sed -i "s|^source=.*|source=(\"f69-${VER}.tar.gz\")|" PKGBUILD
             sed -i "s|^sha256sums=.*|sha256sums=(\"SKIP\")|" PKGBUILD
             makepkg --noconfirm -f --skipchecksums
