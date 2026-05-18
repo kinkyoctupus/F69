@@ -1,12 +1,14 @@
 // Compat recipe repository. Loads:
 //
-//   1. Bundled recipes — `@embedFile`d from `src/compat/recipes/*.compat.zon`
-//      at compile time. These ship with the app and are the authoritative
-//      source for the fixes f69 knows about.
+//   1. Bundled recipes — `@import("recipes/foo.compat.zon")`d at
+//      compile time. The parsed `dom.Recipe` values live in the
+//      binary's read-only segment; their sha-256 is precomputed at
+//      comptime. Zero runtime parse, zero runtime allocation.
 //
 //   2. User recipes — `.compat.zon` files under
-//      `<data_root>/compat-recipes/`. Optional; loaded after bundled ones,
-//      can override a bundled recipe by re-using the same `id`.
+//      `<data_root>/compat-recipes/`. Optional; loaded after bundled
+//      ones, can override a bundled recipe by re-using the same `id`.
+//      Still go through `zon_loader.loadPath` → arena-owned `Parsed`.
 //
 // Validation runs at load time; recipes that don't validate are skipped
 // and logged. The repo holds parsed recipes for the life of the process.
@@ -19,39 +21,88 @@ const validator = @import("validator.zig");
 
 const log = std.log.scoped(.compat_repo);
 
-/// Comptime list of bundled recipes. Add a new file by appending a row
-/// here. Each row is `(file_basename, embedded_bytes)` — the basename
-/// is used only for diagnostic messages.
-const BUNDLED = [_]struct { name: []const u8, src: [:0]const u8 }{
+/// Comptime list of bundled recipes. Each row binds a basename (for
+/// log messages), the comptime-parsed recipe value, and its source
+/// bytes (still needed for the sha hash). Adding a new built-in =
+/// drop a `.compat.zon` under `recipes/` and append a row; a
+/// malformed file breaks the build rather than failing at startup.
+const Bundled = struct {
+    name: []const u8,
+    recipe: dom.Recipe,
+    src: []const u8,
+};
+
+const BUNDLED: []const Bundled = &.{
     .{
         .name = "linux.renpy7.sdl-fhs.compat.zon",
+        .recipe = @import("recipes/linux.renpy7.sdl-fhs.compat.zon"),
         .src = @embedFile("recipes/linux.renpy7.sdl-fhs.compat.zon"),
     },
     .{
         .name = "linux.renpy8.sdl-fhs.compat.zon",
+        .recipe = @import("recipes/linux.renpy8.sdl-fhs.compat.zon"),
         .src = @embedFile("recipes/linux.renpy8.sdl-fhs.compat.zon"),
     },
     .{
         .name = "linux.rpgm-mv.fhs.compat.zon",
+        .recipe = @import("recipes/linux.rpgm-mv.fhs.compat.zon"),
         .src = @embedFile("recipes/linux.rpgm-mv.fhs.compat.zon"),
     },
     .{
         .name = "linux.unity.fhs.compat.zon",
+        .recipe = @import("recipes/linux.unity.fhs.compat.zon"),
         .src = @embedFile("recipes/linux.unity.fhs.compat.zon"),
     },
 };
 
+/// Sha-256 hex of one bundled recipe's source bytes, computed at
+/// comptime. Hits Zig's default eval-branch quota fast — bump it.
+fn comptimeSha256Hex(comptime bytes: []const u8) [64]u8 {
+    @setEvalBranchQuota(200_000);
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(bytes);
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const tbl = "0123456789abcdef";
+    var hex: [64]u8 = undefined;
+    for (digest, 0..) |b, i| {
+        hex[2 * i] = tbl[b >> 4];
+        hex[2 * i + 1] = tbl[b & 0xf];
+    }
+    return hex;
+}
+
+/// Parallel-indexed sha table — `BUNDLED_SHA[i]` is the sha of
+/// `BUNDLED[i].src`. Each entry is a static `[64]u8` in rodata.
+const BUNDLED_SHA: [BUNDLED.len][64]u8 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var out: [BUNDLED.len][64]u8 = undefined;
+    for (BUNDLED, 0..) |b, i| out[i] = comptimeSha256Hex(b.src);
+    break :blk out;
+};
+
+/// Loaded recipe entry. `is_bundled` gates the deinit path: bundled
+/// entries point at rodata (no arena, no heap sha), user entries own
+/// both an arena and a heap-allocated sha/origin.
 pub const Entry = struct {
-    parsed: zon_loader.Parsed,
-    /// SHA-256 of the recipe source bytes, lowercase hex. Used by
-    /// FixRecord so the UI can detect "recipe upgraded since I
-    /// applied it" later.
-    source_sha256: []u8,
+    /// Stable pointer to the recipe — either into rodata (bundled)
+    /// or into the `arena` below (user).
+    recipe_ptr: *const dom.Recipe,
+    /// `null` for bundled entries (their data lives in rodata).
+    /// `Parsed.arena` for user entries — owns the recipe value, all
+    /// its nested strings, and the source bytes.
+    arena: ?std.heap.ArenaAllocator,
+    /// SHA-256 of the recipe source bytes, lowercase hex. Bundled =
+    /// pointer into static `BUNDLED_SHA[i]`; user = heap slice owned
+    /// by the repo allocator.
+    source_sha256: []const u8,
     /// "bundled" or the absolute path of the user file, for logs.
+    /// String literal for bundled; heap-owned dup for user.
     origin: []const u8,
+    is_bundled: bool,
 
     pub fn recipe(self: *const Entry) *const dom.Recipe {
-        return &self.parsed.recipe;
+        return self.recipe_ptr;
     }
 };
 
@@ -80,9 +131,9 @@ pub const Repo = struct {
 
     fn clearEntries(self: *Repo) void {
         for (self.entries.items) |*e| {
-            e.parsed.deinit();
-            self.alloc.free(e.source_sha256);
-            if (!std.mem.eql(u8, e.origin, "bundled")) {
+            if (e.arena) |*a| a.deinit();
+            if (!e.is_bundled) {
+                self.alloc.free(e.source_sha256);
                 self.alloc.free(e.origin);
             }
         }
@@ -94,9 +145,22 @@ pub const Repo = struct {
     pub fn load(self: *Repo) errs.Error!void {
         self.clearEntries();
 
-        for (BUNDLED) |b| {
-            self.loadOne(b.src, "bundled", b.name) catch |e| {
+        // Bundled recipes — comptime-parsed via `@import`, validation
+        // is the only runtime step. No allocations for the recipe
+        // value, sha, or origin string (all rodata).
+        for (BUNDLED, 0..) |*b, i| {
+            validator.validate(&b.recipe) catch |e| {
                 log.warn("bundled recipe {s} skipped: {s}", .{ b.name, @errorName(e) });
+                continue;
+            };
+            self.entries.append(self.alloc, .{
+                .recipe_ptr = &b.recipe,
+                .arena = null,
+                .source_sha256 = &BUNDLED_SHA[i],
+                .origin = "bundled",
+                .is_bundled = true,
+            }) catch |e| {
+                log.warn("bundled recipe {s} append failed: {s}", .{ b.name, @errorName(e) });
             };
         }
 
@@ -105,45 +169,6 @@ pub const Repo = struct {
         };
 
         log.info("loaded {d} compat recipe(s)", .{self.entries.items.len});
-    }
-
-    fn loadOne(self: *Repo, bytes_z: [:0]const u8, origin_literal: []const u8, name_for_log: []const u8) errs.Error!void {
-        var parsed = try zon_loader.parseFromBytes(self.alloc, bytes_z);
-        errdefer parsed.deinit();
-        try validator.validate(&parsed.recipe);
-        const sha = zon_loader.hashSource(self.alloc, parsed.source_bytes) catch return errs.Error.OutOfMemory;
-        errdefer self.alloc.free(sha);
-        const origin_owned = if (std.mem.eql(u8, origin_literal, "bundled"))
-            origin_literal
-        else
-            self.alloc.dupe(u8, origin_literal) catch return errs.Error.OutOfMemory;
-        errdefer if (!std.mem.eql(u8, origin_owned, "bundled")) self.alloc.free(origin_owned);
-
-        // Override semantics: if a recipe with the same id already
-        // exists, replace it. User recipes win because they're loaded
-        // second.
-        for (self.entries.items, 0..) |*existing, i| {
-            if (std.mem.eql(u8, existing.recipe().id, parsed.recipe.id)) {
-                log.info("overriding bundled recipe {s} with {s}", .{ parsed.recipe.id, origin_literal });
-                existing.parsed.deinit();
-                self.alloc.free(existing.source_sha256);
-                if (!std.mem.eql(u8, existing.origin, "bundled")) {
-                    self.alloc.free(existing.origin);
-                }
-                self.entries.items[i] = .{
-                    .parsed = parsed,
-                    .source_sha256 = sha,
-                    .origin = origin_owned,
-                };
-                return;
-            }
-        }
-        self.entries.append(self.alloc, .{
-            .parsed = parsed,
-            .source_sha256 = sha,
-            .origin = origin_owned,
-        }) catch return errs.Error.OutOfMemory;
-        _ = name_for_log;
     }
 
     fn loadUserDir(self: *Repo) errs.Error!void {
@@ -179,28 +204,44 @@ pub const Repo = struct {
                 parsed.deinit();
                 continue;
             };
-            // Reuse override path through loadOne by inlining: simpler
-            // here since we already have parsed bytes.
+
+            // Move the parsed Recipe into the arena so we have a
+            // stable address for `recipe_ptr`. (Parsed.recipe is a
+            // value field — its address shifts when Parsed is moved
+            // into the Entry, so we can't reuse it directly.)
+            const recipe_slot = parsed.arena.allocator().create(dom.Recipe) catch {
+                parsed.deinit();
+                self.alloc.free(sha);
+                self.alloc.free(path_owned);
+                continue;
+            };
+            recipe_slot.* = parsed.recipe;
+
+            const new_entry: Entry = .{
+                .recipe_ptr = recipe_slot,
+                .arena = parsed.arena,
+                .source_sha256 = sha,
+                .origin = path_owned,
+                .is_bundled = false,
+            };
+
+            // Override semantics: a user recipe with the same id
+            // REPLACES an existing entry. `clearEntries`-style logic
+            // applies per-entry: bundled entries skip the sha/origin
+            // free, user entries reclaim them.
             for (self.entries.items, 0..) |*existing, i| {
-                if (std.mem.eql(u8, existing.recipe().id, parsed.recipe.id)) {
-                    existing.parsed.deinit();
-                    self.alloc.free(existing.source_sha256);
-                    if (!std.mem.eql(u8, existing.origin, "bundled")) {
+                if (std.mem.eql(u8, existing.recipe().id, recipe_slot.id)) {
+                    log.info("overriding compat recipe {s} with {s}", .{ recipe_slot.id, path_owned });
+                    if (existing.arena) |*a| a.deinit();
+                    if (!existing.is_bundled) {
+                        self.alloc.free(existing.source_sha256);
                         self.alloc.free(existing.origin);
                     }
-                    self.entries.items[i] = .{
-                        .parsed = parsed,
-                        .source_sha256 = sha,
-                        .origin = path_owned,
-                    };
+                    self.entries.items[i] = new_entry;
                     break;
                 }
             } else {
-                self.entries.append(self.alloc, .{
-                    .parsed = parsed,
-                    .source_sha256 = sha,
-                    .origin = path_owned,
-                }) catch {
+                self.entries.append(self.alloc, new_entry) catch {
                     parsed.deinit();
                     self.alloc.free(sha);
                     self.alloc.free(path_owned);
