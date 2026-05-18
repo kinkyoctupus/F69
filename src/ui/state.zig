@@ -658,6 +658,22 @@ pub const State = struct {
     import_buf: [8192]u8 = [_]u8{0} ** 8192,
     /// Imported / skipped counts shown to the user post-import.
     import_msg: buf_mod.MessageBuf(128) = .{},
+    /// Folder-scan importer state. The scan walks a directory of
+    /// installed games (e.g. `~/Games/`) and parses each subfolder
+    /// for a name + version. Held as an opaque pointer to
+    /// `*importers.Bundle` (owned by the bundle's arena) so the
+    /// downstream UI can iterate `bundle.games`. Freed on a fresh
+    /// scan, on screen exit, and on shutdown.
+    folder_scan_path_buf: [512]u8 = [_]u8{0} ** 512,
+    folder_scan_bundle: ?*anyopaque = null,
+    folder_scan_msg: buf_mod.MessageBuf(192) = .{},
+    /// Per-row resolution-popup state. `null` = no popup. Otherwise
+    /// the index into `bundle.games` whose F95 association the user
+    /// is editing right now. The user can paste an F95 URL/id to
+    /// resolve the synthetic id, OR confirm "add as custom" to
+    /// keep the synthetic id.
+    folder_resolve_idx: ?usize = null,
+    folder_resolve_url_buf: [256]u8 = [_]u8{0} ** 256,
     /// Set by the importer; runMainLoop checks each iteration and
     /// re-runs `lib.listGames` when true.
     reload_requested: bool = false,
@@ -858,6 +874,21 @@ pub const State = struct {
     pub fn importBufSlice(self: *State) []u8 {
         const end = std.mem.indexOfScalar(u8, &self.import_buf, 0) orelse self.import_buf.len;
         return self.import_buf[0..end];
+    }
+
+    pub fn folderScanPathSlice(self: *const State) []const u8 {
+        const end = std.mem.indexOfScalar(u8, &self.folder_scan_path_buf, 0) orelse self.folder_scan_path_buf.len;
+        return self.folder_scan_path_buf[0..end];
+    }
+    pub fn setFolderScanMsg(self: *State, msg: []const u8) void {
+        self.folder_scan_msg.write(msg);
+    }
+    pub fn folderScanMsg(self: *const State) []const u8 {
+        return self.folder_scan_msg.read();
+    }
+    pub fn folderResolveUrlSlice(self: *const State) []const u8 {
+        const end = std.mem.indexOfScalar(u8, &self.folder_resolve_url_buf, 0) orelse self.folder_resolve_url_buf.len;
+        return self.folder_resolve_url_buf[0..end];
     }
 
     pub fn syncMsg(self: *const State) []const u8 {

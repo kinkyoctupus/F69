@@ -92,6 +92,11 @@ pub const startUpdateCheck = imports.startUpdateCheck;
 pub const drainUpdateCheck = imports.drainUpdateCheck;
 pub const doImportFromF95Checker = imports.doImportFromF95Checker;
 pub const doImportFromXLibrary = imports.doImportFromXLibrary;
+pub const doFolderScan = imports.doFolderScan;
+pub const folderScanBundle = imports.folderScanBundle;
+pub const resolveFolderEntry = imports.resolveFolderEntry;
+pub const parseF95ThreadInput = imports.parseF95ThreadInput;
+pub const freeFolderScan = imports.freeFolderScan;
 pub const drainImport = imports.drainImport;
 
 // ---- Common glue ----
