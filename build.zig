@@ -1469,6 +1469,7 @@ const RPM_SPEC =
     \\
     \\BuildRequires:  zig
     \\BuildRequires:  pkgconfig
+    \\BuildRequires:  patchelf
     \\BuildRequires:  wayland-devel
     \\BuildRequires:  libxkbcommon-devel
     \\BuildRequires:  libdecor-devel
@@ -1518,6 +1519,12 @@ const RPM_SPEC =
     \\
     \\%install
     \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true
+    \\# Strip baked-in RUNPATH — system installs resolve libs via
+    \\# /etc/ld.so.cache, not via RPATH. pkg-config on Fedora sneaks
+    \\# `/usr/lib64/pkgconfig/../../lib64` into the linker line, which
+    \\# Zig propagates to DT_RUNPATH; rpm's check-rpaths fails on the
+    \\# absolute-path-with-`..` pattern.
+    \\patchelf --remove-rpath %{{buildroot}}%{{_bindir}}/f69
     \\install -Dm644 LICENSE %{{buildroot}}%{{_datadir}}/licenses/%{{name}}/LICENSE
     \\
     \\%files
