@@ -1,8 +1,8 @@
 // Re-export wall for the per-screen modules. After R8 the actual
 // screen implementations live under `src/ui/screens/`, with shared
 // widgets in `src/ui/components.zig`. This file exists so every
-// existing `screens.X` call site (mostly in ui.zig + actions.zig
-// + main.zig) keeps resolving without churn.
+// existing `screens.X` call site (mostly in ui.zig + main.zig)
+// keeps resolving without churn.
 //
 // Layout map:
 //   library.zig        — libraryScreen, sidebar/cards/sort

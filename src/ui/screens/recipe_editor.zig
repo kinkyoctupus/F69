@@ -146,7 +146,7 @@ fn renderWizardMeta(w: *state_mod.WizardState) void {
     wizardTextRow(@src(), "F95 post URL", &w.post_url_buf);
 
     // Target-game-version: dropdown over installed builds. The wizard
-    // refuses to open when there are no installs (in actions.zig), so
+    // refuses to open when there are no installs (in actions/mods.zig), so
     // we always have ≥1 entry here. Selecting a row mirrors it into
     // `for_game_version_buf` so the serializer doesn't have to know
     // about the dropdown indirection.

@@ -2,14 +2,17 @@
 //
 // File layout for the ui module:
 //
-//   ui/state.zig    persistent UI state (Filters, View, Sort, etc.)
-//   ui/types.zig    Frame, RuntimeInfo, theme, ascii/time helpers
-//   ui/actions.zig  sync engine, cover cache, browser, delete
-//   ui/screens.zig  4 screens + render helpers + sorting
-//   ui/ui.zig       this file: runMainLoop + guiFrame dispatcher
+//   ui/state.zig     persistent UI state (Filters, View, Sort, etc.)
+//   ui/types.zig     Frame, RuntimeInfo, theme, ascii/time helpers
+//   ui/actions.zig   pure re-export wall over actions/*.zig (post-R9)
+//   ui/actions/*.zig per-domain action code (sync, downloads, installer,
+//                    launch, bookmarks, auth, mods, tags, imports, common)
+//   ui/screens.zig   per-screen entry-point wall over screens/*.zig
+//   ui/screens/*.zig per-screen render code (post-R8 split)
+//   ui/ui.zig        this file: runMainLoop + guiFrame dispatcher
 //
-// `state.zig` and `types.zig` are leaves; `actions.zig` imports
-// `types.zig`; `screens.zig` imports `types.zig` + `actions.zig`;
+// `state.zig` and `types.zig` are leaves; the `actions/*` modules
+// import `types.zig`; `screens.zig` imports `types.zig` + `actions.zig`;
 // `ui.zig` imports everything. No cycles.
 
 const std = @import("std");

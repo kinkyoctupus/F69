@@ -1,6 +1,6 @@
 // One-at-a-time importer worker for F95Checker / xLibrary.
 //
-// Pattern mirrors `actions.zig`'s bookmarks worker: a background
+// Pattern mirrors `actions/bookmarks.zig`'s bookmarks worker: a background
 // thread does the slow filesystem work (read source data → migrate
 // install dirs → SHA-256 verify); the UI thread drains staged
 // upserts each frame and commits them to the library DB.

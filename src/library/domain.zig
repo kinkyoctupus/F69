@@ -134,7 +134,7 @@ pub const SandboxOverride = enum { use_default, always, never };
 /// Per-game tri-state for the auto-update behaviour. `.use_default`
 /// defers to `state.auto_update_default`; `.always` / `.never`
 /// override regardless of the global toggle. Same shape as
-/// `SandboxOverride` on purpose — the resolver in actions.zig
+/// `SandboxOverride` on purpose — the resolver in actions/launch.zig
 /// (`shouldAutoUpdate`) parallels `shouldSandbox`.
 pub const AutoUpdateOverride = enum { use_default, always, never };
 

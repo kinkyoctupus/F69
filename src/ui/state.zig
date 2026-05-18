@@ -72,8 +72,8 @@ pub const WIZARD_MAX_BLOCKS: usize = 32;
 pub const WIZARD_MAX_RELATIONS: usize = 16;
 pub const WIZARD_MAX_INSTALL_VERSIONS: usize = 16;
 
-/// Per-wizard state. Allocated/freed by `actions.zig` when the user
-/// clicks "Create recipe" / cancels / saves.
+/// Per-wizard state. Allocated/freed by `actions/mods.zig` when the
+/// user clicks "Create recipe" / cancels / saves.
 pub const WizardState = struct {
     step: WizardStep = .meta,
     /// Modfile this wizard is authoring a recipe for. SHA-256 hex.
@@ -631,15 +631,15 @@ pub const State = struct {
     /// Sync-all queue: thread_ids waiting to be synced. drainSync pops
     /// the head and spawns the next job once the current one finishes.
     /// Heap-alloc'd via `lib.alloc`; null when no batch is in flight.
-    /// Heap-allocated UpdateCheckJob (defined in `actions.zig`), held
-    /// as anyopaque to avoid the cyclic import. `drainUpdateCheck`
+    /// Heap-allocated UpdateCheckJob (defined in `actions/imports.zig`),
+    /// held as anyopaque to avoid the cyclic import. `drainUpdateCheck`
     /// reads phase via atomics and frees here on completion.
     pending_update_check: ?*owned.UpdateCheckJob = null,
-    /// Heap-allocated RpdlDownloadJob (defined in `actions.zig`).
+    /// Heap-allocated RpdlDownloadJob (defined in `actions/downloads.zig`).
     /// Tracks the search → fetch-torrent → enqueue handoff for the
     /// per-game Tier-2 auto-download.
     pending_rpdl_download: ?*owned.RpdlDownloadJob = null,
-    /// Heap-allocated DonorDownloadJob (defined in `actions.zig`).
+    /// Heap-allocated DonorDownloadJob (defined in `actions/downloads.zig`).
     /// Mirrors `pending_rpdl_download` for the Tier-1 donor-DDL flow:
     /// POST `/sam/dddl.php` → grab signed URL → enqueue via aria2.
     pending_donor_download: ?*owned.DonorDownloadJob = null,
@@ -656,7 +656,7 @@ pub const State = struct {
     /// errorMessage). Drives the verbose "how is this download
     /// behaving" logging that `drainDonorTelemetry` emits.
     donor_tick_log: ?*owned.DonorTickLog = null,
-    /// Heap-allocated RefreshTagsJob (defined in `actions.zig`).
+    /// Heap-allocated RefreshTagsJob (defined in `actions/tags.zig`).
     /// Set while a master-tag-list refresh is in flight.
     pending_tags_refresh: ?*owned.RefreshTagsJob = null,
     /// Active post-install workers — one entry per terminal download
@@ -673,7 +673,7 @@ pub const State = struct {
     /// In-flight manual-install workers (user picked an archive off
     /// disk; we hash + extract + write an `installs` row). Same
     /// lifecycle as `post_install_jobs`; held as anyopaque so this
-    /// file doesn't pull in actions.zig's `ManualInstallJob`.
+    /// file doesn't pull in `actions/installer.zig`'s `ManualInstallJob`.
     manual_install_jobs: ?*owned.ManualInstallJobsList = null,
     /// Detail-page "Install from file…" expander state: when true,
     /// renderActionRow drops an inline panel under itself with
@@ -687,7 +687,7 @@ pub const State = struct {
     manual_install_name_buf: [64]u8 = [_]u8{0} ** 64,
     /// Accumulated "version changed" entries collected during a
     /// sync-all / updates-check batch. Lazy-init ArrayList of
-    /// `SyncRecapEntry` (defined in actions.zig). When the batch
+    /// `SyncRecapEntry` (defined in actions/sync.zig). When the batch
     /// finishes with `sync_recap_show = true`, the main loop renders
     /// the popup over the current screen.
     sync_recap: ?*owned.SyncRecapList = null,
@@ -732,8 +732,8 @@ pub const State = struct {
     image_queue_head: usize = 0,
     image_queue_len: usize = 0,
     image_queue_cap: usize = 0,
-    /// Currently-running ImageJob; opaque so `actions.zig` owns the
-    /// definition. Null when idle between jobs.
+    /// Currently-running ImageJob; opaque so `actions/sync.zig` owns
+    /// the definition. Null when idle between jobs.
     image_active: ?*owned.ImageJob = null,
     /// Name of the game whose ImageJob is in flight (for the second
     /// banner row). Sentinel-trimmed.
@@ -794,8 +794,8 @@ pub const State = struct {
     f95_pass_buf: [128]u8 = [_]u8{0} ** 128,
     login_status: LoginStatus = .unknown,
     login_msg: buf_mod.MessageBuf(128) = .{},
-    /// In-flight bookmarks pull (worker thread). `actions.zig` defines
-    /// the actual job struct.
+    /// In-flight bookmarks pull (worker thread). `actions/bookmarks.zig`
+    /// defines the actual job struct.
     pending_bookmarks: ?*owned.BookmarksJob = null,
     /// RPDL credentials + status, mirroring the F95 section above.
     /// `rpdl_token` is heap-owned (`lib.alloc`), populated on Login or
@@ -881,7 +881,7 @@ pub const State = struct {
     /// stutter even with a few dozen mods. Invalidated whenever the
     /// modfile cache is dropped (covers every mutating action) plus
     /// on thread/install-selection switch (handled in modsScreen).
-    /// Owned by `lib.alloc`; cast in actions.zig.
+    /// Owned by `lib.alloc`; cast in actions/mods.zig.
     mods_page_cache_thread: ?u64 = null,
     /// Buffer holding the install-id this cache was built against.
     /// Stored as a fixed buffer so we can compare without allocating.

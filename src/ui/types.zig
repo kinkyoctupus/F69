@@ -1,9 +1,10 @@
 // Shared UI types + small utilities used by both `screens.zig` and
-// `actions.zig`. Keeps the dependency graph one-way:
+// the per-domain modules under `actions/`. Keeps the dependency graph
+// one-way:
 //
 //     types.zig
 //       │
-//       ├── actions.zig
+//       ├── actions/*.zig (re-exported via actions.zig wall)
 //       │     │
 //       └─────┴── screens.zig
 //                  │
