@@ -61,56 +61,33 @@ tar --exclude=data -C zig-out -czf f69-portable.tar.gz bin
 
 ## Roadmap:
 
-Not a strict plan — more "things I'd like to get to". Order is roughly priority, not commitment.
+Not a strict plan — more things that I would like to add and improve:
 
-**Next (0.10):**
-
-- First proper release tag + signed binaries (current `zig build packages` already produces them locally; need to actually `git tag v0.10.0` and let CI publish them)
-- F95 search-by-name in the importer's resolve popup (right now you paste a URL — fine for power users, but searching by title is the obvious UX)
-- Auto-update donor status after every download (currently probed once at startup; if your donor flag drops mid-session you don't notice)
-- Debian + Fedora container builds working end-to-end (cross-distro static-libarchive symbol mismatch needs a Debian-host packager to resolve)
-
-**Soon-ish:**
-
-- More engine fix-up recipes — Godot, Ren'Py 6, Unity edge cases (uses fix-up library for missing libGLU.so.1 / libcurl-gnutls)
-- Hermetic Nix flake build (replace the `--impure` Zig-fetch with a vendored `fetchZigDeps` setup)
-- Mod recipe sharing — built-in fetch-from-URL so you can paste a recipe link and have it ready to install
-- A proper screenshot in this README (the section above has an HTML comment marking the spot)
-
-**Maybe one day:**
-
-<details>
-<summary>Things I want but aren't committing to</summary>
-
+- **Stable release** — fix all the bugs people report for the first stable release
+- **Debian + Fedora container builds** — working end-to-end (cross-distro static-libarchive symbol mismatch needs a Debian-host packager to resolve)
+- **More engine fix-up recipes** — Godot, Ren'Py 6, Unity edge cases (uses fix-up library for missing libGLU.so.1 / libcurl-gnutls)
+- **Mod recipe server** — for mod recipe submissions / sharing and browsing
+- **More recipe options** — I want to try to include unren and rpgmaker decryptor so those can be added as options in the recipe
+- **Cache server** — like xlibrary and f95checker for faster game info retrieval
 - **Browser extension** — F95Checker's pattern of "right-click thread → add to library" is hard to beat
-- **Translation runner hooks** — some games are JP-only; integrating with the usual MTL tooling would be nice
-- **Steam-style game time tracking** + last-played per game
-- **Discord Rich Presence** — playing X for Y minutes
-- **Custom themes** — current style is pink-on-dark; could expose the palette
+- **Windows / macOS support** — Windows is likely, macOs... not sure... I don't have a mac, so perhaps someone can make a PR for it if they want it.
 
-</details>
-
-**Won't:**
-
-- Windows / macOS ports — the whole sandbox / compat / FHS layer is Linux-shaped. Zig + dvui + SDL3 build there, but the rewrite would be substantial. If someone wants to drive it, the codebase is laid out to make it tractable.
-- Cloud sync — the portable data layout is the explicit goal; if you want sync, point `F69_DATA_DIR` at a Syncthing folder.
-- Phone apps — neither the UI nor the workflow makes sense on a phone screen.
 
 ## Building from source:
 
 `zig build` lists every target. The headline ones:
 
-| Step             | Output                       | What it is                                                                  |
-| ---------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| `install`        | `zig-out/bin/f69`            | Dev binary; respects `-Doptimize=` and `-Dgui=true`                         |
-| `portable`       | `zig-out/bin/`               | ReleaseSafe binary + bundled libs + `run.sh` — drop on any glibc distro     |
-| `portable-slim`  | `zig-out/portable-slim/`     | ReleaseSafe binary + `run.sh` + `DEPS.md` — host supplies the libs          |
-| `aur`            | `zig-out/aur/PKGBUILD`       | Arch PKGBUILD; add `-Dcontainer-build=true` to also produce `.pkg.tar.zst`  |
-| `deb`            | `zig-out/debian/`            | Debian source pkg; container build is experimental (see below)              |
-| `rpm`            | `zig-out/rpm/f69.spec`       | Fedora / RHEL / openSUSE spec; container build is experimental              |
-| `flake`          | —                            | Sanity-checks `flake.nix` (consumer uses `nix build .#f69`)                 |
-| `packages`       | all of the above             | Aggregate                                                                   |
-| `test`           | —                            | Every module's `test {}` blocks                                             |
+| Step            | Output                   | What it is                                                                 |
+| -----------------| --------------------------| ----------------------------------------------------------------------------|
+| `install`       | `zig-out/bin/f69`        | Dev binary; respects `-Doptimize=` and `-Dgui=true`                        |
+| `portable`      | `zig-out/bin/`           | ReleaseSafe binary + bundled libs + `run.sh` — drop on any glibc distro    |
+| `portable-slim` | `zig-out/portable-slim/` | ReleaseSafe binary + `run.sh` + `DEPS.md` — host supplies the libs         |
+| `aur`           | `zig-out/aur/PKGBUILD`   | Arch PKGBUILD; add `-Dcontainer-build=true` to also produce `.pkg.tar.zst` |
+| `deb`           | `zig-out/debian/`        | Debian source pkg; container build is experimental (see below)             |
+| `rpm`           | `zig-out/rpm/f69.spec`   | Fedora / RHEL / openSUSE spec; container build is experimental             |
+| `flake`         | —                        | Sanity-checks `flake.nix` (consumer uses `nix build .#f69`)                |
+| `packages`      | all of the above         | Aggregate                                                                  |
+| `test`          | —                        | Every module's `test {}` blocks                                            |
 
 **Build flags:**
 
