@@ -755,6 +755,8 @@ fn jobKindFromString(s: []const u8) dom.JobKind {
     return .game;
 }
 
+const test_env = @import("util_test_env");
+
 test "Manager init/deinit doesn't spawn aria2" {
     // No daemon means deinit must be safe even if init never happened.
     var mgr = Manager.init(
@@ -783,14 +785,12 @@ test "jobStatus round-trip" {
 
 test "persistJobs / loadJobsJson round-trip" {
     const alloc = std.testing.allocator;
-    var tio = std.Io.Threaded.init(alloc, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(alloc, "manager-jobs");
+    defer env.deinit();
+    const io = env.io;
 
-    // Use a non-shared tmp path so concurrent tests can't collide.
-    const path = "/tmp/f69-test-manager-jobs.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("jobs.json");
+    defer alloc.free(path);
 
     // ---- write side: populate maps directly + persist ----
     var write_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
@@ -848,14 +848,13 @@ test "persistJobs / loadJobsJson round-trip" {
 
 test "loadJobsJson handles missing file" {
     const alloc = std.testing.allocator;
-    var tio = std.Io.Threaded.init(alloc, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(alloc, "manager-missing-jobs");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-missing-jobs.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("missing-jobs.json");
+    defer alloc.free(path);
 
-    var mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var mgr = Manager.init(alloc, env.io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
     defer mgr.deinit();
     mgr.jobs_json_path = path;
     try mgr.loadJobsJson(); // should be a no-op, not an error

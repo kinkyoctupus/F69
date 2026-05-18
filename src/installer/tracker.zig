@@ -207,35 +207,32 @@ fn parseBackupMode(s_opt: ?[]const u8) dom.BackupMode {
 // ============================================================
 
 const testing = std.testing;
+const test_env = @import("util_test_env");
 
 test "Tracker: empty round-trip" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "tracker-empty");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-tracker-empty.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("tracker.json");
+    defer testing.allocator.free(path);
 
-    var t = Tracker.init(testing.allocator, io, path);
+    var t = Tracker.init(testing.allocator, env.io, path);
     defer t.deinit();
     try t.flush();
 
-    var log = try Tracker.load(testing.allocator, io, path);
+    var log = try Tracker.load(testing.allocator, env.io, path);
     defer log.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 0), log.entries.len);
 }
 
 test "Tracker: single added_file round-trip" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "tracker-single");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-tracker-single.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("tracker.json");
+    defer testing.allocator.free(path);
 
-    var t = Tracker.init(testing.allocator, io, path);
+    var t = Tracker.init(testing.allocator, env.io, path);
     defer t.deinit();
 
     try t.record(.{
@@ -246,7 +243,7 @@ test "Tracker: single added_file round-trip" {
     });
     try t.flush();
 
-    var log = try Tracker.load(testing.allocator, io, path);
+    var log = try Tracker.load(testing.allocator, env.io, path);
     defer log.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), log.entries.len);
     try testing.expectEqualStrings("summertime-saga.cheat-menu", log.entries[0].mod_id);
@@ -255,22 +252,20 @@ test "Tracker: single added_file round-trip" {
 }
 
 test "Tracker: mixed entries round-trip in order" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "tracker-mixed");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-tracker-mixed.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("tracker.json");
+    defer testing.allocator.free(path);
 
-    var t = Tracker.init(testing.allocator, io, path);
+    var t = Tracker.init(testing.allocator, env.io, path);
     defer t.deinit();
     try t.record(.{ .mod_id = "a", .path = "p1", .kind = .added_file });
     try t.record(.{ .mod_id = "a", .path = "p2", .kind = .created_dir });
     try t.record(.{ .mod_id = "b", .path = "p3", .kind = .modified_file });
     try t.flush();
 
-    var log = try Tracker.load(testing.allocator, io, path);
+    var log = try Tracker.load(testing.allocator, env.io, path);
     defer log.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 3), log.entries.len);
     try testing.expectEqualStrings("a", log.entries[0].mod_id);
@@ -280,21 +275,19 @@ test "Tracker: mixed entries round-trip in order" {
 }
 
 test "Tracker: backup_mode round-trip" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "tracker-backup");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-tracker-backup.json";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("tracker.json");
+    defer testing.allocator.free(path);
 
-    var t = Tracker.init(testing.allocator, io, path);
+    var t = Tracker.init(testing.allocator, env.io, path);
     defer t.deinit();
     try t.record(.{ .mod_id = "m1", .path = "p1", .kind = .modified_file, .backup_mode = .copy });
     try t.record(.{ .mod_id = "m1", .path = "p2", .kind = .added_file });
     try t.flush();
 
-    var log = try Tracker.load(testing.allocator, io, path);
+    var log = try Tracker.load(testing.allocator, env.io, path);
     defer log.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 2), log.entries.len);
     try testing.expectEqual(dom.BackupMode.copy, log.entries[0].backup_mode);
@@ -302,11 +295,13 @@ test "Tracker: backup_mode round-trip" {
 }
 
 test "Tracker.load: missing file → empty log" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "tracker-nope");
+    defer env.deinit();
 
-    var log = try Tracker.load(testing.allocator, io, "/tmp/f69-tracker-nope.json");
+    const missing = try env.path("does-not-exist.json");
+    defer testing.allocator.free(missing);
+
+    var log = try Tracker.load(testing.allocator, env.io, missing);
     defer log.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 0), log.entries.len);
 }

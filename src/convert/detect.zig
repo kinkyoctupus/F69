@@ -48,111 +48,59 @@ fn hasUnityMarkers(io: std.Io, install_dir: []const u8) bool {
 }
 
 // ============================================================
-//  tests — fixture-driven via /tmp scratch dirs
+//  tests — fixture-driven via TestEnv tmpdirs
 // ============================================================
 
 const testing = std.testing;
-
-fn tmpDir(io: std.Io, name: []const u8) ![]const u8 {
-    var path_buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "/tmp/f69-convert-detect-{s}", .{name});
-    // Cleanup any previous run.
-    std.Io.Dir.cwd().deleteTree(io, path) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, path);
-    return try testing.allocator.dupe(u8, path);
-}
-
-fn touch(io: std.Io, dir: []const u8, sub: []const u8) !void {
-    var p: [512]u8 = undefined;
-    const full = try std.fmt.bufPrint(&p, "{s}/{s}", .{ dir, sub });
-    if (std.fs.path.dirname(full)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
-    var f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
-    f.close(io);
-}
-
-fn mkdir(io: std.Io, dir: []const u8, sub: []const u8) !void {
-    var p: [512]u8 = undefined;
-    const full = try std.fmt.bufPrint(&p, "{s}/{s}", .{ dir, sub });
-    try std.Io.Dir.cwd().createDirPath(io, full);
-}
+const test_env = @import("util_test_env");
 
 test "detectEngine: Ren'Py" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-renpy");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "renpy");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try mkdir(io, root, "renpy");
-    try mkdir(io, root, "game");
-    try testing.expectEqual(dom.Engine.renpy, detectEngine(io, root));
+    try env.mkdirP("renpy");
+    try env.mkdirP("game");
+    try testing.expectEqual(dom.Engine.renpy, detectEngine(env.io, env.root));
 }
 
 test "detectEngine: RPGM MV (package.json + www/)" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-rpgm-mv");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "rpgm-mv");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try touch(io, root, "package.json");
-    try mkdir(io, root, "www");
-    try testing.expectEqual(dom.Engine.rpgm_mv, detectEngine(io, root));
+    try env.touchFile("package.json");
+    try env.mkdirP("www");
+    try testing.expectEqual(dom.Engine.rpgm_mv, detectEngine(env.io, env.root));
 }
 
 test "detectEngine: RPGM MZ (package.json + index.html, no www/)" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-rpgm-mz");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "rpgm-mz");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try touch(io, root, "package.json");
-    try touch(io, root, "index.html");
-    try testing.expectEqual(dom.Engine.rpgm_mz, detectEngine(io, root));
+    try env.touchFile("package.json");
+    try env.touchFile("index.html");
+    try testing.expectEqual(dom.Engine.rpgm_mz, detectEngine(env.io, env.root));
 }
 
 test "detectEngine: Unity (*_Data/ + UnityPlayer.so)" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-unity");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "unity");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try mkdir(io, root, "MyGame_Data");
-    try touch(io, root, "UnityPlayer.so");
-    try testing.expectEqual(dom.Engine.unity, detectEngine(io, root));
+    try env.mkdirP("MyGame_Data");
+    try env.touchFile("UnityPlayer.so");
+    try testing.expectEqual(dom.Engine.unity, detectEngine(env.io, env.root));
 }
 
 test "detectEngine: empty install dir → .unknown" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-empty");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "empty");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try testing.expectEqual(dom.Engine.unknown, detectEngine(io, root));
+    try testing.expectEqual(dom.Engine.unknown, detectEngine(env.io, env.root));
 }
 
 test "detectEngine: package.json without www/ or index.html → .unknown" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "detect-pkgjson-only");
+    defer env.deinit();
 
-    const root = try tmpDir(io, "package-json-only");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    try touch(io, root, "package.json");
-    try testing.expectEqual(dom.Engine.unknown, detectEngine(io, root));
+    try env.touchFile("package.json");
+    try testing.expectEqual(dom.Engine.unknown, detectEngine(env.io, env.root));
 }

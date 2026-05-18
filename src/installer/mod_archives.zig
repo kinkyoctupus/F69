@@ -969,6 +969,7 @@ fn copyFile(io: Io, src: []const u8, dst: []const u8) !void {
 // ============================================================
 
 const testing = std.testing;
+const test_env = @import("util_test_env");
 
 fn writeTestFile(io: Io, path: []const u8, content: []const u8) !void {
     if (std.fs.path.dirname(path)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
@@ -995,26 +996,23 @@ test "isArchive: positive / negative" {
 }
 
 test "addForGame: copies, indexes, returns added" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-add");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-add";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    const src = "/tmp/f69-ma-add-src.zip";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "fake-archive-payload-1");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/mod.zip", "fake-archive-payload-1");
+    const src = try env.path("src/mod.zip");
+    defer testing.allocator.free(src);
 
     const res = try addForGame(testing.allocator, io, root, 42, src);
     switch (res) {
         .added => |m| {
             defer freeModfile(testing.allocator, m);
             try testing.expectEqual(@as(usize, 64), m.id.len);
-            try testing.expectEqualStrings("f69-ma-add-src.zip", m.filename);
-            try testing.expectEqualStrings("f69-ma-add-src.zip", m.disk_name);
+            try testing.expectEqualStrings("mod.zip", m.filename);
+            try testing.expectEqualStrings("mod.zip", m.disk_name);
             try testing.expect(m.size_bytes > 0);
             try testing.expectEqual(@as(usize, 0), m.recipe_ids.len);
         },
@@ -1027,30 +1025,27 @@ test "addForGame: copies, indexes, returns added" {
     const mods = try loadIndex(testing.allocator, io, root, 42);
     defer freeModfileList(testing.allocator, mods);
     try testing.expectEqual(@as(usize, 1), mods.len);
-    try testing.expectEqualStrings("f69-ma-add-src.zip", mods[0].filename);
+    try testing.expectEqualStrings("mod.zip", mods[0].filename);
 }
 
 test "addForGame: same content twice → duplicate" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-dup");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-dup";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/mod.zip", "same-bytes");
+    const src = try env.path("src/mod.zip");
+    defer testing.allocator.free(src);
 
-    const src = "/tmp/f69-ma-dup-src.zip";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "same-bytes");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
-
-    const r1 = try addForGame(testing.allocator, io, root,100, src);
+    const r1 = try addForGame(testing.allocator, io, root, 100, src);
     switch (r1) {
         .added => |m| freeModfile(testing.allocator, m),
         .duplicate => return error.TestExpectedAdded,
     }
 
-    const r2 = try addForGame(testing.allocator, io, root,200, src);
+    const r2 = try addForGame(testing.allocator, io, root, 200, src);
     switch (r2) {
         .added => return error.TestExpectedDuplicate,
         .duplicate => |d| {
@@ -1061,26 +1056,22 @@ test "addForGame: same content twice → duplicate" {
 }
 
 test "addForGame: filename collision different hash → suffix" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-coll");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-coll";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
 
     // Two different files with the same basename — different staging dirs.
-    const dir_a = "/tmp/f69-ma-coll-a";
-    const dir_b = "/tmp/f69-ma-coll-b";
-    std.Io.Dir.cwd().deleteTree(io, dir_a) catch {};
-    std.Io.Dir.cwd().deleteTree(io, dir_b) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, dir_a) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, dir_b) catch {};
+    try env.writeFile("a/mod.zip", "alpha");
+    try env.writeFile("b/mod.zip", "beta-different");
+    const src_a = try env.path("a/mod.zip");
+    defer testing.allocator.free(src_a);
+    const src_b = try env.path("b/mod.zip");
+    defer testing.allocator.free(src_b);
 
-    try writeTestFile(io, "/tmp/f69-ma-coll-a/mod.zip", "alpha");
-    try writeTestFile(io, "/tmp/f69-ma-coll-b/mod.zip", "beta-different");
-
-    const r1 = try addForGame(testing.allocator, io, root,7, "/tmp/f69-ma-coll-a/mod.zip");
+    const r1 = try addForGame(testing.allocator, io, root, 7, src_a);
     switch (r1) {
         .added => |m| {
             defer freeModfile(testing.allocator, m);
@@ -1089,7 +1080,7 @@ test "addForGame: filename collision different hash → suffix" {
         .duplicate => return error.TestExpectedAdded,
     }
 
-    const r2 = try addForGame(testing.allocator, io, root,7, "/tmp/f69-ma-coll-b/mod.zip");
+    const r2 = try addForGame(testing.allocator, io, root, 7, src_b);
     switch (r2) {
         .added => |m| {
             defer freeModfile(testing.allocator, m);
@@ -1101,37 +1092,30 @@ test "addForGame: filename collision different hash → suffix" {
 }
 
 test "addForGame: non-archive rejected" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-nonarch");
+    defer env.deinit();
 
-    const root = "/tmp/f69-ma-nonarch";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/file.txt", "just text");
+    const src = try env.path("src/file.txt");
+    defer testing.allocator.free(src);
 
-    const src = "/tmp/f69-ma-nonarch.txt";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "just text");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
-
-    try testing.expectError(Error.NotAnArchive, addForGame(testing.allocator, io, root, 1, src));
+    try testing.expectError(Error.NotAnArchive, addForGame(testing.allocator, env.io, root, 1, src));
 }
 
 test "linkRecipe + findByRecipe round-trip" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-link");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-link";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/mod.zip", "linker-bytes");
+    const src = try env.path("src/mod.zip");
+    defer testing.allocator.free(src);
 
-    const src = "/tmp/f69-ma-link.zip";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "linker-bytes");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
-
-    const r = try addForGame(testing.allocator, io, root,9, src);
+    const r = try addForGame(testing.allocator, io, root, 9, src);
     var modfile_id: []u8 = undefined;
     switch (r) {
         .added => |m| {
@@ -1156,20 +1140,17 @@ test "linkRecipe + findByRecipe round-trip" {
 }
 
 test "deleteForGame: removes from disk + index" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-del");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-del";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/mod.zip", "to-delete");
+    const src = try env.path("src/mod.zip");
+    defer testing.allocator.free(src);
 
-    const src = "/tmp/f69-ma-del.zip";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "to-delete");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
-
-    const r = try addForGame(testing.allocator, io, root,3, src);
+    const r = try addForGame(testing.allocator, io, root, 3, src);
     var id_owned: []u8 = undefined;
     var disk_owned: []u8 = undefined;
     switch (r) {
@@ -1196,17 +1177,14 @@ test "deleteForGame: removes from disk + index" {
 }
 
 test "scanForGame: picks up manually-pasted file" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-scan");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-scan";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, "/tmp/f69-ma-scan/55");
-
-    try writeTestFile(io, "/tmp/f69-ma-scan/55/manual.zip", "manual-paste");
-    try writeTestFile(io, "/tmp/f69-ma-scan/55/readme.txt", "ignore me");
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("library/55/manual.zip", "manual-paste");
+    try env.writeFile("library/55/readme.txt", "ignore me");
 
     var report = try scanForGame(testing.allocator, io, root, 55);
     defer report.deinit(testing.allocator);
@@ -1222,13 +1200,12 @@ test "scanForGame: picks up manually-pasted file" {
 }
 
 test "saveIndex + loadIndex: filenames with quotes / backslashes round-trip" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-escape");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-escape";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
 
     // Build a Modfile by hand whose filename has a quote and a
     // backslash, plus a recipe_id that includes a newline. Naïve
@@ -1258,41 +1235,35 @@ test "saveIndex + loadIndex: filenames with quotes / backslashes round-trip" {
 }
 
 test "loadIndex: missing file returns empty without leaking" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-missing");
+    defer env.deinit();
 
-    const root = "/tmp/f69-ma-missing";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
 
-    const mods = try loadIndex(testing.allocator, io, root, 12345);
+    const mods = try loadIndex(testing.allocator, env.io, root, 12345);
     defer freeModfileList(testing.allocator, mods);
     try testing.expectEqual(@as(usize, 0), mods.len);
 }
 
 test "scanForGame: dedupes against another game" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "ma-scan-dup");
+    defer env.deinit();
+    const io = env.io;
 
-    const root = "/tmp/f69-ma-scan-dup";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const root = try env.path("library");
+    defer testing.allocator.free(root);
+    try env.writeFile("src/mod.zip", "shared-bytes");
+    const src = try env.path("src/mod.zip");
+    defer testing.allocator.free(src);
 
-    const src = "/tmp/f69-ma-scan-dup-src.zip";
-    std.Io.Dir.cwd().deleteFile(io, src) catch {};
-    try writeTestFile(io, src, "shared-bytes");
-    defer std.Io.Dir.cwd().deleteFile(io, src) catch {};
-
-    const r = try addForGame(testing.allocator, io, root,1, src);
+    const r = try addForGame(testing.allocator, io, root, 1, src);
     switch (r) {
         .added => |m| freeModfile(testing.allocator, m),
         .duplicate => return error.TestExpectedAdded,
     }
 
-    try std.Io.Dir.cwd().createDirPath(io, "/tmp/f69-ma-scan-dup/2");
-    try writeTestFile(io, "/tmp/f69-ma-scan-dup/2/shared.zip", "shared-bytes");
+    try env.writeFile("library/2/shared.zip", "shared-bytes");
 
     var report = try scanForGame(testing.allocator, io, root, 2);
     defer report.deinit(testing.allocator);

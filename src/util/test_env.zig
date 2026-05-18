@@ -90,6 +90,14 @@ pub const TestEnv = struct {
     pub fn path(self: *TestEnv, rel: []const u8) ![]u8 {
         return try std.fmt.allocPrint(self.alloc, "{s}/{s}", .{ self.root, rel });
     }
+
+    /// Create directory `<root>/<rel>` (and any missing parents). No-op
+    /// if it already exists.
+    pub fn mkdirP(self: *TestEnv, rel: []const u8) !void {
+        const full = try std.fmt.allocPrint(self.alloc, "{s}/{s}", .{ self.root, rel });
+        defer self.alloc.free(full);
+        try std.Io.Dir.cwd().createDirPath(self.io, full);
+    }
 };
 
 const testing = std.testing;

@@ -39,36 +39,33 @@ pub fn writeFileAtomic(io: Io, path: []const u8, bytes: []const u8) Error!void {
 }
 
 const testing = std.testing;
+const test_env = @import("util_test_env");
 
 test "writeFileAtomic: round-trips short content" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "atomic-io-test");
+    defer env.deinit();
 
-    const path = "/tmp/f69-atomic-io-test.txt";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("out.txt");
+    defer testing.allocator.free(path);
 
-    try writeFileAtomic(io, path, "hello atomic world\n");
+    try writeFileAtomic(env.io, path, "hello atomic world\n");
 
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .limited(64));
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(env.io, path, testing.allocator, .limited(64));
     defer testing.allocator.free(bytes);
     try testing.expectEqualStrings("hello atomic world\n", bytes);
 }
 
 test "writeFileAtomic: overwrite is atomic" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "atomic-io-overwrite");
+    defer env.deinit();
 
-    const path = "/tmp/f69-atomic-io-overwrite.txt";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    const path = try env.path("out.txt");
+    defer testing.allocator.free(path);
 
-    try writeFileAtomic(io, path, "first");
-    try writeFileAtomic(io, path, "second");
+    try writeFileAtomic(env.io, path, "first");
+    try writeFileAtomic(env.io, path, "second");
 
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, testing.allocator, .limited(64));
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(env.io, path, testing.allocator, .limited(64));
     defer testing.allocator.free(bytes);
     try testing.expectEqualStrings("second", bytes);
 }

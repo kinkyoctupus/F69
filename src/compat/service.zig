@@ -403,63 +403,31 @@ pub fn deserializeBackups(alloc: std.mem.Allocator, json_bytes: []const u8) errs
 // -----------------------------------------------------------------
 
 const test_recipe_id = "linux.renpy7.sdl-fhs";
-
-fn touchTestFile(io: std.Io, dir: []const u8, sub: []const u8) !void {
-    var p: [512]u8 = undefined;
-    const full = try std.fmt.bufPrint(&p, "{s}/{s}", .{ dir, sub });
-    if (std.fs.path.dirname(full)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
-    var f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
-    f.close(io);
-}
-
-/// Write a synthetic `renpy/vc_version.py` so engine_version_at_*
-/// detectors can resolve. `ver_literal` is the inner value of
-/// `version = u'…'`.
-fn writeRenpyVcVersion(io: std.Io, install_root: []const u8, ver_literal: []const u8) !void {
-    var p: [512]u8 = undefined;
-    const full = try std.fmt.bufPrint(&p, "{s}/renpy/vc_version.py", .{install_root});
-    if (std.fs.path.dirname(full)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
-    var f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
-    defer f.close(io);
-    var w_buf: [256]u8 = undefined;
-    var fw = f.writer(io, &w_buf);
-    try fw.interface.print("version = u'{s}'\n", .{ver_literal});
-    try fw.interface.flush();
-}
+const test_env = @import("util_test_env");
 
 test "service scan + apply + composeEnv against synthetic Ren'Py install" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(ta, "compat-svc-scan");
+    defer env.deinit();
+    const io = env.io;
 
     // Lay out: <tmp>/install (renpy game), <tmp>/resources/renpy7-fhs-libs/lib,
     // <tmp>/backups.
-    var path_buf: [256]u8 = undefined;
-    const tmp_root = try std.fmt.bufPrint(&path_buf, "/tmp/f69-compat-svc-scan", .{});
-    std.Io.Dir.cwd().deleteTree(io, tmp_root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_root) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, tmp_root);
-
-    const install_root = try std.fmt.allocPrint(ta, "{s}/install", .{tmp_root});
-    defer ta.free(install_root);
-    try std.Io.Dir.cwd().createDirPath(io, install_root);
-    try touchTestFile(io, install_root, "renpy/bootstrap.py");
-    try touchTestFile(io, install_root, "lib/linux-x86_64/libSDL2-2.0.so.0");
+    try env.touchFile("install/renpy/bootstrap.py");
+    try env.touchFile("install/lib/linux-x86_64/libSDL2-2.0.so.0");
     // Pin the synthetic install to Ren'Py 7 so `engine_version_at_most
     // 7.99` in the renpy7 recipe matches (and the renpy8 recipe stays
     // dormant).
-    try writeRenpyVcVersion(io, install_root, "7.5.3.23060707");
+    try env.writeFile("install/renpy/vc_version.py", "version = u'7.5.3.23060707'\n");
 
-    const resources_root = try std.fmt.allocPrint(ta, "{s}/resources", .{tmp_root});
-    defer ta.free(resources_root);
-    const fhs_dir = try std.fmt.allocPrint(ta, "{s}/renpy7-fhs-libs/lib", .{resources_root});
-    defer ta.free(fhs_dir);
-    try std.Io.Dir.cwd().createDirPath(io, fhs_dir);
     // touch a marker file so the resolver's access() succeeds
-    try touchTestFile(io, fhs_dir, "marker.txt");
+    try env.touchFile("resources/renpy7-fhs-libs/lib/marker.txt");
 
-    const backups_root = try std.fmt.allocPrint(ta, "{s}/backups", .{tmp_root});
+    const install_root = try env.path("install");
+    defer ta.free(install_root);
+    const resources_root = try env.path("resources");
+    defer ta.free(resources_root);
+    const backups_root = try env.path("backups");
     defer ta.free(backups_root);
 
     // Build host with empty soname_search → host_lacks_soname is true

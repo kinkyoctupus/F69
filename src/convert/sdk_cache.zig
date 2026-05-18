@@ -246,31 +246,17 @@ fn extractTarGz(
 // ============================================================
 
 const testing = std.testing;
-
-fn freshTmpRoot(io: std.Io, name: []const u8) ![]const u8 {
-    var buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buf, "/tmp/f69-sdk-cache-{s}", .{name});
-    std.Io.Dir.cwd().deleteTree(io, path) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, path);
-    return try testing.allocator.dupe(u8, path);
-}
+const test_env = @import("util_test_env");
 
 test "Cache.locate: hit" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "sdk-hit");
+    defer env.deinit();
 
-    const root = try freshTmpRoot(io, "hit");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    var cache = try Cache.init(testing.allocator, io, root);
+    var cache = try Cache.init(testing.allocator, env.io, env.root);
     defer cache.deinit();
 
     // Pre-stage an SDK dir.
-    var p: [512]u8 = undefined;
-    const sdk_path = try std.fmt.bufPrint(&p, "{s}/convert/sdks/renpy-7.5.3", .{root});
-    try std.Io.Dir.cwd().createDirPath(io, sdk_path);
+    try env.mkdirP("convert/sdks/renpy-7.5.3");
 
     const found = try cache.locate("renpy", "7.5.3");
     defer testing.allocator.free(found);
@@ -278,30 +264,20 @@ test "Cache.locate: hit" {
 }
 
 test "Cache.locate: miss returns SdkNotCached" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "sdk-miss");
+    defer env.deinit();
 
-    const root = try freshTmpRoot(io, "miss");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    var cache = try Cache.init(testing.allocator, io, root);
+    var cache = try Cache.init(testing.allocator, env.io, env.root);
     defer cache.deinit();
 
     try testing.expectError(errs.Error.SdkNotCached, cache.locate("renpy", "9.9.9"));
 }
 
 test "Cache.expectedPath: format" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "sdk-expected");
+    defer env.deinit();
 
-    const root = try freshTmpRoot(io, "expected");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    var cache = try Cache.init(testing.allocator, io, root);
+    var cache = try Cache.init(testing.allocator, env.io, env.root);
     defer cache.deinit();
 
     const ep = try cache.expectedPath("nwjs", "0.83.0");
@@ -344,22 +320,15 @@ test "sdkStripComponents: known tags" {
 }
 
 test "Cache.fetch: idempotent — second call returns cached path without network" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "sdk-fetch-idem");
+    defer env.deinit();
 
-    const root = try freshTmpRoot(io, "fetch-idem");
-    defer testing.allocator.free(root);
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    var cache = try Cache.init(testing.allocator, io, root);
+    var cache = try Cache.init(testing.allocator, env.io, env.root);
     defer cache.deinit();
 
     // Pre-stage the dir so fetch finds it via locate() and skips
     // network entirely.
-    var p: [512]u8 = undefined;
-    const sdk_path = try std.fmt.bufPrint(&p, "{s}/convert/sdks/renpy-7.5.3", .{root});
-    try std.Io.Dir.cwd().createDirPath(io, sdk_path);
+    try env.mkdirP("convert/sdks/renpy-7.5.3");
 
     const got = try cache.fetch("renpy", "7.5.3");
     defer testing.allocator.free(got);

@@ -134,35 +134,27 @@ fn engineFingerprint(ctx: *const Ctx, eng: dom.Engine) bool {
 }
 
 const host_mod_for_test = @import("host.zig");
+const test_env = @import("util_test_env");
 
 test "host_lacks_any_soname fires when at least one is missing" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(ta, "compat-host-lacks");
+    defer env.deinit();
 
     // Synthetic search dir: holds libfoo.so.1, but not libbar.so.99.
     // Host's soname_search points only at this dir so the result is
     // deterministic regardless of what the real system has installed.
-    var dir_buf: [128]u8 = undefined;
-    const search_dir = try std.fmt.bufPrint(&dir_buf, "/tmp/f69-compat-host-lacks-test", .{});
-    std.Io.Dir.cwd().deleteTree(io, search_dir) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, search_dir) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, search_dir);
-    const foo_path = try std.fmt.allocPrint(ta, "{s}/libfoo.so.1", .{search_dir});
-    defer ta.free(foo_path);
-    var f = try std.Io.Dir.cwd().createFile(io, foo_path, .{ .truncate = true });
-    f.close(io);
+    try env.touchFile("libfoo.so.1");
 
     var host_obj = host_mod_for_test.Host{
         .alloc = ta,
-        .soname_search = try ta.dupe(u8, search_dir),
+        .soname_search = try ta.dupe(u8, env.root),
         .package_manager = .unknown,
         .is_nixos = false,
     };
     defer host_obj.deinit();
 
-    const ctx = Ctx{ .io = io, .install_root = "/tmp/never-exists-f69-test", .host = &host_obj };
+    const ctx = Ctx{ .io = env.io, .install_root = "/tmp/never-exists-f69-test", .host = &host_obj };
     const both_present = [_][]const u8{ "libfoo.so.1", "libfoo.so.1" };
     const one_missing = [_][]const u8{ "libfoo.so.1", "libbar.so.99" };
 
@@ -172,26 +164,10 @@ test "host_lacks_any_soname fires when at least one is missing" {
 
 test "engine_version_at_most fires on Ren'Py 7" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(ta, "compat-renpy7-version");
+    defer env.deinit();
 
-    var buf: [128]u8 = undefined;
-    const root = try std.fmt.bufPrint(&buf, "/tmp/f69-compat-renpy7-version-test", .{});
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, root);
-    const renpy_dir = try std.fmt.allocPrint(ta, "{s}/renpy", .{root});
-    defer ta.free(renpy_dir);
-    try std.Io.Dir.cwd().createDirPath(io, renpy_dir);
-    const vc_path = try std.fmt.allocPrint(ta, "{s}/renpy/vc_version.py", .{root});
-    defer ta.free(vc_path);
-    var f = try std.Io.Dir.cwd().createFile(io, vc_path, .{ .truncate = true });
-    var w_buf: [256]u8 = undefined;
-    var fw = f.writer(io, &w_buf);
-    try fw.interface.writeAll("version = u'7.6.1.23060707'\n");
-    try fw.interface.flush();
-    f.close(io);
+    try env.writeFile("renpy/vc_version.py", "version = u'7.6.1.23060707'\n");
 
     var host_obj = host_mod_for_test.Host{
         .alloc = ta,
@@ -200,7 +176,7 @@ test "engine_version_at_most fires on Ren'Py 7" {
         .is_nixos = false,
     };
     defer host_obj.deinit();
-    const ctx = Ctx{ .io = io, .install_root = root, .host = &host_obj };
+    const ctx = Ctx{ .io = env.io, .install_root = env.root, .host = &host_obj };
 
     try std.testing.expect(matches(&ctx, &.{ .engine_version_at_most = .{ .engine = .renpy, .version = "7.99" } }));
     try std.testing.expect(!matches(&ctx, &.{ .engine_version_at_least = .{ .engine = .renpy, .version = "8.0" } }));
@@ -208,24 +184,11 @@ test "engine_version_at_most fires on Ren'Py 7" {
 
 test "engineFingerprint finds Ren'Py nested one subdir deep" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
-
-    var buf: [128]u8 = undefined;
-    const root = try std.fmt.bufPrint(&buf, "/tmp/f69-compat-detect-nested", .{});
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, root);
+    var env = try test_env.TestEnv.init(ta, "compat-detect-nested");
+    defer env.deinit();
 
     // Game lives in a subdir named after the game.
-    const inner_renpy = try std.fmt.allocPrint(ta, "{s}/GoodGirlGoneBad/renpy", .{root});
-    defer ta.free(inner_renpy);
-    try std.Io.Dir.cwd().createDirPath(io, inner_renpy);
-    const inner_bootstrap = try std.fmt.allocPrint(ta, "{s}/GoodGirlGoneBad/renpy/bootstrap.py", .{root});
-    defer ta.free(inner_bootstrap);
-    var f = try std.Io.Dir.cwd().createFile(io, inner_bootstrap, .{ .truncate = true });
-    f.close(io);
+    try env.touchFile("GoodGirlGoneBad/renpy/bootstrap.py");
 
     var host_obj = host_mod_for_test.Host{
         .alloc = ta,
@@ -235,6 +198,6 @@ test "engineFingerprint finds Ren'Py nested one subdir deep" {
     };
     defer host_obj.deinit();
 
-    const ctx = Ctx{ .io = io, .install_root = root, .host = &host_obj };
+    const ctx = Ctx{ .io = env.io, .install_root = env.root, .host = &host_obj };
     try std.testing.expect(engineFingerprint(&ctx, .renpy));
 }
