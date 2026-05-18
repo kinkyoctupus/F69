@@ -769,11 +769,16 @@ fn copyResolveSymlink(b: *std.Build, src: []const u8, dst_dir: []const u8) !void
     const alloc = b.allocator;
     const io = b.graph.io;
     const cwd = std.Io.Dir.cwd();
-    // ld-linux is a symlink on NixOS — resolve before copying so we
-    // ship the real file, not a dangling link.
+    // Resolve symlinks so we ship the real file's BYTES, but keep the
+    // SRC's basename for the destination name. On NixOS,
+    // /nix/store/.../libarchive.so.13 is a symlink to libarchive.so.13.8.6;
+    // we want the FILE content but the loader's DT_NEEDED references
+    // `libarchive.so.13` (the SONAME), so the destination must be
+    // named after `src`, not `real`. Same story for ld-linux which is
+    // also a symlink chain on NixOS.
     const real = try cwd.realPathFileAlloc(io, src, alloc);
     defer alloc.free(real);
-    const base = std.fs.path.basename(real);
+    const base = std.fs.path.basename(src);
     const dst = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dst_dir, base });
     defer alloc.free(dst);
     try cwd.copyFile(real, cwd, dst, io, .{
@@ -815,7 +820,11 @@ fn copyWithTransitives(
     const cwd = std.Io.Dir.cwd();
     const real = try cwd.realPathFileAlloc(io, src, alloc);
     defer alloc.free(real);
-    const base_dup = try alloc.dupe(u8, std.fs.path.basename(real));
+    // Use SRC's basename (the SONAME-style name the loader expects),
+    // not REAL's (which on NixOS is often the unversioned filename
+    // libfoo.so.X.Y.Z that nobody links against). Same bug as in
+    // copyResolveSymlink above — symlink chain meets DT_NEEDED mismatch.
+    const base_dup = try alloc.dupe(u8, std.fs.path.basename(src));
     if (skipGpuVendor(base_dup)) {
         alloc.free(base_dup);
         return;
