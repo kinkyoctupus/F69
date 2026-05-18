@@ -1072,15 +1072,7 @@ fn hydrateInstall(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Install {
     }
     errdefer if (inst.name) |s| alloc.free(s);
 
-    const src_text = r.text(9);
-    inst.source = if (std.mem.eql(u8, src_text, "manual"))
-        .manual
-    else if (std.mem.eql(u8, src_text, "rpdl"))
-        .rpdl
-    else if (std.mem.eql(u8, src_text, "imported"))
-        .imported
-    else
-        .recipe;
+    inst.source = std.meta.stringToEnum(dom.InstallSource, r.text(9)) orelse .recipe;
 
     if (r.nullableText(10)) |s| {
         if (s.len == 64) {
@@ -1167,14 +1159,11 @@ fn hydrateGame(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Game {
 }
 
 fn parseAutoUpdate(s: []const u8) dom.AutoUpdateOverride {
-    if (std.mem.eql(u8, s, "always")) return .always;
-    if (std.mem.eql(u8, s, "never")) return .never;
-    return .use_default;
+    return std.meta.stringToEnum(dom.AutoUpdateOverride, s) orelse .use_default;
 }
 
 fn parseBackupModePref(s: []const u8) dom.BackupModePref {
-    if (std.mem.eql(u8, s, "copy")) return .copy;
-    return .none;
+    return std.meta.stringToEnum(dom.BackupModePref, s) orelse .none;
 }
 
 /// Parse a JSON array of strings into a freshly-`alloc`-owned slice
@@ -1202,13 +1191,7 @@ fn decodeTagsJson(alloc: std.mem.Allocator, json_text: []const u8) errs.Error![]
 }
 
 fn parseCompletion(s: []const u8) dom.CompletionStatus {
-    if (std.mem.eql(u8, s, "in_queue")) return .in_queue;
-    if (std.mem.eql(u8, s, "in_progress")) return .in_progress;
-    if (std.mem.eql(u8, s, "completed")) return .completed;
-    if (std.mem.eql(u8, s, "replaying")) return .replaying;
-    if (std.mem.eql(u8, s, "abandoned")) return .abandoned;
-    if (std.mem.eql(u8, s, "waiting_for_update")) return .waiting_for_update;
-    return .not_started;
+    return std.meta.stringToEnum(dom.CompletionStatus, s) orelse .not_started;
 }
 
 fn parseEngine(s: []const u8) dom.Engine {
@@ -1216,9 +1199,7 @@ fn parseEngine(s: []const u8) dom.Engine {
 }
 
 fn parseSandbox(s: []const u8) dom.SandboxOverride {
-    if (std.mem.eql(u8, s, "always")) return .always;
-    if (std.mem.eql(u8, s, "never")) return .never;
-    return .use_default;
+    return std.meta.stringToEnum(dom.SandboxOverride, s) orelse .use_default;
 }
 
 test "library: open + migrate + listGames empty" {

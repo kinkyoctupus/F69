@@ -26,10 +26,7 @@ pub const CensoredState = enum {
     partial,
 
     pub fn fromStr(s: []const u8) CensoredState {
-        if (std.mem.eql(u8, s, "no")) return .no;
-        if (std.mem.eql(u8, s, "yes")) return .yes;
-        if (std.mem.eql(u8, s, "partial")) return .partial;
-        return .unknown;
+        return std.meta.stringToEnum(CensoredState, s) orelse .unknown;
     }
 
     /// Parse a "Censored:" value as F95 publishes it (case-insensitive,
@@ -88,12 +85,7 @@ pub const DevStatus = enum {
     orphaned,
 
     pub fn fromStr(s: []const u8) DevStatus {
-        if (std.mem.eql(u8, s, "in_progress")) return .in_progress;
-        if (std.mem.eql(u8, s, "on_hold")) return .on_hold;
-        if (std.mem.eql(u8, s, "completed")) return .completed;
-        if (std.mem.eql(u8, s, "abandoned")) return .abandoned;
-        if (std.mem.eql(u8, s, "orphaned")) return .orphaned;
-        return .unknown;
+        return std.meta.stringToEnum(DevStatus, s) orelse .unknown;
     }
 
     /// Map a raw status token (case-insensitive, dashes ignored) from
