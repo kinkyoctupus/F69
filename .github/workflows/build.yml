@@ -208,6 +208,7 @@ jobs:
             wayland-devel libxkbcommon-devel libdecor-devel \
             libavif-devel libdav1d-devel sqlite-devel openssl-devel \
             libarchive-devel dbus-devel \
+            bzip2-devel zlib-devel xz-devel \
             libzstd-devel lz4-devel nettle-devel libxml2-devel libacl-devel
       - uses: actions/checkout@v4
       - name: Generate .spec
