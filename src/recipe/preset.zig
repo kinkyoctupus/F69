@@ -258,22 +258,19 @@ pub fn parseFromBytes(parent_alloc: std.mem.Allocator, bytes_z: [:0]const u8) er
     return .{ .preset = preset, .arena = arena };
 }
 
-/// Embedded ZON for every built-in preset. Adding a new built-in =
-/// drop the file under `src/recipe/presets/` and add it here.
-const BUILTIN_SOURCES = struct {
-    const renpy_overlay: []const u8 = @embedFile("presets/renpy-overlay.preset.zon");
-    const rpgm_mv_patch: []const u8 = @embedFile("presets/rpgm-mv-patch.preset.zon");
-    const rpgm_mz_patch: []const u8 = @embedFile("presets/rpgm-mz-patch.preset.zon");
-    const unity_bepinex: []const u8 = @embedFile("presets/unity-bepinex.preset.zon");
-    const generic_overlay: []const u8 = @embedFile("presets/generic-overlay.preset.zon");
-};
-
-const BUILTIN_LIST = [_][]const u8{
-    BUILTIN_SOURCES.renpy_overlay,
-    BUILTIN_SOURCES.rpgm_mv_patch,
-    BUILTIN_SOURCES.rpgm_mz_patch,
-    BUILTIN_SOURCES.unity_bepinex,
-    BUILTIN_SOURCES.generic_overlay,
+/// Built-in presets, parsed at comptime via `@import("foo.zon")`. Zig
+/// 0.16's `@import` accepts ZON and returns the parsed structure as a
+/// comptime-known `const`, so every entry below is a `Preset` value
+/// baked into rodata — no runtime parse, no arena allocation. Adding a
+/// new built-in = drop the file under `src/recipe/presets/` and add an
+/// `@import` line. A malformed ZON breaks the build rather than
+/// failing at startup.
+const BUILTIN_LIST: []const Preset = &.{
+    @import("presets/renpy-overlay.preset.zon"),
+    @import("presets/rpgm-mv-patch.preset.zon"),
+    @import("presets/rpgm-mz-patch.preset.zon"),
+    @import("presets/unity-bepinex.preset.zon"),
+    @import("presets/generic-overlay.preset.zon"),
 };
 
 /// Owned bundle of every built-in preset. Single arena holds all of
@@ -297,37 +294,22 @@ pub const PRESET_FILE_SUFFIX = ".preset.zon";
 /// budget at startup.
 pub const USER_PRESET_CAP: usize = 256;
 
-/// Parse every embedded built-in into a single arena. Failure on any
-/// one source returns the error; partial loads are an explicit no-no
-/// because the IDs are referenced by the rest of the UI.
+/// Copy the built-in list into an arena-backed slice. Built-in `Preset`
+/// values live in rodata (`BUILTIN_LIST` is `@import("foo.zon")`-built),
+/// so the only allocation here is the slice header — the strings and
+/// nested arrays inside each Preset already outlive any allocator.
+/// `BuiltinSet.arena.deinit()` still frees the slice, keeping the
+/// caller API unchanged.
 pub fn loadBuiltins(parent_alloc: std.mem.Allocator) errs.Error!BuiltinSet {
     var arena = std.heap.ArenaAllocator.init(parent_alloc);
     errdefer arena.deinit();
     const aalloc = arena.allocator();
 
-    var out: std.ArrayList(Preset) = .empty;
-    try out.ensureTotalCapacity(aalloc, BUILTIN_LIST.len);
-
-    for (BUILTIN_LIST) |src| {
-        // ZON parser wants sentinel-terminated input. dupeZ allocates
-        // inside the arena so the parsed strings can reference it
-        // through deinit.
-        const bytes_z = aalloc.dupeZ(u8, src) catch return errs.Error.OutOfMemory;
-        const parsed = std.zon.parse.fromSliceAlloc(
-            Preset,
-            aalloc,
-            bytes_z,
-            null,
-            .{ .ignore_unknown_fields = true, .free_on_error = false },
-        ) catch |e| return switch (e) {
-            error.OutOfMemory => errs.Error.OutOfMemory,
-            error.ParseZon => errs.Error.ZonParseError,
-        };
-        try out.append(aalloc, parsed);
-    }
+    const presets = aalloc.alloc(Preset, BUILTIN_LIST.len) catch return errs.Error.OutOfMemory;
+    for (BUILTIN_LIST, 0..) |*p, i| presets[i] = p.*;
 
     return .{
-        .presets = try out.toOwnedSlice(aalloc),
+        .presets = presets,
         .arena = arena,
     };
 }
@@ -362,27 +344,19 @@ pub fn loadMerged(
     errdefer arena.deinit();
     const aalloc = arena.allocator();
 
-    // Built-ins first — same logic as `loadBuiltins` but the arena is
-    // the merged one so we hand back a single deinit-able bundle.
+    // Built-ins first — same logic as `loadBuiltins` but everything
+    // lives in the merged arena so we hand back a single deinit-able
+    // bundle. The built-ins are rodata-backed (`@import("foo.zon")`),
+    // so appending `p.*` is a struct copy with no allocation for the
+    // strings/slices it points at.
     var by_id: std.StringHashMap(usize) = .init(aalloc);
     var combined: std.ArrayList(Preset) = .empty;
     var from_user_list: std.ArrayList(bool) = .empty;
 
-    for (BUILTIN_LIST) |src| {
-        const bytes_z = aalloc.dupeZ(u8, src) catch return errs.Error.OutOfMemory;
-        const parsed = std.zon.parse.fromSliceAlloc(
-            Preset,
-            aalloc,
-            bytes_z,
-            null,
-            .{ .ignore_unknown_fields = true, .free_on_error = false },
-        ) catch |e| return switch (e) {
-            error.OutOfMemory => errs.Error.OutOfMemory,
-            error.ParseZon => errs.Error.ZonParseError,
-        };
-        try combined.append(aalloc, parsed);
+    for (BUILTIN_LIST) |*p| {
+        try combined.append(aalloc, p.*);
         try from_user_list.append(aalloc, false);
-        by_id.put(parsed.id, combined.items.len - 1) catch return errs.Error.OutOfMemory;
+        by_id.put(p.id, combined.items.len - 1) catch return errs.Error.OutOfMemory;
     }
 
     // User dir scan — best-effort. Missing dir → skip entirely.
