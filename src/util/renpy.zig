@@ -58,7 +58,7 @@ pub fn detectVersion(
 
 /// Pure. Parses `version = u'X.Y.Z.BUILD'` or `version = 'X.Y.Z.BUILD'`.
 /// Returns the inner literal (borrowed from `content`).
-pub fn parseVcVersion(content: []const u8) ?[]const u8 {
+fn parseVcVersion(content: []const u8) ?[]const u8 {
     const marker_a = "version = u'";
     const marker_b = "version = '";
     const start_a = std.mem.indexOf(u8, content, marker_a);
@@ -75,7 +75,7 @@ pub fn parseVcVersion(content: []const u8) ?[]const u8 {
 
 /// Pure. "7.6.1.23060707" → "7.6.1" (allocates). Strings shorter
 /// than 3 dot-separated parts are returned as a dup of `raw`.
-pub fn takeMajMinPatch(alloc: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]u8 {
+fn takeMajMinPatch(alloc: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]u8 {
     var parts: [3][]const u8 = undefined;
     var n: usize = 0;
     var it = std.mem.splitScalar(u8, raw, '.');
@@ -89,7 +89,7 @@ pub fn takeMajMinPatch(alloc: std.mem.Allocator, raw: []const u8) std.mem.Alloca
 
 /// Pure. Parses `version_tuple = (7, 5, 3, vc_version)` style.
 /// Returns allocator-owned "X.Y.Z" or null.
-pub fn parseVersionTuple(alloc: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error!?[]u8 {
+fn parseVersionTuple(alloc: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error!?[]u8 {
     const marker = "version_tuple = (";
     const start = std.mem.indexOf(u8, content, marker) orelse return null;
     const open = start + marker.len;
