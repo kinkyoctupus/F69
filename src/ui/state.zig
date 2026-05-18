@@ -268,56 +268,23 @@ pub const Filters = struct {
     /// Censored mask: scraped from the OP's "Censored:" line.
     censored: CensoredMask = .{},
 
-    pub const EngineMask = struct {
-        renpy: bool = false,
-        rpgm_mv: bool = false,
-        rpgm_mz: bool = false,
-        rpgm_vx: bool = false,
-        unity: bool = false,
-        unreal: bool = false,
-        html: bool = false,
-        flash: bool = false,
-        java: bool = false,
-        wolf_rpg: bool = false,
-        qsp: bool = false,
-        tyranobuilder: bool = false,
-        twine: bool = false,
-        other: bool = false,
-        unknown: bool = false,
-    };
-
-    pub const StatusMask = struct {
-        not_started: bool = false,
-        in_queue: bool = false,
-        in_progress: bool = false,
-        completed: bool = false,
-        replaying: bool = false,
-        abandoned: bool = false,
-        waiting_for_update: bool = false,
-    };
-
-    pub const DevStatusMask = struct {
-        unknown: bool = false,
-        in_progress: bool = false,
-        on_hold: bool = false,
-        completed: bool = false,
-        abandoned: bool = false,
-        orphaned: bool = false,
-    };
-
-    pub const CensoredMask = struct {
-        unknown: bool = false,
-        no: bool = false,
-        yes: bool = false,
-        partial: bool = false,
-    };
+    /// Filter masks are `std.EnumSet`s typed against the canonical
+    /// domain enums. Adding a new variant becomes a one-edit change
+    /// (the enum itself); the mask, match() arm, and `count()` helpers
+    /// all pick it up automatically. Previously each mask was a
+    /// hand-rolled bool-struct + maskAny() helper + switch arm —
+    /// three coupled sites that drifted on every enum extension.
+    pub const EngineMask = std.EnumSet(library.Engine);
+    pub const StatusMask = std.EnumSet(library.CompletionStatus);
+    pub const DevStatusMask = std.EnumSet(library.DevStatus);
+    pub const CensoredMask = std.EnumSet(library.CensoredState);
 
     pub fn empty(self: Filters) bool {
         return self.min_rating == null and self.sync_state == .all and
-            !engineMaskAny(self.engine) and
-            !statusMaskAny(self.status) and
-            !devStatusMaskAny(self.dev_status) and
-            !censoredMaskAny(self.censored) and
+            self.engine.count() == 0 and
+            self.status.count() == 0 and
+            self.dev_status.count() == 0 and
+            self.censored.count() == 0 and
             developerSliceLen(&self.developer_buf) == 0 and
             tagSliceLen(&self.tag_include_buf) == 0 and
             tagSliceLen(&self.tag_exclude_buf) == 0;
@@ -346,25 +313,6 @@ pub const Filters = struct {
         return sliceFromBuf(u8, buf).len;
     }
 
-    fn engineMaskAny(m: EngineMask) bool {
-        return m.renpy or m.rpgm_mv or m.rpgm_mz or m.rpgm_vx or m.unity or m.unreal or
-            m.html or m.flash or m.java or m.wolf_rpg or m.qsp or m.tyranobuilder or
-            m.twine or m.other or m.unknown;
-    }
-
-    fn statusMaskAny(m: StatusMask) bool {
-        return m.not_started or m.in_queue or m.in_progress or m.completed or
-            m.replaying or m.abandoned or m.waiting_for_update;
-    }
-
-    fn devStatusMaskAny(m: DevStatusMask) bool {
-        return m.unknown or m.in_progress or m.on_hold or m.completed or m.abandoned or m.orphaned;
-    }
-
-    fn censoredMaskAny(m: CensoredMask) bool {
-        return m.unknown or m.no or m.yes or m.partial;
-    }
-
     pub fn match(self: Filters, g: *const library.Game) bool {
         const is_unsynced = std.mem.eql(u8, g.name, "(unsynced)");
         switch (self.sync_state) {
@@ -377,66 +325,14 @@ pub const Filters = struct {
             if (r < min) return false;
         }
 
-        // Engine mask: if any engine bit is set, the game's engine must
-        // match one. If none are set, no engine filter.
-        if (engineMaskAny(self.engine)) {
-            const ok = switch (g.engine) {
-                .renpy => self.engine.renpy,
-                .rpgm_mv => self.engine.rpgm_mv,
-                .rpgm_mz => self.engine.rpgm_mz,
-                .rpgm_vx => self.engine.rpgm_vx,
-                .unity => self.engine.unity,
-                .unreal => self.engine.unreal,
-                .html => self.engine.html,
-                .flash => self.engine.flash,
-                .java => self.engine.java,
-                .wolf_rpg => self.engine.wolf_rpg,
-                .qsp => self.engine.qsp,
-                .tyranobuilder => self.engine.tyranobuilder,
-                .twine => self.engine.twine,
-                .other => self.engine.other,
-                .unknown => self.engine.unknown,
-            };
-            if (!ok) return false;
-        }
-
-        // Status mask: same rule.
-        if (statusMaskAny(self.status)) {
-            const ok = switch (g.completion_status) {
-                .not_started => self.status.not_started,
-                .in_queue => self.status.in_queue,
-                .in_progress => self.status.in_progress,
-                .completed => self.status.completed,
-                .replaying => self.status.replaying,
-                .abandoned => self.status.abandoned,
-                .waiting_for_update => self.status.waiting_for_update,
-            };
-            if (!ok) return false;
-        }
-
-        // Dev-status (developer's release state) mask.
-        if (devStatusMaskAny(self.dev_status)) {
-            const ok = switch (g.dev_status) {
-                .unknown => self.dev_status.unknown,
-                .in_progress => self.dev_status.in_progress,
-                .on_hold => self.dev_status.on_hold,
-                .completed => self.dev_status.completed,
-                .abandoned => self.dev_status.abandoned,
-                .orphaned => self.dev_status.orphaned,
-            };
-            if (!ok) return false;
-        }
-
-        // Censored mask.
-        if (censoredMaskAny(self.censored)) {
-            const ok = switch (g.censored) {
-                .unknown => self.censored.unknown,
-                .no => self.censored.no,
-                .yes => self.censored.yes,
-                .partial => self.censored.partial,
-            };
-            if (!ok) return false;
-        }
+        // Each mask: if any bit is set, the game's tag must be a
+        // member. If none are set, the filter is inactive. EnumSet
+        // collapses the four hand-rolled switch arms this used to
+        // carry.
+        if (self.engine.count() > 0 and !self.engine.contains(g.engine)) return false;
+        if (self.status.count() > 0 and !self.status.contains(g.completion_status)) return false;
+        if (self.dev_status.count() > 0 and !self.dev_status.contains(g.dev_status)) return false;
+        if (self.censored.count() > 0 and !self.censored.contains(g.censored)) return false;
 
         // Developer text filter — case-insensitive substring.
         const dev_q = sliceFromBuf(u8, &self.developer_buf);

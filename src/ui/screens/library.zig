@@ -522,28 +522,27 @@ fn sidebar(state: *State) void {
 
     {
         const eng = &state.filters.engine;
-        const active: usize = countActiveEngine(eng);
         var lbl_buf: [48]u8 = undefined;
-        const lbl = if (active == 0)
+        const lbl = if (eng.count() == 0)
             @as([]const u8, "Engine")
         else
-            std.fmt.bufPrint(&lbl_buf, "Engine ({d})", .{active}) catch "Engine";
+            std.fmt.bufPrint(&lbl_buf, "Engine ({d})", .{eng.count()}) catch "Engine";
         if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
-            _ = dvui.checkbox(@src(), &eng.renpy, "Ren'Py", .{});
-            _ = dvui.checkbox(@src(), &eng.rpgm_mv, "RPGM MV", .{});
-            _ = dvui.checkbox(@src(), &eng.rpgm_mz, "RPGM MZ", .{});
-            _ = dvui.checkbox(@src(), &eng.rpgm_vx, "RPGM VX/Ace", .{});
-            _ = dvui.checkbox(@src(), &eng.unity, "Unity", .{});
-            _ = dvui.checkbox(@src(), &eng.unreal, "Unreal", .{});
-            _ = dvui.checkbox(@src(), &eng.html, "HTML", .{});
-            _ = dvui.checkbox(@src(), &eng.flash, "Flash", .{});
-            _ = dvui.checkbox(@src(), &eng.java, "Java", .{});
-            _ = dvui.checkbox(@src(), &eng.wolf_rpg, "Wolf RPG", .{});
-            _ = dvui.checkbox(@src(), &eng.qsp, "QSP", .{});
-            _ = dvui.checkbox(@src(), &eng.tyranobuilder, "TyranoBuilder", .{});
-            _ = dvui.checkbox(@src(), &eng.twine, "Twine", .{});
-            _ = dvui.checkbox(@src(), &eng.other, "Other", .{});
-            _ = dvui.checkbox(@src(), &eng.unknown, "Unknown", .{});
+            enumCheckbox(library.Engine, eng, .renpy, "Ren'Py");
+            enumCheckbox(library.Engine, eng, .rpgm_mv, "RPGM MV");
+            enumCheckbox(library.Engine, eng, .rpgm_mz, "RPGM MZ");
+            enumCheckbox(library.Engine, eng, .rpgm_vx, "RPGM VX/Ace");
+            enumCheckbox(library.Engine, eng, .unity, "Unity");
+            enumCheckbox(library.Engine, eng, .unreal, "Unreal");
+            enumCheckbox(library.Engine, eng, .html, "HTML");
+            enumCheckbox(library.Engine, eng, .flash, "Flash");
+            enumCheckbox(library.Engine, eng, .java, "Java");
+            enumCheckbox(library.Engine, eng, .wolf_rpg, "Wolf RPG");
+            enumCheckbox(library.Engine, eng, .qsp, "QSP");
+            enumCheckbox(library.Engine, eng, .tyranobuilder, "TyranoBuilder");
+            enumCheckbox(library.Engine, eng, .twine, "Twine");
+            enumCheckbox(library.Engine, eng, .other, "Other");
+            enumCheckbox(library.Engine, eng, .unknown, "Unknown");
         }
     }
 
@@ -551,20 +550,19 @@ fn sidebar(state: *State) void {
 
     {
         const st = &state.filters.status;
-        const active: usize = countActiveStatus(st);
         var lbl_buf: [48]u8 = undefined;
-        const lbl = if (active == 0)
+        const lbl = if (st.count() == 0)
             @as([]const u8, "Status")
         else
-            std.fmt.bufPrint(&lbl_buf, "Status ({d})", .{active}) catch "Status";
+            std.fmt.bufPrint(&lbl_buf, "Status ({d})", .{st.count()}) catch "Status";
         if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
-            _ = dvui.checkbox(@src(), &st.not_started, "Not started", .{});
-            _ = dvui.checkbox(@src(), &st.in_queue, "In queue", .{});
-            _ = dvui.checkbox(@src(), &st.in_progress, "In progress", .{});
-            _ = dvui.checkbox(@src(), &st.completed, "Completed", .{});
-            _ = dvui.checkbox(@src(), &st.replaying, "Replaying", .{});
-            _ = dvui.checkbox(@src(), &st.abandoned, "Abandoned", .{});
-            _ = dvui.checkbox(@src(), &st.waiting_for_update, "Waiting for update", .{});
+            enumCheckbox(library.CompletionStatus, st, .not_started, "Not started");
+            enumCheckbox(library.CompletionStatus, st, .in_queue, "In queue");
+            enumCheckbox(library.CompletionStatus, st, .in_progress, "In progress");
+            enumCheckbox(library.CompletionStatus, st, .completed, "Completed");
+            enumCheckbox(library.CompletionStatus, st, .replaying, "Replaying");
+            enumCheckbox(library.CompletionStatus, st, .abandoned, "Abandoned");
+            enumCheckbox(library.CompletionStatus, st, .waiting_for_update, "Waiting for update");
         }
     }
 
@@ -608,19 +606,18 @@ fn sidebar(state: *State) void {
 
     {
         const ds = &state.filters.dev_status;
-        const active: usize = countActiveDevStatus(ds);
         var lbl_buf: [48]u8 = undefined;
-        const lbl = if (active == 0)
+        const lbl = if (ds.count() == 0)
             @as([]const u8, "Game state")
         else
-            std.fmt.bufPrint(&lbl_buf, "Game state ({d})", .{active}) catch "Game state";
+            std.fmt.bufPrint(&lbl_buf, "Game state ({d})", .{ds.count()}) catch "Game state";
         if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
-            _ = dvui.checkbox(@src(), &ds.in_progress, "Ongoing", .{});
-            _ = dvui.checkbox(@src(), &ds.completed, "Completed", .{});
-            _ = dvui.checkbox(@src(), &ds.on_hold, "On hold", .{});
-            _ = dvui.checkbox(@src(), &ds.abandoned, "Abandoned", .{});
-            _ = dvui.checkbox(@src(), &ds.orphaned, "Orphaned (gone from F95)", .{});
-            _ = dvui.checkbox(@src(), &ds.unknown, "Unknown", .{});
+            enumCheckbox(library.DevStatus, ds, .in_progress, "Ongoing");
+            enumCheckbox(library.DevStatus, ds, .completed, "Completed");
+            enumCheckbox(library.DevStatus, ds, .on_hold, "On hold");
+            enumCheckbox(library.DevStatus, ds, .abandoned, "Abandoned");
+            enumCheckbox(library.DevStatus, ds, .orphaned, "Orphaned (gone from F95)");
+            enumCheckbox(library.DevStatus, ds, .unknown, "Unknown");
         }
     }
 
@@ -628,17 +625,16 @@ fn sidebar(state: *State) void {
 
     {
         const cs = &state.filters.censored;
-        const active: usize = countActiveCensored(cs);
         var lbl_buf: [48]u8 = undefined;
-        const lbl = if (active == 0)
+        const lbl = if (cs.count() == 0)
             @as([]const u8, "Censored")
         else
-            std.fmt.bufPrint(&lbl_buf, "Censored ({d})", .{active}) catch "Censored";
+            std.fmt.bufPrint(&lbl_buf, "Censored ({d})", .{cs.count()}) catch "Censored";
         if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
-            _ = dvui.checkbox(@src(), &cs.no, "No", .{});
-            _ = dvui.checkbox(@src(), &cs.yes, "Yes", .{});
-            _ = dvui.checkbox(@src(), &cs.partial, "Partial", .{});
-            _ = dvui.checkbox(@src(), &cs.unknown, "Unknown", .{});
+            enumCheckbox(library.CensoredState, cs, .no, "No");
+            enumCheckbox(library.CensoredState, cs, .yes, "Yes");
+            enumCheckbox(library.CensoredState, cs, .partial, "Partial");
+            enumCheckbox(library.CensoredState, cs, .unknown, "Unknown");
         }
     }
 
@@ -832,36 +828,15 @@ fn renderTagCheckboxFilter(state: *State) void {
     }
 }
 
-fn countActiveEngine(e: *const state_mod.Filters.EngineMask) usize {
-    var n: usize = 0;
-    inline for (@typeInfo(state_mod.Filters.EngineMask).@"struct".fields) |f| {
-        if (f.type == bool and @field(e, f.name)) n += 1;
-    }
-    return n;
-}
-
-fn countActiveStatus(s: *const state_mod.Filters.StatusMask) usize {
-    var n: usize = 0;
-    inline for (@typeInfo(state_mod.Filters.StatusMask).@"struct".fields) |f| {
-        if (f.type == bool and @field(s, f.name)) n += 1;
-    }
-    return n;
-}
-
-fn countActiveDevStatus(s: *const state_mod.Filters.DevStatusMask) usize {
-    var n: usize = 0;
-    inline for (@typeInfo(state_mod.Filters.DevStatusMask).@"struct".fields) |f| {
-        if (f.type == bool and @field(s, f.name)) n += 1;
-    }
-    return n;
-}
-
-fn countActiveCensored(s: *const state_mod.Filters.CensoredMask) usize {
-    var n: usize = 0;
-    inline for (@typeInfo(state_mod.Filters.CensoredMask).@"struct".fields) |f| {
-        if (f.type == bool and @field(s, f.name)) n += 1;
-    }
-    return n;
+/// Render a checkbox bound to a single `std.EnumSet(E)` entry. The
+/// previous filter UI took `*bool` pointers into a hand-rolled mask
+/// struct; the EnumSet move requires this bridge because dvui's
+/// `checkbox` API takes `*bool`. Local var → call dvui → diff against
+/// the set → insert/remove. Zero allocations.
+fn enumCheckbox(comptime E: type, set: *std.EnumSet(E), comptime tag: E, label: []const u8) void {
+    var checked = set.contains(tag);
+    _ = dvui.checkbox(@src(), &checked, label, .{ .id_extra = @intFromEnum(tag) });
+    if (checked) set.insert(tag) else set.remove(tag);
 }
 
 /// Card width bounds (excluding the card's own padding+border+margin).
