@@ -66,7 +66,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             state.clearTransientToasts();
         }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        dvui.label(@src(), "{s}", .{game.name}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), game.name, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
@@ -89,7 +89,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         defer bar.deinit();
         var conf_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&conf_buf, "Really delete \"{s}\"?", .{game.name}) catch "Really delete?";
-        dvui.label(@src(), "{s}", .{msg}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), msg, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (components.iconButton(@src(), "Cancel", entypo.cross, .{})) state.confirm_delete = false;
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
@@ -220,7 +220,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
             .border = style.border_thin,
         });
         defer pill.deinit();
-        dvui.label(@src(), "{s}", .{components.engineShortLabel(game.engine)}, .{
+        dvui.labelNoFmt(@src(), components.engineShortLabel(game.engine), .{}, .{
             .gravity_y = 0.5,
             .color_text = dvui.Color.white,
         });
@@ -240,7 +240,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
             .border = style.border_thin,
         });
         defer pill.deinit();
-        dvui.label(@src(), "{s}", .{components.devStatusShortLabel(game.dev_status)}, .{
+        dvui.labelNoFmt(@src(), components.devStatusShortLabel(game.dev_status), .{}, .{
             .gravity_y = 0.5,
             .color_text = dvui.Color.white,
         });
@@ -252,7 +252,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         var lbl_buf: [48]u8 = undefined;
         const s = std.fmt.bufPrint(&lbl_buf, "{d:.1} ({d} votes)", .{ r, game.vote_count orelse 0 }) catch "";
-        dvui.label(@src(), "{s}", .{s}, .{
+        dvui.labelNoFmt(@src(), s, .{}, .{
             .gravity_y = 0.5,
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
@@ -310,7 +310,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             components.formatUtcDateTime(&dt_buf, ts) catch "—"
         else
             "never";
-        dvui.label(@src(), "{s}", .{dt}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), dt, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         if (components.iconButton(@src(), "Sync now", entypo.cycle, .{
             .style = .control,
@@ -467,13 +467,13 @@ fn factsRow(row_id: *u32, label: []const u8, value: FactsValue) void {
     });
     defer row.deinit();
     row_id.* += 1;
-    dvui.label(@src(), "{s}", .{label}, .{
+    dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 20 },
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
     });
     switch (value) {
-        .text => |t| dvui.label(@src(), "{s}", .{t}, .{
+        .text => |t| dvui.labelNoFmt(@src(), t, .{}, .{
             .gravity_y = 0.5,
             .expand = .horizontal,
             .min_size_content = .{ .w = 0, .h = 20 },
@@ -634,7 +634,7 @@ fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
         .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
     });
     defer row.deinit();
-    dvui.label(@src(), "{s}", .{label}, .{
+    dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 22 },
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
@@ -782,7 +782,7 @@ fn renderRenameInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var ver_buf: [128]u8 = undefined;
     const ver_text = std.fmt.bufPrint(&ver_buf, "Version: {s} ({s})", .{ inst.version, @tagName(inst.source) }) catch inst.version;
-    dvui.label(@src(), "{s}", .{ver_text}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
         "A name disambiguates two installs of the same version (e.g. \"vanilla\", \"modded\"). " ++
@@ -852,7 +852,7 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
         std.fmt.bufPrint(&ver_buf, "{s} \u{2014} {s}  ({s})", .{ inst.version, inst.name.?, @tagName(inst.source) }) catch inst.version
     else
         std.fmt.bufPrint(&ver_buf, "{s}  ({s})", .{ inst.version, @tagName(inst.source) }) catch inst.version;
-    dvui.label(@src(), "{s}", .{ver_text}, .{ .style = .highlight });
+    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
         "Deletes the install folder from disk AND removes the install record from the database. " ++
@@ -862,7 +862,7 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var path_buf: [320]u8 = undefined;
     const path_text = std.fmt.bufPrint(&path_buf, "Path: {s}", .{inst.install_path}) catch inst.install_path;
-    dvui.label(@src(), "{s}", .{path_text}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), path_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
     {
@@ -975,7 +975,7 @@ fn renderStructuredLines(frame: *Frame, text: []const u8, base_id: u64, depth: u
 
         if (std.mem.startsWith(u8, trimmed, "## ")) {
             const body = trimmed[3..];
-            dvui.label(@src(), "{s}", .{body}, .{
+            dvui.labelNoFmt(@src(), body, .{}, .{
                 .id_extra = line_id,
                 .style = .highlight,
                 .expand = .horizontal,
@@ -1657,7 +1657,7 @@ fn renderIdleHint(id: u64, text: []const u8) void {
         .margin = .{ .x = 0, .y = 4, .w = 0, .h = 4 },
     });
     defer row.deinit();
-    dvui.label(@src(), "{s}", .{text}, .{
+    dvui.labelNoFmt(@src(), text, .{}, .{
         .gravity_y = 0.5,
         .color_text = HELP_TEXT_COLOR,
         .expand = .horizontal,
@@ -1693,7 +1693,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
             .expand = .horizontal,
         });
         defer line.deinit();
-        dvui.label(@src(), "{s}", .{args.text}, .{
+        dvui.labelNoFmt(@src(), args.text, .{}, .{
             .gravity_y = 0.5,
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
             .expand = .horizontal,
@@ -1930,7 +1930,7 @@ fn renderCarousel(frame: *Frame, game: *const library.Game) void {
         {
             var ctr_buf: [32]u8 = undefined;
             const ctr = std.fmt.bufPrint(&ctr_buf, "{d} / {d}", .{ idx + 1, total }) catch "?";
-            dvui.label(@src(), "{s}", .{ctr}, .{
+            dvui.labelNoFmt(@src(), ctr, .{}, .{
                 .gravity_x = 0.5,
                 .gravity_y = 1.0,
                 .margin = .{ .x = 0, .y = 0, .w = 0, .h = 8 },
@@ -2001,7 +2001,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
     });
     defer slot.deinit();
     const txt: []const u8 = if (idx == 0) "(no cover)" else "(screenshot not yet synced)";
-    dvui.label(@src(), "{s}", .{txt}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
+    dvui.labelNoFmt(@src(), txt, .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
     return null;
 }
 
@@ -2078,7 +2078,7 @@ fn renderTagChips(tags: []const []const u8) void {
             .color_border = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
         });
         defer chip.deinit();
-        dvui.label(@src(), "{s}", .{tag}, .{ .font = small });
+        dvui.labelNoFmt(@src(), tag, .{}, .{ .font = small });
     }
 }
 

@@ -331,7 +331,7 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
         const msg = std.fmt.bufPrint(&msg_buf, "{d} game{s} updated", .{
             entries.len, if (entries.len == 1) "" else "s",
         }) catch "";
-        dvui.label(@src(), "{s}", .{msg}, .{ .style = .highlight });
+        dvui.labelNoFmt(@src(), msg, .{}, .{ .style = .highlight });
     }
 
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
@@ -358,7 +358,7 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
         });
         defer row.deinit();
 
-        dvui.label(@src(), "{s}", .{e.name}, .{
+        dvui.labelNoFmt(@src(), e.name, .{}, .{
             .gravity_y = 0.5,
             .expand = .horizontal,
             .min_size_content = .{ .w = 0, .h = 20 },
@@ -370,7 +370,7 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
             std.fmt.bufPrint(&diff_buf, "{s} \u{2192} {s} \u{00B7} auto-downloaded", .{ e.old_version, e.new_version }) catch ""
         else
             std.fmt.bufPrint(&diff_buf, "{s} \u{2192} {s}", .{ e.old_version, e.new_version }) catch "";
-        dvui.label(@src(), "{s}", .{diff}, .{
+        dvui.labelNoFmt(@src(), diff, .{}, .{
             .gravity_y = 0.5,
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
@@ -565,13 +565,13 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
             "Syncing {s}  ({d}/{d})",
             .{ cur_name, state.sync_queue_started, state.sync_queue_total },
         ) catch "Syncing…";
-        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
     } else if (cur_name.len > 0) {
         var lbl_buf: [200]u8 = undefined;
         const lbl = std.fmt.bufPrint(&lbl_buf, "Syncing {s}…", .{cur_name}) catch "Syncing…";
-        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
     } else if (!state.sync_msg.isEmpty()) {
-        dvui.label(@src(), "{s}", .{state.syncMsg()}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), state.syncMsg(), .{}, .{ .gravity_y = 0.5 });
     } else {
         dvui.label(@src(), "Syncing…", .{}, .{ .gravity_y = 0.5 });
     }
@@ -615,7 +615,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
 
         var pct_buf: [24]u8 = undefined;
         const pct_str = std.fmt.bufPrint(&pct_buf, "  {d}/{d}", .{ state.sync_queue_started, state.sync_queue_total }) catch "";
-        dvui.label(@src(), "{s}", .{pct_str}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), pct_str, .{}, .{ .gravity_y = 0.5 });
     }
 
     // Intra-sync sub-progress: "step 3/12" showing image-fetch
@@ -639,7 +639,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
                 _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
                 var step_buf: [40]u8 = undefined;
                 const step_str = std.fmt.bufPrint(&step_buf, "step {d}/{d}", .{ done, total }) catch "";
-                dvui.label(@src(), "{s}", .{step_str}, .{
+                dvui.labelNoFmt(@src(), step_str, .{}, .{
                     .gravity_y = 0.5,
                     .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
                 });
@@ -704,11 +704,11 @@ fn renderSyncBannerImageRow(frame: *Frame) void {
             "Fetching images: {s}  (+{d} games queued)",
             .{ cur_name, queue_pending },
         ) catch "Fetching images\u{2026}";
-        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
     } else if (cur_name.len > 0) {
         var lbl_buf: [200]u8 = undefined;
         const lbl = std.fmt.bufPrint(&lbl_buf, "Fetching images: {s}", .{cur_name}) catch "Fetching images\u{2026}";
-        dvui.label(@src(), "{s}", .{lbl}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
     } else {
         dvui.label(@src(), "Fetching images\u{2026}", .{}, .{ .gravity_y = 0.5 });
     }
@@ -745,7 +745,7 @@ fn renderSyncBannerImageRow(frame: *Frame) void {
         }
         var pct_buf: [32]u8 = undefined;
         const pct_str = std.fmt.bufPrint(&pct_buf, "  {d}/{d}", .{ done, total }) catch "";
-        dvui.label(@src(), "{s}", .{pct_str}, .{
+        dvui.labelNoFmt(@src(), pct_str, .{}, .{
             .gravity_y = 0.5,
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });

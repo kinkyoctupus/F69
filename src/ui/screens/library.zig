@@ -317,7 +317,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
             std.fmt.bufPrint(&lbl_buf, "Pulling bookmarks: page {d}/{d}", .{ cur, tot }) catch "Pulling bookmarks…"
         else
             std.fmt.bufPrint(&lbl_buf, "Pulling bookmarks: page {d}…", .{cur}) catch "Pulling bookmarks…";
-        dvui.label(@src(), "{s}", .{label}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), label, .{}, .{ .gravity_y = 0.5 });
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
@@ -352,7 +352,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
         if (tot > 0) {
             var pct_buf: [16]u8 = undefined;
             const pct_str = std.fmt.bufPrint(&pct_buf, "  {d}%", .{pct}) catch "";
-            dvui.label(@src(), "{s}", .{pct_str}, .{ .gravity_y = 0.5 });
+            dvui.labelNoFmt(@src(), pct_str, .{}, .{ .gravity_y = 0.5 });
         }
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
@@ -369,7 +369,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
             }
         }
     } else {
-        dvui.label(@src(), "{s}", .{state.bookmarksMsg()}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), state.bookmarksMsg(), .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (components.iconOnly(@src(), "dismiss", entypo.cross, .{})) {
             state.bookmarks_msg.clear();
@@ -816,7 +816,7 @@ fn renderTagCheckboxFilter(state: *State) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
         var more_buf: [80]u8 = undefined;
         const more = std.fmt.bufPrint(&more_buf, "showing first {d} matches — narrow with the filter above", .{HARD_CAP}) catch "…";
-        dvui.label(@src(), "{s}", .{more}, .{
+        dvui.labelNoFmt(@src(), more, .{}, .{
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
     }
@@ -984,7 +984,7 @@ fn renderListWindow(
             });
             defer eng_pill.deinit();
             const body = dvui.Font.theme(.body);
-            dvui.label(@src(), "{s}", .{components.engineShortLabel(g.engine)}, .{
+            dvui.labelNoFmt(@src(), components.engineShortLabel(g.engine), .{}, .{
                 .gravity_y = 0.5,
                 .gravity_x = 0.5,
                 .color_text = dvui.Color.white,
@@ -1007,7 +1007,7 @@ fn renderListWindow(
             });
             defer st_pill.deinit();
             const body = dvui.Font.theme(.body);
-            dvui.label(@src(), "{s}", .{components.devStatusShortLabel(g.dev_status)}, .{
+            dvui.labelNoFmt(@src(), components.devStatusShortLabel(g.dev_status), .{}, .{
                 .gravity_y = 0.5,
                 .gravity_x = 0.5,
                 .color_text = dvui.Color.white,
@@ -1017,7 +1017,7 @@ fn renderListWindow(
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
 
-        dvui.label(@src(), "{s}", .{g.name}, .{
+        dvui.labelNoFmt(@src(), g.name, .{}, .{
             .gravity_y = 0.5,
             .expand = .horizontal,
             .min_size_content = .{ .w = 0, .h = 20 },
@@ -1032,7 +1032,7 @@ fn renderListWindow(
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
             var rate_buf: [16]u8 = undefined;
             const rate_str = std.fmt.bufPrint(&rate_buf, "{d:.1}", .{r}) catch "?";
-            dvui.label(@src(), "{s}", .{rate_str}, .{ .gravity_y = 0.5 });
+            dvui.labelNoFmt(@src(), rate_str, .{}, .{ .gravity_y = 0.5 });
         } else {
             dvui.label(@src(), "—", .{}, .{ .gravity_y = 0.5 });
         }
@@ -1040,7 +1040,7 @@ fn renderListWindow(
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
         const ver = if (g.latest_version) |v| v else "—";
-        dvui.label(@src(), "{s}", .{ver}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), ver, .{}, .{ .gravity_y = 0.5 });
 
         const dot_state = actions.installDotState(frame, g);
         if (dot_state != .none) {
@@ -1174,7 +1174,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         });
         defer title_row.deinit();
-        dvui.label(@src(), "{s}", .{name_disp}, .{
+        dvui.labelNoFmt(@src(), name_disp, .{}, .{
             .expand = .horizontal,
             .max_size_content = .{ .w = 0, .h = 20 },
             .font = title_font,
@@ -1188,7 +1188,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
     if (g.developer) |dev| {
         const body = dvui.Font.theme(.body);
         const dev_font = body.withSize(body.size * style.meta_font_scale);
-        dvui.label(@src(), "{s}", .{dev}, .{
+        dvui.labelNoFmt(@src(), dev, .{}, .{
             .expand = .horizontal,
             .max_size_content = .{ .w = 0, .h = 14 },
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
@@ -1233,7 +1233,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
             std.fmt.bufPrint(&rate_buf, "{d:.1}  ({d})", .{ r, c }) catch "?"
         else
             std.fmt.bufPrint(&rate_buf, "{d:.1}", .{r}) catch "?";
-        dvui.label(@src(), "{s}", .{rate_str}, meta_opts);
+        dvui.labelNoFmt(@src(), rate_str, .{}, meta_opts);
     } else {
         dvui.label(@src(), "(unrated)", .{}, meta_opts);
     }
@@ -1442,7 +1442,7 @@ fn renderStatusBadge(thread_id: u64, status: library.DevStatus) void {
     });
     defer badge.deinit();
     const body = dvui.Font.theme(.body);
-    dvui.label(@src(), "{s}", .{components.devStatusShortLabel(status)}, .{
+    dvui.labelNoFmt(@src(), components.devStatusShortLabel(status), .{}, .{
         .color_text = dvui.Color.white,
         .font = body.withSize(body.size * style.chip_font_scale),
         .padding = style.chip_label_padding,
@@ -1466,7 +1466,7 @@ fn renderEngineBadge(thread_id: u64, engine: library.Engine) void {
     });
     defer badge.deinit();
     const body = dvui.Font.theme(.body);
-    dvui.label(@src(), "{s}", .{components.engineShortLabel(engine)}, .{
+    dvui.labelNoFmt(@src(), components.engineShortLabel(engine), .{}, .{
         .color_text = dvui.Color.white,
         .font = body.withSize(body.size * style.chip_font_scale),
         .padding = style.chip_label_padding,

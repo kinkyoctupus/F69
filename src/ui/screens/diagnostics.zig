@@ -98,7 +98,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
         diagSection(@src(), "Downloads");
         var jobs_buf: [64]u8 = undefined;
         const jobs_msg = std.fmt.bufPrint(&jobs_buf, "{d} job(s) in Manager", .{frame.dl_mgr.jobs.count()}) catch "?";
-        dvui.label(@src(), "{s}", .{jobs_msg}, .{});
+        dvui.labelNoFmt(@src(), jobs_msg, .{}, .{});
 
         var it = frame.dl_mgr.jobs.iterator();
         while (it.next()) |entry| {
@@ -112,7 +112,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
                 j.mod_id,
                 j.source_url,
             }) catch continue;
-            dvui.label(@src(), "{s}", .{row}, .{});
+            dvui.labelNoFmt(@src(), row, .{}, .{});
         }
     }
 
@@ -129,11 +129,11 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
 
             var header_buf: [128]u8 = undefined;
             const header = std.fmt.bufPrint(&header_buf, "  {d}  {s}", .{ g.f95_thread_id, g.name }) catch continue;
-            dvui.label(@src(), "{s}", .{header}, .{ .style = .highlight });
+            dvui.labelNoFmt(@src(), header, .{}, .{ .style = .highlight });
             for (installs) |i| {
                 var ib: [320]u8 = undefined;
                 const line = std.fmt.bufPrint(&ib, "    v{s} at {s} (installed_at={d})", .{ i.version, i.install_path, i.installed_at }) catch continue;
-                dvui.label(@src(), "{s}", .{line}, .{});
+                dvui.labelNoFmt(@src(), line, .{}, .{});
             }
         }
     }
@@ -153,11 +153,11 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
 
             var hb: [128]u8 = undefined;
             const hdr = std.fmt.bufPrint(&hb, "  {d} entries at {s}", .{ log_obj.entries.len, tracker_path }) catch return false;
-            dvui.label(@src(), "{s}", .{hdr}, .{});
+            dvui.labelNoFmt(@src(), hdr, .{}, .{});
             for (log_obj.entries) |e| {
                 var eb: [256]u8 = undefined;
                 const line = std.fmt.bufPrint(&eb, "    [{s}] mod={s} path={s}", .{ @tagName(e.kind), e.mod_id, e.path }) catch continue;
-                dvui.label(@src(), "{s}", .{line}, .{});
+                dvui.labelNoFmt(@src(), line, .{}, .{});
             }
         } else {
             dvui.label(@src(), "  (no installs DB row for selected game)", .{}, .{});

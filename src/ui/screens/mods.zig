@@ -40,7 +40,7 @@ pub fn modsScreen(frame: *Frame) !bool {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
         var title_buf: [256]u8 = undefined;
         const title = std.fmt.bufPrint(&title_buf, "Mods — {s}", .{game.name}) catch "Mods";
-        dvui.label(@src(), "{s}", .{title}, .{ .style = .highlight, .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (style.button(@src(), "Manage install patterns...", .{}, .{ .gravity_y = 0.5 })) {
@@ -205,7 +205,7 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
     if (n == 1) {
         // Single-install case: still display which install we're modding,
         // but no need for a clickable dropdown.
-        dvui.label(@src(), "{s}", .{labels_buf[0]}, .{ .gravity_y = 0.5, .style = .highlight });
+        dvui.labelNoFmt(@src(), labels_buf[0], .{}, .{ .gravity_y = 0.5, .style = .highlight });
         if (state.mods_page_install_id == null) {
             state.mods_page_install_id = installs[0].id;
         }
@@ -340,13 +340,13 @@ fn renderModJobBanner(frame: *Frame) void {
         }
         break :blk std.fmt.bufPrint(&buf, "{s}: {s} - {s}", .{ verb, disp, phase_text }) catch "Mod job in flight";
     };
-    dvui.label(@src(), "{s}", .{status}, .{ .gravity_y = 0.5, .style = .highlight });
+    dvui.labelNoFmt(@src(), status, .{}, .{ .gravity_y = 0.5, .style = .highlight });
 
     if (h.depth > 1) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         var dbuf: [64]u8 = undefined;
         const dtxt = std.fmt.bufPrint(&dbuf, "(+{d} queued)", .{h.depth - 1}) catch "";
-        dvui.label(@src(), "{s}", .{dtxt}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), dtxt, .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
     }
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
@@ -499,7 +499,7 @@ fn renderRecipeRow(
         if (load_index) |li| {
             var idx_buf: [16]u8 = undefined;
             const idx_txt = std.fmt.bufPrint(&idx_buf, "#{d:0>2}", .{li}) catch "#?";
-            dvui.label(@src(), "{s}", .{idx_txt}, .{ .style = .highlight, .gravity_y = 0.5 });
+            dvui.labelNoFmt(@src(), idx_txt, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         }
         dvui.label(@src(), "{s}  v{s}", .{ pm.recipe.name, pm.recipe.version }, .{ .style = .highlight, .gravity_y = 0.5 });
@@ -633,7 +633,7 @@ fn renderModfileActionBar(frame: *Frame, game: *const library.Game) void {
     if (!state.modfile_scan_msg.isEmpty()) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
         const txt = state.modfile_scan_msg.read();
-        dvui.label(@src(), "{s}", .{txt}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .gravity_y = 0.5 });
     }
 }
 
@@ -658,7 +658,7 @@ fn renderModfileRow(frame: *Frame, game: *const library.Game, m: anytype, preset
         });
         defer info.deinit();
 
-        dvui.label(@src(), "{s}", .{m.filename}, .{ .style = .highlight });
+        dvui.labelNoFmt(@src(), m.filename, .{}, .{ .style = .highlight });
 
         // Second line — size · sha-prefix · recipe linkage, joined
         // into one bufPrint so it always lays out on a single line
@@ -682,7 +682,7 @@ fn renderModfileRow(frame: *Frame, game: *const library.Game, m: anytype, preset
             std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  preset: {s}", .{ sz_txt, sha_prefix, p }) catch sz_txt
         else
             std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  (no recipe)", .{ sz_txt, sha_prefix }) catch sz_txt;
-        dvui.label(@src(), "{s}", .{meta_txt}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), meta_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
     }
 
     // ---- right: action buttons ----

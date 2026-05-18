@@ -65,7 +65,7 @@ pub fn importScreen(frame: *Frame) !bool {
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     if (!state.import_msg.isEmpty()) {
-        dvui.label(@src(), "{s}", .{state.importMsg()}, .{ .style = .highlight });
+        dvui.labelNoFmt(@src(), state.importMsg(), .{}, .{ .style = .highlight });
     } else {
         dvui.label(@src(), "Imported games show up as \"(unsynced)\". Click Sync on each to populate.", .{}, .{});
     }

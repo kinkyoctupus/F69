@@ -58,7 +58,7 @@ pub fn downloadsScreen(frame: *Frame) !bool {
             "↓ {s}  ↑ {s}  · {d} dl · {d} seed · {d} done",
             .{ dl_s, up_s, live.n_downloading, live.n_seeding, live.n_done },
         ) catch "";
-        dvui.label(@src(), "{s}", .{totals_s}, .{ .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), totals_s, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
         // Pause all / Resume all — global controls. The buttons are
         // greyed when there's nothing for them to act on (e.g.
@@ -121,7 +121,7 @@ pub fn downloadsScreen(frame: *Frame) !bool {
     const dst_msg = std.fmt.bufPrint(&dst_buf, "Files land in {s}. Torrents seed to a {d:.1}× ratio.", .{
         frame.info.library_root, seedRatioTarget(frame),
     }) catch "Files land in the library root.";
-    dvui.label(@src(), "{s}", .{dst_msg}, .{
+    dvui.labelNoFmt(@src(), dst_msg, .{}, .{
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
     });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
@@ -231,7 +231,7 @@ fn downloadsSectionHeader(label_text: []const u8, count: u32, key: u8) void {
         .padding = .{ .x = 0, .y = 6, .w = 0, .h = 4 },
     });
     defer box.deinit();
-    dvui.label(@src(), "{s}", .{label_text}, .{
+    dvui.labelNoFmt(@src(), label_text, .{}, .{
         .id_extra = key,
         .style = .highlight,
         .gravity_y = 0.5,
@@ -239,7 +239,7 @@ fn downloadsSectionHeader(label_text: []const u8, count: u32, key: u8) void {
     _ = dvui.spacer(@src(), .{ .id_extra = key, .min_size_content = .{ .w = 8, .h = 1 } });
     var n_buf: [16]u8 = undefined;
     const n_s = std.fmt.bufPrint(&n_buf, "({d})", .{count}) catch "(?)";
-    dvui.label(@src(), "{s}", .{n_s}, .{
+    dvui.labelNoFmt(@src(), n_s, .{}, .{
         .id_extra = key,
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
@@ -306,7 +306,7 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
             .failed => .{ .style = .err, .gravity_y = 0.5 },
             else => .{ .gravity_y = 0.5 },
         };
-        dvui.label(@src(), "{s}", .{status_s}, status_opts);
+        dvui.labelNoFmt(@src(), status_s, .{}, status_opts);
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         // Truncate so the row stays one line — game names can be very
         // long (e.g. light-novel-style titles).
@@ -398,7 +398,7 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
         var line_buf: [256]u8 = undefined;
         const line = composeStatsLine(&line_buf, job, ratio_target) catch "";
         if (line.len > 0) {
-            dvui.label(@src(), "{s}", .{line}, .{
+            dvui.labelNoFmt(@src(), line, .{}, .{
                 .gravity_y = 0.5,
                 .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
             });
@@ -451,7 +451,7 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
         .download => "DL ",
         .ratio => "UP ",
     };
-    dvui.label(@src(), "{s}", .{tag_text}, .{
+    dvui.labelNoFmt(@src(), tag_text, .{}, .{
         .id_extra = @intFromEnum(kind),
         .min_size_content = .{ .w = 30, .h = 14 },
         .gravity_y = 0.5,
