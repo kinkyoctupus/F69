@@ -49,9 +49,9 @@ pub const ImageJob = owned_types.ImageJob;
 // finishes, the UI raises a modal listing the games whose versions
 // moved. Mirrors F95Checker's end-of-check recap.
 
-fn syncRecapList(frame: *Frame) *SyncRecapList {
+fn syncRecapList(frame: *Frame) ?*SyncRecapList {
     if (frame.state.sync_recap) |list_ptr| return list_ptr;
-    const list_ptr = frame.lib.alloc.create(SyncRecapList) catch unreachable;
+    const list_ptr = frame.lib.alloc.create(SyncRecapList) catch return null;
     list_ptr.* = .empty;
     frame.state.sync_recap = list_ptr;
     return list_ptr;
@@ -118,7 +118,12 @@ fn pushSyncRecap(
         alloc.free(old_dup);
         return;
     };
-    const list = syncRecapList(frame);
+    const list = syncRecapList(frame) orelse {
+        alloc.free(name_dup);
+        alloc.free(old_dup);
+        alloc.free(new_dup);
+        return;
+    };
     list.append(alloc, .{
         .thread_id = thread_id,
         .name = name_dup,

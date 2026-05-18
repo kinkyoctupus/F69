@@ -8,6 +8,7 @@ const recipe = @import("recipe");
 const file_picker = @import("util_file_picker");
 
 const types = @import("../types.zig");
+const owned_types = @import("../owned.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
@@ -81,7 +82,7 @@ pub fn modsScreen(frame: *Frame) !bool {
         });
         defer tabs.deinit();
 
-        const counts = actions.modsPageCache(frame, game).counts;
+        const counts: owned_types.ModsTabCounts = if (actions.modsPageCache(frame, game)) |c| c.counts else .{};
         if (components.tabButton(modsTabLabel(.installed, "Installed", counts.installed), state.mods_tab == .installed)) state.mods_tab = .installed;
         if (components.tabButton(modsTabLabel(.ready, "Ready", counts.ready), state.mods_tab == .ready)) state.mods_tab = .ready;
         if (components.tabButton(modsTabLabel(.needs_archive, "Needs archive", counts.needs_archive), state.mods_tab == .needs_archive)) state.mods_tab = .needs_archive;
@@ -414,7 +415,10 @@ fn renderModsTabNeedsRecipe(frame: *Frame, game: *const library.Game) void {
 /// installed-state + load-order, then filters + renders rows.
 fn renderModRecipeList(frame: *Frame, game: *const library.Game, filter: ModRecipeFilter) void {
     const state = frame.state;
-    const cache = actions.modsPageCache(frame, game);
+    const cache = actions.modsPageCache(frame, game) orelse {
+        renderTabEmptyHint(filter);
+        return;
+    };
 
     if (cache.game_parsed == null) {
         renderTabEmptyHint(filter);

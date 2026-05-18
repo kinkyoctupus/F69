@@ -431,9 +431,9 @@ pub fn deleteGameAndReturn(frame: *Frame, thread_id: u64) void {
 
 /// Lazy-init the installed-set. `refreshInstalledSet` repopulates it
 /// from the DB; callers consult `isInstalled` per game.
-fn installedSetPtr(frame: *Frame) *InstalledSet {
+fn installedSetPtr(frame: *Frame) ?*InstalledSet {
     if (frame.state.installed_set) |p| return p;
-    const set_ptr = frame.lib.alloc.create(InstalledSet) catch unreachable;
+    const set_ptr = frame.lib.alloc.create(InstalledSet) catch return null;
     set_ptr.* = InstalledSet.init(frame.lib.alloc);
     frame.state.installed_set = set_ptr;
     return set_ptr;
@@ -445,7 +445,7 @@ fn installedSetPtr(frame: *Frame) *InstalledSet {
 /// indicator + filter reflect a fresh snapshot (post-install
 /// completions land in the table between renders).
 pub fn refreshInstalledSet(frame: *Frame) void {
-    const set = installedSetPtr(frame);
+    const set = installedSetPtr(frame) orelse return;
     set.clearRetainingCapacity();
     const ids = frame.lib.fetchInstalledThreadIds() catch |e| {
         log.warn("refreshInstalledSet: fetchInstalledThreadIds failed: {s}", .{@errorName(e)});
@@ -459,7 +459,8 @@ pub fn refreshInstalledSet(frame: *Frame) void {
 /// row at the last `refreshInstalledSet` call this frame.
 pub fn isInstalled(frame: *Frame, thread_id: u64) bool {
     if (frame.state.installed_set == null) return false;
-    return installedSetPtr(frame).contains(thread_id);
+    const set = installedSetPtr(frame) orelse return false;
+    return set.contains(thread_id);
 }
 
 /// Re-trigger a failed download. Picks the right provider based on
@@ -584,9 +585,9 @@ pub fn freeInstalledSet(state: *State, alloc: std.mem.Allocator) void {
     }
 }
 
-pub fn attemptsMap(frame: *Frame) *AttemptsMap {
+pub fn attemptsMap(frame: *Frame) ?*AttemptsMap {
     if (frame.state.download_attempts) |p| return p;
-    const map_ptr = frame.lib.alloc.create(AttemptsMap) catch unreachable;
+    const map_ptr = frame.lib.alloc.create(AttemptsMap) catch return null;
     map_ptr.* = AttemptsMap.init(frame.lib.alloc);
     frame.state.download_attempts = map_ptr;
     return map_ptr;
@@ -596,7 +597,7 @@ pub fn attemptsMap(frame: *Frame) *AttemptsMap {
 /// just enqueued `sources[0]` and should start counting failures from
 /// index 0. Called by `doDownloadGame` before `enqueueOneSource`.
 pub fn resetAttempt(frame: *Frame, game_id: u64) void {
-    const m = attemptsMap(frame);
+    const m = attemptsMap(frame) orelse return;
     m.put(game_id, 0) catch {};
 }
 

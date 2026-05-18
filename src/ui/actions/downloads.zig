@@ -282,17 +282,17 @@ const MAX_DONOR_AUTO_RETRIES: u8 = 2;
 // top of the file. See module-doc comment in `src/ui/owned.zig` for
 // the type-shape rationale.
 
-fn donorJobsMap(frame: *Frame) *DonorJobsMap {
+fn donorJobsMap(frame: *Frame) ?*DonorJobsMap {
     if (frame.state.donor_jobs) |p| return p;
-    const m = frame.lib.alloc.create(DonorJobsMap) catch unreachable;
+    const m = frame.lib.alloc.create(DonorJobsMap) catch return null;
     m.* = DonorJobsMap.init(frame.lib.alloc);
     frame.state.donor_jobs = m;
     return m;
 }
 
-fn donorRetriesMap(frame: *Frame) *DonorRetriesMap {
+fn donorRetriesMap(frame: *Frame) ?*DonorRetriesMap {
     if (frame.state.donor_retries) |p| return p;
-    const m = frame.lib.alloc.create(DonorRetriesMap) catch unreachable;
+    const m = frame.lib.alloc.create(DonorRetriesMap) catch return null;
     m.* = DonorRetriesMap.init(frame.lib.alloc);
     frame.state.donor_retries = m;
     return m;
@@ -319,9 +319,9 @@ pub fn freeDonorTables(state: *State, alloc: std.mem.Allocator) void {
     }
 }
 
-fn donorTickLogPtr(frame: *Frame) *DonorTickLog {
+fn donorTickLogPtr(frame: *Frame) ?*DonorTickLog {
     if (frame.state.donor_tick_log) |p| return p;
-    const m = frame.lib.alloc.create(DonorTickLog) catch unreachable;
+    const m = frame.lib.alloc.create(DonorTickLog) catch return null;
     m.* = DonorTickLog.init(frame.lib.alloc);
     frame.state.donor_tick_log = m;
     return m;
@@ -345,14 +345,14 @@ pub fn drainDonorTelemetry(frame: *Frame) void {
         }
         return;
     }
-    const donor_set = donorJobsMap(frame);
+    const donor_set = donorJobsMap(frame) orelse return;
     const n = donor_set.count();
     if (n != donor_telemetry_last_count) {
         log.info("donor telemetry: tracking {d} donor job(s)", .{n});
         donor_telemetry_last_count = n;
     }
     if (n == 0) return;
-    const log_state = donorTickLogPtr(frame);
+    const log_state = donorTickLogPtr(frame) orelse return;
     const alloc = frame.lib.alloc;
     const now_ms = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toMilliseconds();
 
@@ -444,7 +444,8 @@ pub fn drainDonorTelemetry(frame: *Frame) void {
 /// "try next recipe source" fallback.
 pub fn isDonorJob(frame: *Frame, download_job_id: u64) bool {
     if (frame.state.donor_jobs == null) return false;
-    return donorJobsMap(frame).contains(download_job_id);
+    const m = donorJobsMap(frame) orelse return false;
+    return m.contains(download_job_id);
 }
 
 /// Kick off the donor-DDL fetch worker. No-op when:
@@ -606,7 +607,7 @@ fn onDonorDownloadDone(frame: *Frame, job: *DonorDownloadJob) void {
 
     // Register the job-id ↔ thread-id mapping so on aria2 failure we
     // can re-POST for a fresh signed URL (the donor link has a TTL).
-    donorJobsMap(frame).put(dl_id, p.thread_id) catch {};
+    if (donorJobsMap(frame)) |jm| jm.put(dl_id, p.thread_id) catch {};
     log.info("donor enqueue: tid={d} → aria2 job_id={d} (registered for URL-expiry retry)", .{ p.thread_id, dl_id });
 
     var ok_buf: [160]u8 = undefined;
@@ -648,7 +649,7 @@ fn donorErrorMessage(name: []const u8) []const u8 {
 pub fn maybeRetryDonorJob(frame: *Frame, download_job_id: u64) bool {
     const state = frame.state;
     if (state.donor_jobs == null) return false;
-    const jobs = donorJobsMap(frame);
+    const jobs = donorJobsMap(frame) orelse return false;
     const thread_id = jobs.get(download_job_id) orelse return false;
     _ = jobs.remove(download_job_id);
 
@@ -666,7 +667,7 @@ pub fn maybeRetryDonorJob(frame: *Frame, download_job_id: u64) bool {
 
     // Bound retries per thread so a permanently expired URL doesn't
     // pin a worker forever.
-    const retries = donorRetriesMap(frame);
+    const retries = donorRetriesMap(frame) orelse return false;
     const tries = (retries.get(thread_id) orelse 0) + 1;
     if (tries > MAX_DONOR_AUTO_RETRIES) {
         log.warn("donor retry: tid={d} exceeded {d} attempts, giving up", .{ thread_id, MAX_DONOR_AUTO_RETRIES });
@@ -841,7 +842,7 @@ pub fn enqueueOneSource(
 
 
 pub fn drainCompletedDownloads(frame: *Frame) void {
-    const seen = installer_act.postInstalledSet(frame);
+    const seen = installer_act.postInstalledSet(frame) orelse return;
 
     var it = frame.dl_mgr.jobs.iterator();
     while (it.next()) |entry| {

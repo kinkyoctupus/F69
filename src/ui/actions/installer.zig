@@ -52,9 +52,9 @@ pub const ClashModalState = owned_types.ClashModalState;
 /// Lazy-init the post-installed dedupe set; consumed by
 /// drainCompletedDownloads (downloads.zig) and by the auto-extract
 /// pipeline (this file).
-pub fn postInstalledSet(frame: *Frame) *PostInstalledSet {
+pub fn postInstalledSet(frame: *Frame) ?*PostInstalledSet {
     if (frame.state.post_installed) |p| return p;
-    const set_ptr = frame.lib.alloc.create(PostInstalledSet) catch unreachable;
+    const set_ptr = frame.lib.alloc.create(PostInstalledSet) catch return null;
     set_ptr.* = PostInstalledSet.init(frame.lib.alloc);
     frame.state.post_installed = set_ptr;
     return set_ptr;
@@ -1358,9 +1358,9 @@ fn reportResolverResult(state: *State, result: *const resolver.SolveResult) bool
 
 const PostInstallPhase = enum(u8) { pending, done, failed };
 
-fn postInstallJobsList(frame: *Frame) *PostInstallJobsList {
+fn postInstallJobsList(frame: *Frame) ?*PostInstallJobsList {
     if (frame.state.post_install_jobs) |list_ptr| return list_ptr;
-    const list_ptr = frame.lib.alloc.create(PostInstallJobsList) catch unreachable;
+    const list_ptr = frame.lib.alloc.create(PostInstallJobsList) catch return null;
     list_ptr.* = .empty;
     frame.state.post_install_jobs = list_ptr;
     return list_ptr;
@@ -1384,7 +1384,7 @@ pub fn freePostInstallJobs(state: *State, alloc: std.mem.Allocator) void {
 /// of the stale "[done]" pill while the extract is in flight.
 pub fn isExtracting(frame: *Frame, download_job_id: u64) bool {
     if (frame.state.post_install_jobs == null) return false;
-    const list = postInstallJobsList(frame);
+    const list = postInstallJobsList(frame) orelse return false;
     for (list.items) |pij| {
         if (pij.download_job_id != download_job_id) continue;
         const phase: PostInstallPhase = @enumFromInt(pij.phase.load(.acquire));
@@ -1802,7 +1802,7 @@ pub fn startPostInstall(
         .source = source_kind,
     };
 
-    const list = postInstallJobsList(frame);
+    const list = postInstallJobsList(frame) orelse return error.OutOfMemory;
     try list.append(alloc, pij);
 
     pij.thr = std.Thread.spawn(.{}, postInstallWorker, .{pij}) catch |e| {
@@ -1876,7 +1876,7 @@ fn postInstallWorker(job: *PostInstallJob) void {
 /// SQLite isn't multi-thread-safe at the app layer), then free.
 pub fn drainPostInstall(frame: *Frame) void {
     if (frame.state.post_install_jobs == null) return;
-    const list = postInstallJobsList(frame);
+    const list = postInstallJobsList(frame) orelse return;
 
     var i: usize = 0;
     while (i < list.items.len) {
@@ -1978,9 +1978,9 @@ fn doInstallUpsert(
 
 const ManualInstallPhase = enum(u8) { pending, done, failed };
 
-fn manualInstallJobsList(frame: *Frame) *ManualInstallJobsList {
+fn manualInstallJobsList(frame: *Frame) ?*ManualInstallJobsList {
     if (frame.state.manual_install_jobs) |list_ptr| return list_ptr;
-    const list_ptr = frame.lib.alloc.create(ManualInstallJobsList) catch unreachable;
+    const list_ptr = frame.lib.alloc.create(ManualInstallJobsList) catch return null;
     list_ptr.* = .empty;
     frame.state.manual_install_jobs = list_ptr;
     return list_ptr;
@@ -2125,7 +2125,15 @@ pub fn startManualInstall(
         .archive_size = archive_size,
     };
 
-    const list = manualInstallJobsList(frame);
+    const list = manualInstallJobsList(frame) orelse {
+        alloc.destroy(job);
+        alloc.free(file_path_owned);
+        alloc.free(dest_dir_owned);
+        alloc.free(version_owned);
+        if (name_owned) |s| alloc.free(s);
+        state.setDownloadMsg("Out of memory.");
+        return;
+    };
     list.append(alloc, job) catch {
         alloc.destroy(job);
         alloc.free(file_path_owned);
@@ -2238,7 +2246,7 @@ fn manualExtractProgressPoller(job: *ManualInstallJob) void {
 /// frees the job.
 pub fn drainManualInstall(frame: *Frame) void {
     if (frame.state.manual_install_jobs == null) return;
-    const list = manualInstallJobsList(frame);
+    const list = manualInstallJobsList(frame) orelse return;
     const state = frame.state;
 
     var i: usize = 0;
@@ -2384,7 +2392,7 @@ pub fn postInstallMod(frame: *Frame, job_id: u64, game_id: u64, mod_id_opt: ?u64
 /// sources are exhausted, surface a status line and stop.
 pub fn tryNextSource(frame: *Frame, game_id: u64) !void {
     const state = frame.state;
-    const m = common.attemptsMap(frame);
+    const m = common.attemptsMap(frame) orelse return error.OutOfMemory;
     const next_idx: u32 = (m.get(game_id) orelse 0) + 1;
     m.put(game_id, next_idx) catch {};
 
