@@ -1466,6 +1466,15 @@ const RPM_SPEC =
     \\BuildRequires:  openssl-devel
     \\BuildRequires:  libarchive-devel
     \\BuildRequires:  dbus-devel
+    \\# libarchive.a's transitive deps + the compression triple
+    \\BuildRequires:  bzip2-devel
+    \\BuildRequires:  zlib-devel
+    \\BuildRequires:  xz-devel
+    \\BuildRequires:  libzstd-devel
+    \\BuildRequires:  lz4-devel
+    \\BuildRequires:  nettle-devel
+    \\BuildRequires:  libxml2-devel
+    \\BuildRequires:  libacl-devel
     \\
     \\Requires:       vulkan-loader
     \\Requires:       libwayland-client
