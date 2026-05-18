@@ -21,12 +21,12 @@ const Io = std.Io;
 const log = std.log.scoped(.rpdl);
 const errs = @import("errors.zig");
 const version_mod = @import("util_version");
+const util_http = @import("util_http");
 
 pub const BASE_URL = "https://dl.rpdl.net";
 const LOGIN_URL = BASE_URL ++ "/api/user/login";
 const DOWNLOAD_URL_FMT = BASE_URL ++ "/api/torrent/download/{d}";
 const SEARCH_URL_FMT = BASE_URL ++ "/api/torrents?page_size=50&page=0&sort=uploaded_DESC&categories=&search={s}";
-const USER_AGENT = "f69/" ++ @import("build_options").version;
 
 /// One torrent entry returned by `/api/torrents?search=…`.
 /// All slices are `alloc`-owned; caller frees via `freeSearchResults`.
@@ -64,9 +64,6 @@ pub fn login(
     log.debug("login: user='{s}' (pw len={d})", .{ username, password.len });
     if (username.len == 0 or password.len == 0) return errs.Error.AuthRequired;
 
-    var http: std.http.Client = .{ .allocator = alloc, .io = io };
-    defer http.deinit();
-
     // Stdlib JSON does the escape for us — no need for a hand-rolled
     // string formatter that re-implements the same rules.
     var body_aw: Io.Writer.Allocating = .init(alloc);
@@ -78,36 +75,31 @@ pub fn login(
     ) catch return errs.Error.OutOfMemory;
     const body_bytes = body_aw.writer.buffered();
 
-    var resp_buf: Io.Writer.Allocating = .init(alloc);
-    defer resp_buf.deinit();
-
-    const extra_headers = [_]std.http.Header{
+    const extra_headers = [_]util_http.Header{
         .{ .name = "content-type", .value = "application/json" },
         .{ .name = "accept", .value = "application/json" },
     };
 
-    const result = http.fetch(.{
-        .location = .{ .url = LOGIN_URL },
-        .response_writer = &resp_buf.writer,
+    const resp = util_http.fetch(alloc, io, LOGIN_URL, .{
+        .method = .POST,
         .payload = body_bytes,
-        .headers = .{ .user_agent = .{ .override = USER_AGENT } },
         .extra_headers = &extra_headers,
-        .keep_alive = false,
+        .max_response_bytes = MAX_LOGIN_RESPONSE,
     }) catch |e| {
         log.warn("RPDL login network error: {s}", .{@errorName(e)});
         return errs.Error.NetworkError;
     };
+    defer alloc.free(resp.body);
 
-    const code: u16 = @intFromEnum(result.status);
-    if (result.status != .ok) {
-        log.warn("RPDL login status {d}", .{code});
-        return switch (code) {
+    if (resp.status != 200) {
+        log.warn("RPDL login status {d}", .{resp.status});
+        return switch (resp.status) {
             401, 403 => errs.Error.AuthRequired,
             else => errs.Error.NetworkError,
         };
     }
 
-    const tok = parseLoginResponse(alloc, resp_buf.written()) catch |e| return e;
+    const tok = parseLoginResponse(alloc, resp.body) catch |e| return e;
     log.info("RPDL login OK ({d}-byte token)", .{tok.len});
     return tok;
 }
@@ -154,31 +146,20 @@ pub fn search(
     const url = std.fmt.bufPrint(&url_buf, SEARCH_URL_FMT, .{sanitized.items}) catch
         return errs.Error.RpdlInvalidResponse;
 
-    var http: std.http.Client = .{ .allocator = alloc, .io = io };
-    defer http.deinit();
-
-    var resp_buf: Io.Writer.Allocating = .init(alloc);
-    defer resp_buf.deinit();
-
     log.info("search: query='{s}' sanitized='{s}'", .{ query, sanitized.items });
     log.debug("search: GET {s}", .{url});
-    const result = http.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &resp_buf.writer,
-        .headers = .{ .user_agent = .{ .override = USER_AGENT } },
-        .keep_alive = false,
-    }) catch |e| {
+    const resp = util_http.fetch(alloc, io, url, .{}) catch |e| {
         log.warn("RPDL search network error: {s}", .{@errorName(e)});
         return errs.Error.NetworkError;
     };
-    const code: u16 = @intFromEnum(result.status);
-    if (result.status != .ok) {
-        log.warn("RPDL search status {d}", .{code});
+    defer alloc.free(resp.body);
+
+    if (resp.status != 200) {
+        log.warn("RPDL search status {d}", .{resp.status});
         return errs.Error.NetworkError;
     }
-    const body = resp_buf.written();
-    log.info("search: HTTP 200, {d} bytes received", .{body.len});
-    const matches = try parseSearchResponse(alloc, body);
+    log.info("search: HTTP 200, {d} bytes received", .{resp.body.len});
+    const matches = try parseSearchResponse(alloc, resp.body);
     log.info("search: parsed {d} torrent(s)", .{matches.len});
     if (matches.len > 0) {
         const cap = @min(matches.len, 5);
@@ -471,52 +452,41 @@ pub fn fetchTorrent(
     const auth_value = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{token}) catch
         return errs.Error.AuthRequired;
 
-    var http: std.http.Client = .{ .allocator = alloc, .io = io };
-    defer http.deinit();
-
-    var resp_buf: Io.Writer.Allocating = .init(alloc);
-    errdefer resp_buf.deinit();
-
-    const extra_headers = [_]std.http.Header{
+    const extra_headers = [_]util_http.Header{
         .{ .name = "authorization", .value = auth_value },
         .{ .name = "accept", .value = "application/x-bittorrent, application/octet-stream" },
     };
 
     log.debug("fetchTorrent: GET {s}", .{url});
-    const result = http.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &resp_buf.writer,
-        .headers = .{ .user_agent = .{ .override = USER_AGENT } },
+    const resp = util_http.fetch(alloc, io, url, .{
         .extra_headers = &extra_headers,
-        .keep_alive = false,
+        .max_response_bytes = MAX_TORRENT_BYTES,
     }) catch |e| {
         log.warn("RPDL fetchTorrent network error: {s}", .{@errorName(e)});
-        resp_buf.deinit();
         return errs.Error.NetworkError;
     };
+    errdefer alloc.free(resp.body);
 
-    const code: u16 = @intFromEnum(result.status);
-    if (result.status != .ok) {
-        log.warn("RPDL fetchTorrent status {d}", .{code});
-        resp_buf.deinit();
-        return switch (code) {
+    if (resp.status != 200) {
+        log.warn("RPDL fetchTorrent status {d}", .{resp.status});
+        alloc.free(resp.body);
+        return switch (resp.status) {
             401, 403 => errs.Error.AuthRequired,
             404 => errs.Error.NotFound,
             else => errs.Error.NetworkError,
         };
     }
-    const bytes = resp_buf.toOwnedSlice() catch return errs.Error.OutOfMemory;
 
     // Bencoded torrent files always start with 'd' (dict). Any HTML or
-    // JSON error body that slipped past status==.ok would start with
+    // JSON error body that slipped past status==200 would start with
     // '<' or '{'.
-    if (!isBencodedDict(bytes)) {
-        log.warn("RPDL fetchTorrent: body not bencoded ({d} bytes)", .{bytes.len});
-        alloc.free(bytes);
+    if (!isBencodedDict(resp.body)) {
+        log.warn("RPDL fetchTorrent: body not bencoded ({d} bytes)", .{resp.body.len});
+        alloc.free(resp.body);
         return errs.Error.RpdlInvalidResponse;
     }
-    log.info("RPDL fetchTorrent OK: torrent_id={d}, {d} bytes", .{ torrent_id, bytes.len });
-    return bytes;
+    log.info("RPDL fetchTorrent OK: torrent_id={d}, {d} bytes", .{ torrent_id, resp.body.len });
+    return resp.body;
 }
 
 fn isBencodedDict(bytes: []const u8) bool {
