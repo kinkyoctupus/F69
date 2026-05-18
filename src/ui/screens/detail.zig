@@ -903,7 +903,12 @@ fn renderChangelogTab(frame: *Frame, game: *const library.Game) void {
 }
 
 fn renderWrappedText(text: ?[]const u8, placeholder: []const u8) void {
-    var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .background = false });
+    // cache_layout: text is immutable between frames (description /
+    // reviews payload only changes on re-sync). Without the cache,
+    // dvui re-runs line-break + glyph layout every frame — that's
+    // what put `addTextEx` at 70 ms on `render detail` in the
+    // earlier latency log.
+    var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{ .expand = .horizontal, .background = false });
     defer tl.deinit();
     if (text) |md| {
         if (std.unicode.utf8ValidateSlice(md)) {
@@ -994,7 +999,12 @@ fn renderStructuredLines(frame: *Frame, text: []const u8, base_id: u64, depth: u
 }
 
 fn renderInlineLineWithLinks(frame: *Frame, line: []const u8, id: u64) void {
-    var tl = dvui.textLayout(@src(), .{}, .{
+    // cache_layout: line content is keyed by `id` (per-paragraph hash)
+    // and only changes when scraped text changes. The structured-text
+    // walker rebuilds one textLayout per line of changelog / downloads
+    // / overview — 30-200 textLayouts per Detail render. Without the
+    // cache every one re-runs line-break + glyph layout each frame.
+    var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{
         .id_extra = id,
         .expand = .horizontal,
         .background = false,

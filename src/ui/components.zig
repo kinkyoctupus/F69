@@ -238,7 +238,10 @@ pub fn settingsHelpText(text: []const u8) void {
     // when more than one help block lives on a single screen. Hash
     // the text into `id_extra` so each unique snippet gets a stable,
     // distinct id without callers having to thread an index.
-    var tl = dvui.textLayout(@src(), .{}, .{
+    //
+    // cache_layout: help-text strings are compile-time constants —
+    // safe to skip the per-frame relayout.
+    var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{
         .id_extra = std.hash.Wyhash.hash(0, text),
         .expand = .horizontal,
         .background = false,
