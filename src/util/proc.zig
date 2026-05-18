@@ -28,17 +28,27 @@ pub const RunResult = struct {
     exit_code: u8,
 };
 
+/// Selector for the child's stderr stream. Most one-shot callers want
+/// `.inherit` so a failing helper (chmod, ldd, tar) writes the error
+/// message into the parent's console without extra plumbing. Best-effort
+/// probes (`testUserns`, silent `chmod +x`) want `.ignore` so the noise
+/// stays out of the user's log.
+pub const StderrBehavior = enum { inherit, ignore };
+
 pub const RunOptions = struct {
     /// Working directory. Null inherits the parent's cwd.
     cwd: ?[]const u8 = null,
     /// Max captured-stdout bytes. Children writing more than this
     /// surface `StdoutCaptureFailed`. Default 4 MiB.
     max_stdout_bytes: usize = 4 * 1024 * 1024,
+    /// What to do with the child's stderr. Defaults to `.inherit` so
+    /// failure messages reach the parent console without ceremony.
+    stderr: StderrBehavior = .inherit,
 };
 
 /// Spawn `argv`, wait for exit, return captured stdout + exit code.
-/// stderr is inherited (lands in the parent's stderr) so failure
-/// messages are visible without extra plumbing.
+/// stderr handling follows `opts.stderr` (defaults to inherit so
+/// failure messages are visible without extra plumbing).
 pub fn run(
     alloc: std.mem.Allocator,
     io: std.Io,
@@ -47,24 +57,28 @@ pub fn run(
 ) Error!RunResult {
     var child = std.process.spawn(io, .{
         .argv = argv,
-        .stdout_behavior = .Pipe,
-        .stderr_behavior = .Inherit,
-        .cwd = opts.cwd,
-    }, alloc) catch return Error.SpawnFailed;
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = switch (opts.stderr) {
+            .inherit => .inherit,
+            .ignore => .ignore,
+        },
+        .cwd = if (opts.cwd) |p| .{ .path = p } else .inherit,
+    }) catch return Error.SpawnFailed;
 
     var aw: std.Io.Writer.Allocating = .init(alloc);
     errdefer aw.deinit();
 
     var fr_buf: [4096]u8 = undefined;
     var fr = child.stdout.?.reader(io, &fr_buf);
-    fr.interface.streamRemaining(&aw.writer) catch {
-        _ = child.kill(io) catch {};
+    _ = fr.interface.streamRemaining(&aw.writer) catch {
+        child.kill(io);
         aw.deinit();
         return Error.StdoutCaptureFailed;
     };
 
     if (aw.writer.buffered().len > opts.max_stdout_bytes) {
-        _ = child.kill(io) catch {};
+        child.kill(io);
         aw.deinit();
         return Error.StdoutCaptureFailed;
     }
@@ -75,7 +89,7 @@ pub fn run(
     };
 
     const code: u8 = switch (term) {
-        .Exited => |c| c,
+        .exited => |c| c,
         else => 1, // signal / unknown — surface as non-zero
     };
 

@@ -8,6 +8,8 @@ const builtin = @import("builtin");
 const errs = @import("errors.zig");
 pub const errors = errs;
 
+const util_proc = @import("util_proc");
+
 const dom = @import("domain.zig");
 pub const SandboxConfig = dom.SandboxConfig;
 pub const SpawnResult = dom.SpawnResult;
@@ -182,8 +184,8 @@ pub const NoSandbox = struct {
         // any file that already has any exec bit; we follow it up
         // with a plain `+x` on the resolved launcher so wrappers
         // extracted with all exec bits stripped still recover.
-        ensureTreeExecutable(self.io, cfg.install_path);
-        ensureExecutable(self.io, abs_exe);
+        ensureTreeExecutable(alloc, self.io, cfg.install_path);
+        ensureExecutable(alloc, self.io, abs_exe);
 
         // Build argv: [executable, launch_args...].
         var argv: std.ArrayList([]const u8) = .empty;
@@ -229,8 +231,8 @@ pub const NoSandbox = struct {
 /// `/bin/chmod` so we don't need to touch syscall-level chmod
 /// plumbing across libcs. Silent on failure — the upcoming exec
 /// will surface a clearer error if it actually mattered.
-fn ensureExecutable(io: std.Io, path: []const u8) void {
-    runChmod(io, &.{ "chmod", "+x", path });
+fn ensureExecutable(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
+    runChmod(alloc, io, &.{ "chmod", "+x", path });
 }
 
 /// Recursively grant the owner read/write/exec on the install tree.
@@ -247,30 +249,25 @@ fn ensureExecutable(io: std.Io, path: []const u8) void {
 ///
 /// Falls back silently when chmod isn't on PATH — `spawn` later will
 /// surface the eventual error with a specific message.
-fn ensureTreeExecutable(io: std.Io, install_path: []const u8) void {
-    runChmod(io, &.{ "chmod", "-R", "u+rwx", install_path });
+fn ensureTreeExecutable(alloc: std.mem.Allocator, io: std.Io, install_path: []const u8) void {
+    runChmod(alloc, io, &.{ "chmod", "-R", "u+rwx", install_path });
 }
 
-fn runChmod(io: std.Io, argv: []const []const u8) void {
+fn runChmod(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) void {
     if (builtin.os.tag == .windows) return;
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .ignore,
+    // stderr stays silent (`.ignore`) — chmod's "no such file" messages
+    // are not actionable here; the upcoming exec surfaces a clearer
+    // error if it actually mattered. stdout is always empty for chmod,
+    // freed unconditionally.
+    const result = util_proc.run(alloc, io, argv, .{
         .stderr = .ignore,
     }) catch |e| {
         std.log.scoped(.sandbox).warn("chmod spawn failed: {s}", .{@errorName(e)});
         return;
     };
-    const term = child.wait(io) catch |e| {
-        std.log.scoped(.sandbox).warn("chmod wait failed: {s}", .{@errorName(e)});
-        return;
-    };
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.log.scoped(.sandbox).warn("chmod exited with code {d}", .{code});
-        },
-        else => std.log.scoped(.sandbox).warn("chmod terminated abnormally", .{}),
+    defer alloc.free(result.stdout);
+    if (result.exit_code != 0) {
+        std.log.scoped(.sandbox).warn("chmod exited with code {d}", .{result.exit_code});
     }
 }
 

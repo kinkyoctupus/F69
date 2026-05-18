@@ -48,6 +48,12 @@ pub fn build(b: *std.Build) void {
     const util_proc_mod = mod(b, "util_proc", "src/util/proc.zig", target, optimize);
     const util_setting_mod = mod(b, "util_setting", "src/util/setting.zig", target, optimize);
     const util_test_env_mod = mod(b, "util_test_env", "src/util/test_env.zig", target, optimize);
+    // Tests-only fixture. Every module whose test block hand-rolled a
+    // tmpdir pre-R11 follow-up now imports `util_test_env` for the
+    // shared `TestEnv`. Imports are no-ops at runtime — the type is
+    // only referenced inside `test {}` blocks, which the release build
+    // drops.
+    util_atomic_io_mod.addImport("util_test_env", util_test_env_mod);
 
     // util_archive: thin Zig wrapper around libarchive's read API.
     // Used by downloads/archive.zig for the formats stdlib doesn't
@@ -160,6 +166,9 @@ pub fn build(b: *std.Build) void {
     downloads_mod.addImport("util_version", util_version_mod);
     downloads_mod.addImport("util_archive", util_archive_mod);
     downloads_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    downloads_mod.addImport("util_http", util_http_mod);
+    downloads_mod.addImport("util_proc", util_proc_mod);
+    downloads_mod.addImport("util_test_env", util_test_env_mod);
     downloads_mod.addImport("build_options", build_opts_mod);
 
     const installer_mod = mod(b, "installer", "src/installer/installer.zig", target, optimize);
@@ -169,27 +178,35 @@ pub fn build(b: *std.Build) void {
     installer_mod.addImport("downloads", downloads_mod);
     installer_mod.addImport("util_archive", util_archive_mod);
     installer_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    installer_mod.addImport("util_proc", util_proc_mod);
+    installer_mod.addImport("util_test_env", util_test_env_mod);
 
     // Importers — read F95Checker SQLite + xLibrary JSON config files
     // and translate to library.Game shape. Settings UI invokes these.
     const importers_mod = mod(b, "importers", "src/importers/importers.zig", target, optimize);
     importers_mod.addImport("util_db", util_db_mod);
+    importers_mod.addImport("util_test_env", util_test_env_mod);
 
     const convert_mod = mod(b, "convert", "src/convert/convert.zig", target, optimize);
     convert_mod.addImport("util_renpy", util_renpy_mod);
     convert_mod.addImport("util_atomic_io", util_atomic_io_mod);
     convert_mod.addImport("util_domain", util_domain_mod);
+    convert_mod.addImport("util_http", util_http_mod);
+    convert_mod.addImport("util_proc", util_proc_mod);
+    convert_mod.addImport("util_test_env", util_test_env_mod);
     convert_mod.addImport("build_options", build_opts_mod);
 
     const compat_mod = mod(b, "compat", "src/compat/compat.zig", target, optimize);
     compat_mod.addImport("util_version", util_version_mod);
     compat_mod.addImport("util_renpy", util_renpy_mod);
     compat_mod.addImport("util_domain", util_domain_mod);
+    compat_mod.addImport("util_test_env", util_test_env_mod);
 
     const sandbox_mod = mod(b, "sandbox", "src/sandbox/sandbox.zig", target, optimize);
     sandbox_mod.addImport("library", library_mod);
     sandbox_mod.addImport("util_paths", util_paths_mod);
     sandbox_mod.addImport("util_domain", util_domain_mod);
+    sandbox_mod.addImport("util_proc", util_proc_mod);
 
     const server_mod = mod(b, "server", "src/server/server.zig", target, optimize);
     server_mod.addImport("library", library_mod);

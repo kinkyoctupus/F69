@@ -13,6 +13,7 @@ const Io = std.Io;
 const log = std.log.scoped(.archive);
 const errs = @import("errors.zig");
 const archive_lib = @import("util_archive");
+const util_proc = @import("util_proc");
 
 pub const Format = enum { zip, sevenz, tar_gz, tar_bz2, tar_xz, rar, unknown };
 
@@ -176,17 +177,11 @@ test "extract: real .tar.gz round-trip" {
 
     var tar_cmd_buf: [512]u8 = undefined;
     const tar_cmd = try std.fmt.bufPrint(&tar_cmd_buf, "tar czf {s} -C {s} hello.txt", .{ tar_path, src_dir });
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "sh", "-c", tar_cmd },
-        .stdin = .ignore,
-        .stdout = .ignore,
+    const result = util_proc.run(testing.allocator, io, &.{ "sh", "-c", tar_cmd }, .{
         .stderr = .ignore,
     }) catch return error.SkipZigTest;
-    const term = child.wait(io) catch return error.SkipZigTest;
-    switch (term) {
-        .exited => |code| if (code != 0) return error.SkipZigTest,
-        else => return error.SkipZigTest,
-    }
+    defer testing.allocator.free(result.stdout);
+    if (result.exit_code != 0) return error.SkipZigTest;
 
     var out_dir_buf: [128]u8 = undefined;
     const out_dir = try std.fmt.bufPrint(&out_dir_buf, "{s}/out", .{scratch});
@@ -231,17 +226,11 @@ test "extract: real .zip round-trip" {
 
     var zip_cmd_buf: [512]u8 = undefined;
     const zip_cmd = try std.fmt.bufPrint(&zip_cmd_buf, "cd {s} && zip -q {s} hello.txt", .{ src_dir, zip_path });
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "sh", "-c", zip_cmd },
-        .stdin = .ignore,
-        .stdout = .ignore,
+    const result = util_proc.run(testing.allocator, io, &.{ "sh", "-c", zip_cmd }, .{
         .stderr = .ignore,
     }) catch return error.SkipZigTest;
-    const term = child.wait(io) catch return error.SkipZigTest;
-    switch (term) {
-        .exited => |code| if (code != 0) return error.SkipZigTest,
-        else => return error.SkipZigTest,
-    }
+    defer testing.allocator.free(result.stdout);
+    if (result.exit_code != 0) return error.SkipZigTest;
 
     var out_dir_buf: [128]u8 = undefined;
     const out_dir = try std.fmt.bufPrint(&out_dir_buf, "{s}/out", .{scratch});

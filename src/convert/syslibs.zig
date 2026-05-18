@@ -20,6 +20,7 @@ const Io = std.Io;
 const log = std.log.scoped(.syslibs);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
+const util_proc = @import("util_proc");
 
 /// Owned list of lib names ("libgtk-3.so.0" style) that `ldd` couldn't
 /// resolve. Caller frees via `freeMissing`.
@@ -157,33 +158,15 @@ pub fn bundle(
 
 /// Run `ldd <binary>` and return its stdout as an allocator-owned
 /// slice. Surfaces errors as `SyslibResolveFailed` so the caller can
-/// keep going (bundle is best-effort).
+/// keep going (bundle is best-effort). stderr stays silent (`.ignore`)
+/// so shell scripts and ELF-less files don't spam f69's console with
+/// "not a dynamic executable" — `bundle` already treats an empty output
+/// as "nothing to do".
 fn runLdd(alloc: std.mem.Allocator, io: Io, binary: []const u8) ![]u8 {
-    // Reuse a single read end pipe via `stdout = .pipe`. We accumulate
-    // chunks into an ArrayList — ldd output for a typical binary is
-    // a few KiB.
-    var child = try std.process.spawn(io, .{
-        .argv = &.{ "ldd", binary },
-        .stdin = .ignore,
-        .stdout = .pipe,
+    const result = util_proc.run(alloc, io, &.{ "ldd", binary }, .{
         .stderr = .ignore,
-    });
-
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-
-    if (child.stdout) |*f| {
-        var rd_buf: [64 * 1024]u8 = undefined;
-        var fr = f.reader(io, &rd_buf);
-        while (true) {
-            var chunk: [64 * 1024]u8 = undefined;
-            const got = fr.interface.readSliceShort(&chunk) catch break;
-            if (got == 0) break;
-            try out.appendSlice(alloc, chunk[0..got]);
-        }
-    }
-    _ = child.wait(io) catch {};
-    return out.toOwnedSlice(alloc);
+    }) catch return error.SyslibResolveFailed;
+    return result.stdout;
 }
 
 fn findLibIn(alloc: std.mem.Allocator, io: Io, paths: []const []const u8, libname: []const u8) ?[]u8 {
