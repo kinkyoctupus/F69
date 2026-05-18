@@ -300,10 +300,15 @@ pub const RefreshTagsPayload = struct {
 };
 pub const RefreshTagsJob = Job(RefreshTagsPayload);
 
-pub const ImageJobPhase = enum(u8) { pending, done };
-
-pub const ImageJob = struct {
-    phase: std.atomic.Value(u8),
+/// Payload for the per-game screenshot-fetch worker. ImageJob is
+/// part of a QUEUE — cancellation is queue-wide (one Cancel click
+/// aborts the active job AND drops the rest of the queue), so the
+/// cancel signal lives at `state.image_cancel` and the payload
+/// carries a pointer to it. `Job(P).cancel` (the carrier's own
+/// flag) is unused for this worker. Same for aggregate progress:
+/// the per-job counter is on the payload but the batch counter
+/// (`state.image_done`) is shared and lives behind a pointer.
+pub const ImagePayload = struct {
     thread_id: u64,
     /// Screenshot URLs to fetch in order, mapped to `.s1` .. `.sN`.
     /// Outer slice + each inner string job.alloc-owned.
@@ -311,24 +316,23 @@ pub const ImageJob = struct {
     /// Display name (for the banner row). job.alloc-owned; may be "".
     name: []const u8,
     /// Per-job counter for the "X/Y" sub-progress. Worker increments;
-    /// drainImageQueue tears down when phase == done.
+    /// drainImageQueue tears down when phase transitions to .done.
     progress_done: std.atomic.Value(u32) = .init(0),
     progress_total: u32 = 0,
-    thr: std.Thread,
-    alloc: std.mem.Allocator,
     f95_svc: *f95.Service,
-    win: *dvui.Window,
     covers_dir: []u8,
     io: std.Io,
     /// Points into `state.image_cancel` so a single Cancel click
-    /// aborts the active job AND prevents further pops from the queue.
-    cancel: *std.atomic.Value(bool),
+    /// aborts the active job AND prevents further pops from the
+    /// queue. Workers poll via this pointer, not `job.cancel`.
+    cancel_ptr: *std.atomic.Value(bool),
     /// Points into `state.image_done` — worker bumps after each
     /// fetched (or skipped-because-already-on-disk) screenshot, so
     /// the banner shows aggregate progress across the whole batch
     /// instead of just the current job.
     aggregate_done: *std.atomic.Value(u32),
 };
+pub const ImageJob = Job(ImagePayload);
 
 /// Payload for the bookmarks-pull worker (walk /watched/threads).
 /// Generic carrier (phase, cancel, thread, allocator, dvui window)

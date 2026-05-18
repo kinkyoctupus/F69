@@ -31,11 +31,11 @@ const Frame = types.Frame;
 const State = types.State;
 
 const SyncRecapList = owned_types.SyncRecapList;
-const ImageJobPhase = owned_types.ImageJobPhase;
 
 pub const SyncRecapEntry = owned_types.SyncRecapEntry;
 pub const SyncPayload = owned_types.SyncPayload;
 pub const SyncJob = owned_types.SyncJob;
+pub const ImagePayload = owned_types.ImagePayload;
 pub const ImageJob = owned_types.ImageJob;
 
 // ============================================================
@@ -1220,40 +1220,41 @@ pub fn advanceSyncQueue(frame: *Frame) void {
 // queue behind each other. Single-worker means simpler state.
 
 fn imageWorker(job: *ImageJob) void {
-    const t_start = nowMs(job.io);
+    const p = &job.payload;
+    const t_start = nowMs(p.io);
     var ok: u32 = 0;
     var fail: u32 = 0;
     var skipped: u32 = 0;
     defer log.info(
         "imgworker tid={d} TOTAL_ms={d} ok={d} fail={d} skipped={d}",
-        .{ job.thread_id, nowMs(job.io) - t_start, ok, fail, skipped },
+        .{ p.thread_id, nowMs(p.io) - t_start, ok, fail, skipped },
     );
 
-    for (job.urls, 0..) |url, idx| {
-        if (job.cancel.load(.acquire)) {
-            log.info("imgworker tid={d} cancelled at shot {d}", .{ job.thread_id, idx + 1 });
+    for (p.urls, 0..) |url, idx| {
+        if (p.cancel_ptr.load(.acquire)) {
+            log.info("imgworker tid={d} cancelled at shot {d}", .{ p.thread_id, idx + 1 });
             break;
         }
 
         // Skip when the file is already on disk — re-running sync over
         // a partially-fetched tid should not re-download what we have.
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ job.covers_dir, job.thread_id, idx + 1 }) catch {
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ p.covers_dir, p.thread_id, idx + 1 }) catch {
             fail += 1;
-            _ = job.aggregate_done.fetchAdd(1, .release);
-            _ = job.progress_done.fetchAdd(1, .release);
+            _ = p.aggregate_done.fetchAdd(1, .release);
+            _ = p.progress_done.fetchAdd(1, .release);
             dvui.refresh(job.win, @src(), null);
             continue;
         };
-        if (fileExists(job.io, path)) {
+        if (fileExists(p.io, path)) {
             skipped += 1;
-            _ = job.aggregate_done.fetchAdd(1, .release);
-            _ = job.progress_done.fetchAdd(1, .release);
+            _ = p.aggregate_done.fetchAdd(1, .release);
+            _ = p.progress_done.fetchAdd(1, .release);
             dvui.refresh(job.win, @src(), null);
             continue;
         }
 
-        const t_s0 = nowMs(job.io);
+        const t_s0 = nowMs(p.io);
         // Reuse phase-1's helper. It writes `<covers>/<tid>.s<idx>`
         // atomically + a thumb beside it; identical layout to before
         // the phase split, so detail-page slide loads keep working.
@@ -1263,27 +1264,27 @@ fn imageWorker(job: *ImageJob) void {
                 .{ idx + 1, @errorName(e) },
             );
             fail += 1;
-            _ = job.aggregate_done.fetchAdd(1, .release);
-            _ = job.progress_done.fetchAdd(1, .release);
+            _ = p.aggregate_done.fetchAdd(1, .release);
+            _ = p.progress_done.fetchAdd(1, .release);
             dvui.refresh(job.win, @src(), null);
             continue;
         };
-        log.info("imgworker tid={d} shot[{d}]_ms={d}", .{ job.thread_id, idx + 1, nowMs(job.io) - t_s0 });
+        log.info("imgworker tid={d} shot[{d}]_ms={d}", .{ p.thread_id, idx + 1, nowMs(p.io) - t_s0 });
         ok += 1;
-        _ = job.aggregate_done.fetchAdd(1, .release);
-        _ = job.progress_done.fetchAdd(1, .release);
+        _ = p.aggregate_done.fetchAdd(1, .release);
+        _ = p.progress_done.fetchAdd(1, .release);
         dvui.refresh(job.win, @src(), null);
     }
 
-    job.phase.store(@intFromEnum(ImageJobPhase.done), .release);
-    dvui.refresh(job.win, @src(), null);
+    job.markDone();
 }
 
 /// Thin wrapper to call `fetchAndWriteScreenshot` from an `ImageJob`
 /// (which doesn't carry a `SyncJob`). Same byte format on disk so
 /// slide-cache reads work unchanged.
 fn fetchAndWriteScreenshotForImage(job: *ImageJob, url: []const u8, idx: usize) !void {
-    const raw = try job.f95_svc.client.getImage(url);
+    const p = &job.payload;
+    const raw = try p.f95_svc.client.getImage(url);
     defer job.alloc.free(raw);
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("phase2 screenshot {d} transcode failed ({s}): {s}", .{ idx, @errorName(e), url });
@@ -1292,10 +1293,10 @@ fn fetchAndWriteScreenshotForImage(job: *ImageJob, url: []const u8, idx: usize) 
     defer job.alloc.free(ready);
 
     var path_buf: [256]u8 = undefined;
-    const path = try screenshotPath(&path_buf, job.covers_dir, job.thread_id, idx);
-    try writeAtomic(job.io, path, ready);
+    const path = try screenshotPath(&path_buf, p.covers_dir, p.thread_id, idx);
+    try writeAtomic(p.io, path, ready);
 
-    writeThumbBeside(job.alloc, job.io, path, ready) catch |e| {
+    writeThumbBeside(job.alloc, p.io, path, ready) catch |e| {
         std.log.scoped(.ui_actions).warn("phase2 screenshot thumb gen failed: {s}", .{@errorName(e)});
     };
 }
@@ -1346,35 +1347,33 @@ pub fn drainImageQueue(frame: *Frame) void {
 
     // Reap a finished job first so we can chain into the next.
     if (state.image_active) |job| {
-        const phase: ImageJobPhase = @enumFromInt(job.phase.load(.acquire));
-        if (phase == .done) {
-            // Worker is exiting — detach so the OS reaps the thread.
-            // (Already detached at spawn; nothing to join.)
-            log.info("drainImageQueue: tid={d} job done", .{job.thread_id});
-
-            // If the user is on the detail page for this tid, dump the
-            // slide / thumb caches so the freshly-fetched bytes show
-            // up on the next paint instead of the cached placeholders.
-            if (state.slide_cache_thread == job.thread_id) {
-                freeSlideCache(state, frame.lib.alloc);
-            }
-            if (state.thumb_cache_thread == job.thread_id) {
-                freeThumbCache(state, frame.lib.alloc);
-            }
-
-            // Free job-owned memory. `name` may be the empty literal
-            // fallback when dupe failed — skip the free in that case.
-            for (job.urls) |u| job.alloc.free(u);
-            job.alloc.free(job.urls);
-            if (job.name.len > 0) job.alloc.free(job.name);
-            job.alloc.free(job.covers_dir);
-            job.alloc.destroy(job);
-            state.image_active = null;
-            state.image_active_name.clear();
-        } else {
+        if (job.phaseGet() != .done) {
             // Still running — wait for next frame.
             return;
         }
+        // Worker is exiting — already detached at spawn so nothing to join.
+        const p = &job.payload;
+        log.info("drainImageQueue: tid={d} job done", .{p.thread_id});
+
+        // If the user is on the detail page for this tid, dump the
+        // slide / thumb caches so the freshly-fetched bytes show
+        // up on the next paint instead of the cached placeholders.
+        if (state.slide_cache_thread == p.thread_id) {
+            freeSlideCache(state, frame.lib.alloc);
+        }
+        if (state.thumb_cache_thread == p.thread_id) {
+            freeThumbCache(state, frame.lib.alloc);
+        }
+
+        // Free payload-owned memory. `name` may be the empty literal
+        // fallback when dupe failed — skip the free in that case.
+        for (p.urls) |u| job.alloc.free(u);
+        job.alloc.free(p.urls);
+        if (p.name.len > 0) job.alloc.free(p.name);
+        job.alloc.free(p.covers_dir);
+        job.alloc.destroy(job);
+        state.image_active = null;
+        state.image_active_name.clear();
     }
 
     // If the user cancelled, drop the rest of the queue NOW (after the
@@ -1438,12 +1437,10 @@ pub fn drainImageQueue(frame: *Frame) void {
         return;
     }
 
-    // Spawn the worker. URLs + name + covers_dir all live on the job's
-    // allocator (lib.alloc) so the heap stays single-source.
-    const job = frame.lib.alloc.create(ImageJob) catch {
-        log.warn("drainImageQueue: ImageJob alloc failed for tid={d}", .{tid});
-        return;
-    };
+    // Spawn the worker via the Job(P) primitive. URLs + name +
+    // covers_dir all live on lib.alloc; cancel + aggregate_done point
+    // into shared state slots so a Cancel click reaches both the
+    // active worker and any queued tids.
     var alloc_failed = false;
     const urls_dup = blk: {
         const outer = frame.lib.alloc.alloc([]const u8, urls_src.len) catch {
@@ -1467,7 +1464,6 @@ pub fn drainImageQueue(frame: *Frame) void {
         break :blk @as([]const []const u8, outer);
     };
     if (alloc_failed) {
-        frame.lib.alloc.destroy(job);
         log.warn("drainImageQueue: URL dup failed for tid={d}", .{tid});
         return;
     }
@@ -1476,44 +1472,38 @@ pub fn drainImageQueue(frame: *Frame) void {
         for (urls_dup) |u| frame.lib.alloc.free(u);
         frame.lib.alloc.free(@constCast(urls_dup));
         if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
-        frame.lib.alloc.destroy(job);
         log.warn("drainImageQueue: covers_dir dup failed for tid={d}", .{tid});
         return;
     };
 
-    job.* = .{
-        .phase = .init(@intFromEnum(ImageJobPhase.pending)),
-        .thread_id = tid,
-        .urls = urls_dup,
-        .name = name_dup,
-        .progress_done = .init(0),
-        .progress_total = @intCast(urls_dup.len),
-        .thr = undefined,
-        .alloc = frame.lib.alloc,
-        .f95_svc = frame.f95_svc,
-        .win = frame.win,
-        .covers_dir = covers_dup,
-        .io = frame.io,
-        .cancel = &state.image_cancel,
-        .aggregate_done = &state.image_done,
-    };
-
-    state.image_active = job;
-    state.setCurrentImageName(name_dup);
-
-    job.thr = std.Thread.spawn(.{}, imageWorker, .{job}) catch {
-        log.warn("drainImageQueue: thread spawn failed for tid={d}", .{tid});
-        // Roll back the job allocation so we don't leak.
+    _ = job_mod.spawnJob(
+        ImagePayload,
+        imageWorker,
+        frame.lib.alloc,
+        frame.win,
+        .{
+            .thread_id = tid,
+            .urls = urls_dup,
+            .name = name_dup,
+            .progress_total = @intCast(urls_dup.len),
+            .f95_svc = frame.f95_svc,
+            .covers_dir = covers_dup,
+            .io = frame.io,
+            .cancel_ptr = &state.image_cancel,
+            .aggregate_done = &state.image_done,
+        },
+        &state.image_active,
+    ) catch {
+        log.warn("drainImageQueue: spawn failed for tid={d}", .{tid});
+        // Roll back the payload-owned allocs so we don't leak.
         for (urls_dup) |u| frame.lib.alloc.free(u);
         frame.lib.alloc.free(@constCast(urls_dup));
         if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
         frame.lib.alloc.free(covers_dup);
-        frame.lib.alloc.destroy(job);
-        state.image_active = null;
         state.image_active_name.clear();
         return;
     };
-    job.thr.detach();
+    state.setCurrentImageName(name_dup);
     log.info("drainImageQueue: spawned tid={d} urls={d}", .{ tid, urls_dup.len });
 }
 
