@@ -548,3 +548,230 @@ fn freeImportStagedRow(alloc: std.mem.Allocator, r: *import_job.StagedRow) void 
 /// per-mod actions below).
 fn legacyImportAnchor() void {}
 
+// ============================================================
+//  folder-scan importer — walks a directory of installed games
+// ============================================================
+//
+// User points at a folder, we run `importers.folder_scan.scan` on
+// it, and surface the parsed entries on the Import screen for
+// review. Per-entry resolution (paste F95 URL / add as custom) is
+// driven from the UI; this module owns the state lifetime and the
+// "commit to library" path.
+
+const folder_scan = importers_mod.folder_scan;
+
+pub fn doFolderScan(frame: *Frame, dir_path: []const u8) void {
+    const state = frame.state;
+    if (dir_path.len == 0) {
+        state.setFolderScanMsg("Pick a folder first.");
+        return;
+    }
+    // Drop the previous scan's bundle if any so we don't leak.
+    freeFolderScan(state, frame.lib.alloc);
+    const bundle = folder_scan.scan(frame.lib.alloc, frame.io, dir_path) catch |e| {
+        var buf: [192]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Scan failed: {s}", .{@errorName(e)}) catch "Scan failed";
+        state.setFolderScanMsg(m);
+        return;
+    };
+    // Heap-copy the bundle struct so we can stash a pointer on
+    // State (Bundle.deinit takes a *Self).
+    const bundle_ptr = frame.lib.alloc.create(importers_mod.Bundle) catch {
+        var b_copy = bundle;
+        b_copy.deinit();
+        state.setFolderScanMsg("Out of memory.");
+        return;
+    };
+    bundle_ptr.* = bundle;
+    state.folder_scan_bundle = bundle_ptr;
+    var buf: [128]u8 = undefined;
+    const m = std.fmt.bufPrint(&buf, "found {d} candidate folder(s)", .{bundle_ptr.games.len}) catch "scanned";
+    state.setFolderScanMsg(m);
+}
+
+pub fn freeFolderScan(state: *State, alloc: std.mem.Allocator) void {
+    if (state.folder_scan_bundle) |opaque_ptr| {
+        const bundle: *importers_mod.Bundle = @ptrCast(@alignCast(opaque_ptr));
+        bundle.deinit();
+        alloc.destroy(bundle);
+        state.folder_scan_bundle = null;
+    }
+    state.folder_resolve_idx = null;
+    @memset(&state.folder_resolve_url_buf, 0);
+}
+
+pub fn folderScanBundle(state: *const State) ?*const importers_mod.Bundle {
+    if (state.folder_scan_bundle) |p| {
+        return @ptrCast(@alignCast(p));
+    }
+    return null;
+}
+
+/// Resolve an entry from the scan list, MOVE the source folder into
+/// `<library_root>/<tid>/<version_or_'imported'>/`, and write a
+/// matching `installs` row so the game shows up as installed.
+///
+/// `idx` is the index into `bundle.games`. `thread_id` is either the
+/// real F95 thread id the user pasted, OR null to commit the entry
+/// as a "custom" row with the synthetic id the scanner generated.
+///
+/// Move strategy: try `renameAbsolute` first — on the same
+/// filesystem this is a single inode update (O(1)). If the source
+/// and destination live on different filesystems, fall back to
+/// `migrate.copyVerifyDelete`, which is robust but pays a full
+/// disk-walk per file. The Import-screen tip nudges the user to
+/// keep the source folder near `library_root` for the fast path.
+///
+/// On success the entry is removed from the scan bundle and a
+/// reload is requested so the library grid picks up the new row.
+pub fn resolveFolderEntry(frame: *Frame, idx: usize, thread_id: ?u64) void {
+    const state = frame.state;
+    const bundle = folderScanBundle(state) orelse return;
+    if (idx >= bundle.games.len) return;
+    const game = bundle.games[idx];
+
+    const tid = thread_id orelse game.thread_id;
+    const insert_name = if (game.name.len > 0) game.name else "(unnamed)";
+    const row = library.Game{
+        .f95_thread_id = tid,
+        .name = insert_name,
+        .latest_version = game.version,
+    };
+    _ = frame.lib.insertIfMissing(&row) catch |e| {
+        var buf: [160]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Library insert failed: {s}", .{@errorName(e)}) catch "Library insert failed";
+        state.setFolderScanMsg(m);
+        return;
+    };
+
+    // Move the source folder under library_root. `install_executable_rel`
+    // is `<folder>/` per the scanner; trim the trailing slash to get
+    // the folder name we need to join onto `folder_scan_path_buf`.
+    const folder_name = blk: {
+        const rel = game.install_executable_rel orelse {
+            state.setFolderScanMsg("Imported library row, but the scan entry had no folder path to move.");
+            return;
+        };
+        const trimmed = std.mem.trim(u8, rel, "/");
+        break :blk if (trimmed.len > 0) trimmed else rel;
+    };
+    const scan_root = state.folderScanPathSlice();
+    const alloc = frame.lib.alloc;
+    const src_path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ scan_root, folder_name }) catch {
+        state.setFolderScanMsg("Out of memory building source path.");
+        return;
+    };
+    defer alloc.free(src_path);
+
+    const version_dir: []const u8 = if (game.version) |v| v else "imported";
+    const dst_path = std.fmt.allocPrint(alloc, "{s}/{d}/{s}", .{ frame.info.library_root, tid, version_dir }) catch {
+        state.setFolderScanMsg("Out of memory building destination path.");
+        return;
+    };
+    defer alloc.free(dst_path);
+
+    moveImported(alloc, frame.io, src_path, dst_path) catch |e| {
+        var buf: [256]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Folder move failed ({s}). Library row kept; you can install the game manually later.", .{@errorName(e)}) catch "Folder move failed";
+        state.setFolderScanMsg(m);
+        // Still drop the entry from the scan list — the library row
+        // is in place; the user can use Manual install later if
+        // they fix the path issue.
+        dropEntryFromBundle(state, idx);
+        return;
+    };
+
+    // Write the installs row pointing at the new destination so the
+    // game shows up as installed in the library.
+    var id_buf: [36]u8 = undefined;
+    generateImportUuid(frame.io, &id_buf);
+    const now = std.Io.Clock.Timestamp.now(frame.io, .real);
+    const now_s: i64 = @intCast(@divTrunc(now.raw.toNanoseconds(), 1_000_000_000));
+    frame.lib.upsertInstall(&.{
+        .id = id_buf,
+        .game_thread_id = tid,
+        .version = version_dir,
+        .install_path = dst_path,
+        .recipe_id = "",
+        .installed_at = now_s,
+        .source = .manual,
+    }) catch |e| {
+        log.warn("folder-import: installs row for tid {d} failed: {s}", .{ tid, @errorName(e) });
+    };
+
+    state.reload_requested = true;
+    dropEntryFromBundle(state, idx);
+}
+
+/// Move-or-copy semantics. Tries `renameAbsolute` first (cheap on
+/// same-filesystem) and falls back to `migrate.copyVerifyDelete`
+/// (expensive but cross-FS-correct) on any error from rename.
+fn moveImported(alloc: std.mem.Allocator, io: std.Io, src: []const u8, dst: []const u8) !void {
+    // Make sure the destination's parent directory exists; rename
+    // won't create it for us.
+    if (std.mem.lastIndexOfScalar(u8, dst, '/')) |slash| {
+        const parent = dst[0..slash];
+        if (parent.len > 0) std.Io.Dir.cwd().createDirPath(io, parent) catch {};
+    }
+    // Fast path: rename. Works on same FS in one syscall. Any
+    // error (CrossDevice, PermissionDenied, DirNotEmpty, …) falls
+    // through to the slower copy-verify-delete; the migrator
+    // bails up front if the destination already exists, so we
+    // don't risk overwriting a previous import on retry.
+    std.Io.Dir.renameAbsolute(src, dst, io) catch |e| {
+        log.info("folder-import: rename failed ({s}); falling back to copy-verify-delete", .{@errorName(e)});
+        _ = try importers_mod.migrate.copyVerifyDelete(alloc, io, src, dst, .{});
+    };
+}
+
+/// 36-char hex+dash UUID built from io clock + Wyhash, same shape
+/// as the installer module's `generateUuid` but inlined here so
+/// imports.zig doesn't reach across into actions/installer.zig.
+fn generateImportUuid(io: std.Io, out: *[36]u8) void {
+    const now = std.Io.Clock.Timestamp.now(io, .real);
+    const ns: u64 = @intCast(@max(0, now.raw.toNanoseconds()));
+    var h = std.hash.Wyhash.init(ns);
+    h.update(std.mem.asBytes(&ns));
+    const a = h.final();
+    const b = std.hash.Wyhash.hash(a, std.mem.asBytes(&ns));
+    var bytes: [16]u8 = undefined;
+    std.mem.writeInt(u64, bytes[0..8], a, .little);
+    std.mem.writeInt(u64, bytes[8..16], b, .little);
+    const hex = "0123456789abcdef";
+    var pos: usize = 0;
+    for (bytes, 0..) |byte, i| {
+        if (i == 4 or i == 6 or i == 8 or i == 10) {
+            out[pos] = '-';
+            pos += 1;
+        }
+        out[pos] = hex[byte >> 4];
+        out[pos + 1] = hex[byte & 0xF];
+        pos += 2;
+    }
+}
+
+fn dropEntryFromBundle(state: *State, idx: usize) void {
+    const opaque_ptr = state.folder_scan_bundle orelse return;
+    const mutable: *importers_mod.Bundle = @ptrCast(@alignCast(opaque_ptr));
+    if (idx >= mutable.games.len) return;
+    if (idx < mutable.games.len - 1) {
+        mutable.games[idx] = mutable.games[mutable.games.len - 1];
+    }
+    mutable.games.len -= 1;
+    state.folder_resolve_idx = null;
+    @memset(&state.folder_resolve_url_buf, 0);
+}
+
+/// Parse a pasted "F95 thread URL or id" string into a u64 thread
+/// id. Returns null when the input doesn't look like either. Lifted
+/// from the existing paste-import path; this function makes it
+/// reusable from the folder-scan resolution popup.
+pub fn parseF95ThreadInput(s: []const u8) ?u64 {
+    const trimmed = std.mem.trim(u8, s, " \t\n\r");
+    if (trimmed.len == 0) return null;
+    if (f95.extractThreadId(trimmed)) |id_str| {
+        return std.fmt.parseInt(u64, id_str, 10) catch null;
+    }
+    return std.fmt.parseInt(u64, trimmed, 10) catch null;
+}
+

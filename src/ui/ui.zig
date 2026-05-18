@@ -188,6 +188,7 @@ pub fn runMainLoop(
         actions.freeInstalledSet(&state, lib.alloc);
         actions.freePostInstallJobs(&state, lib.alloc);
         actions.freeManualInstallJobs(&state, lib.alloc);
+        actions.freeFolderScan(&state, lib.alloc);
         // Tear down NFDe if the user ever opened the file picker.
         // No-op when never used.
         @import("util_file_picker").deinit();
