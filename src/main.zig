@@ -523,14 +523,27 @@ fn freeBrowsers(gpa: std.mem.Allocator, browsers: []ui.Browser) void {
 /// lives and put all our data under `<exe_dir>/data/`. Override the
 /// whole thing with the `F69_DATA_DIR` env var. Caller frees.
 ///
-/// On Linux we read `/proc/self/exe` which is a symlink to the running
-/// binary. If that fails (very unusual on real Linux) we fall back to
-/// `./data` (cwd-relative), with a warning logged.
+/// Resolve where DB / library / covers / recipes / downloads live.
+/// Three tiers:
+///
+///   1. `$F69_DATA_DIR` — explicit user override. Always wins.
+///      Portable launchers (`run.sh`) set this to `<bundle>/data/`.
+///
+///   2. **Portable install** — binary lives in a user-writable location
+///      (anywhere outside `/usr/`, `/nix/store/`, `/opt/`). Data goes
+///      to `<dir-of-binary>/data/`, so a portable bundle on a USB stick
+///      carries its state with it.
+///
+///   3. **System install** — binary lives in `/usr/bin/`, `/nix/store/...`,
+///      or `/opt/...`. Those locations are read-only for the user. Data
+///      goes to `$XDG_DATA_HOME/f69` (default `~/.local/share/f69`).
+///
+/// Read /proc/self/exe to find the binary's dir. Falls back to `./data`
+/// (cwd-relative) on the rare Linux setup where /proc isn't mounted.
 fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) ![]u8 {
-    // Explicit override wins.
+    // Tier 1: explicit override.
     if (environ.getAlloc(gpa, "F69_DATA_DIR")) |x| return x else |_| {}
 
-    // Read /proc/self/exe → take dirname → append /data.
     var link_buf: [4096]u8 = undefined;
     const n = std.Io.Dir.cwd().readLink(io, "/proc/self/exe", &link_buf) catch {
         log.warn("resolveDataRoot: /proc/self/exe unreadable; falling back to ./data", .{});
@@ -538,6 +551,25 @@ fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Envi
     };
     const exe_path = link_buf[0..n];
     const exe_dir = std.fs.path.dirname(exe_path) orelse return gpa.dupe(u8, "./data");
+
+    // Tier 3 first (cheap test): system install → XDG user dir.
+    const is_system_install = std.mem.startsWith(u8, exe_dir, "/usr/") or
+        std.mem.startsWith(u8, exe_dir, "/nix/store/") or
+        std.mem.startsWith(u8, exe_dir, "/opt/");
+    if (is_system_install) {
+        if (environ.getAlloc(gpa, "XDG_DATA_HOME")) |xdg| {
+            defer gpa.free(xdg);
+            return std.fmt.allocPrint(gpa, "{s}/f69", .{xdg});
+        } else |_| {}
+        if (environ.getAlloc(gpa, "HOME")) |home| {
+            defer gpa.free(home);
+            return std.fmt.allocPrint(gpa, "{s}/.local/share/f69", .{home});
+        } else |_| {}
+        log.warn("resolveDataRoot: system install but no $HOME / $XDG_DATA_HOME; falling back to ./data", .{});
+        return gpa.dupe(u8, "./data");
+    }
+
+    // Tier 2: portable install — keep data next to the binary.
     return std.fmt.allocPrint(gpa, "{s}/data", .{exe_dir});
 }
 

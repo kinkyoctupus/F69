@@ -24,7 +24,7 @@ f69 stands on the shoulders of two great projects:
 - **Recipe-based mod installs** — Through mod recipes, modding has never been easier. There are several default recipes for renpy and rpgm games. And for more involved mods you can make a custom recipe that you can save and reuse later, or share.(would be great if modders added this themselves)
 - **Sandboxed game launches** via `bwrap` — Optional sandbox. Safer, and keeps your saves in a single place.
 - **Engine fix-ups** — Not all games are released with linux support, but it's possible to add it most of the time, I've included several fix-ups that add native linux support to renpy and rpgm games that don't include it.
-- **Portable data layout** — DB, library, covers, recipes, downloads all live in `<dir-of-binary>/data/`. Drop the folder on a USB stick and it carries its state.
+- **Portable data layout** — for the portable bundle, DB, library, covers, recipes and downloads all live in `<dir-of-binary>/data/` — drop the folder on a USB stick and the state travels with it. For system installs (`/usr/bin/f69` from a `.deb` / `.rpm` / AUR / Nix package), data falls back to `$XDG_DATA_HOME/f69` (default `~/.local/share/f69/`).
 - **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. Choose Move (frees source disk) or Copy per import.
 
 ## Download:
@@ -146,7 +146,13 @@ Static linking story is straightforward, the language is small enough that contr
 <details>
 <summary><b>Where does my data live?</b></summary>
 
-Next to the binary by default — `<dir-of-binary>/data/{f69.db, library/, covers/, recipes/, downloads/, ...}`. Override with `F69_DATA_DIR`. The bundled `run.sh` launchers set it explicitly so data lands next to the launcher (not next to the loader inside `lib/`).
+Three tiers, first match wins:
+
+1. `$F69_DATA_DIR` env var — explicit override, always wins. The bundled `run.sh` launchers set this to `<bundle>/data/` so data lands next to the launcher (not next to the loader inside `lib/`).
+2. **Portable install** (binary anywhere user-writable) — `<dir-of-binary>/data/`.
+3. **System install** (binary under `/usr/bin/`, `/nix/store/...`, or `/opt/...`) — `$XDG_DATA_HOME/f69`, defaulting to `~/.local/share/f69/`.
+
+Layout under the resolved root: `f69.db`, `library/`, `covers/`, `recipes/`, `downloads/`, `f95_cookie`.
 
 </details>
 
