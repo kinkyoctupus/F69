@@ -92,6 +92,14 @@ pub const Frame = struct {
     /// instead of running synchronously, so 15GB mods don't lock the UI.
     mod_jobs: *mod_job_queue.Queue,
     info: RuntimeInfo,
+    /// Per-frame snapshot of `(game_thread_id → latest install version
+    /// string)`. Built once by `guiFrame` from a single SELECT over
+    /// the `installs` table (see `Library.latestInstallVersionMap`);
+    /// readers do an O(1) lookup instead of a fresh SQL prepare+step
+    /// per card. The backing storage lives in dvui's per-frame arena,
+    /// so the pointer is **only valid during the current frame** —
+    /// don't stash on `State` or on a job payload.
+    install_versions: ?*const std.AutoHashMap(u64, []const u8) = null,
 };
 
 /// One detected browser. `path` is the absolute exe path; `display`
