@@ -124,7 +124,7 @@ pub fn scrape(client: *Client, alloc: std.mem.Allocator, url: []const u8) errs.E
 /// avg) the worst case for a 1500-game library is ~4.5 GB, which is
 /// acceptable. Bumping or removing this cap is fine if disk pressure
 /// stops mattering.
-pub const MAX_SCREENSHOTS: usize = 20;
+const MAX_SCREENSHOTS: usize = 20;
 
 /// Pull image URLs from the OP body. F95 hosts thread images on
 /// `attachments.f95zone.to`, so we whitelist that origin to avoid
@@ -144,7 +144,7 @@ pub const MAX_SCREENSHOTS: usize = 20;
 ///
 /// Caller owns the outer slice and every inner string; free via
 /// `freeStringList`.
-pub fn extractScreenshots(
+fn extractScreenshots(
     alloc: std.mem.Allocator,
     html: []const u8,
     exclude: ?[]const u8,
@@ -227,7 +227,7 @@ pub fn extractScreenshots(
 /// its `<article>`; we slice from that marker to the next `</article>`.
 /// Returns null if the marker isn't found (callers should fall back
 /// to scanning the full document).
-pub fn opBodyRange(html: []const u8) ?[]const u8 {
+fn opBodyRange(html: []const u8) ?[]const u8 {
     const marker = "message-threadStarterPost";
     const start = std.mem.indexOf(u8, html, marker) orelse return null;
     const end = std.mem.indexOfPos(u8, html, start, "</article>") orelse return null;
@@ -238,7 +238,7 @@ pub fn opBodyRange(html: []const u8) ?[]const u8 {
 /// → `https://attachments.f95zone.to/2018/10/171170_…png`.
 /// Returns the upgraded URL written into `buf`, or `url` unchanged
 /// if no `/thumb/` segment is present (or buf is too small).
-pub fn upgradeFromThumb(buf: []u8, url: []const u8) []const u8 {
+fn upgradeFromThumb(buf: []u8, url: []const u8) []const u8 {
     const seg = "/thumb/";
     const at = std.mem.indexOf(u8, url, seg) orelse return url;
     const before = url[0..at];
@@ -250,7 +250,7 @@ pub fn upgradeFromThumb(buf: []u8, url: []const u8) []const u8 {
 /// against F95 OPs that link translation patches, save files, demo
 /// videos etc. via `attachments.f95zone.to`. Case-insensitive — F95
 /// preserves uploader-supplied filenames.
-pub fn isImageUrlByExtension(url: []const u8) bool {
+fn isImageUrlByExtension(url: []const u8) bool {
     const exts = [_][]const u8{ ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp" };
     // Lowercase the tail (last 8 bytes is enough to cover all our
     // extensions) into a small stack buffer.
@@ -266,7 +266,7 @@ pub fn isImageUrlByExtension(url: []const u8) bool {
     return false;
 }
 
-pub fn freeStringList(alloc: std.mem.Allocator, list: *std.ArrayList([]const u8)) void {
+fn freeStringList(alloc: std.mem.Allocator, list: *std.ArrayList([]const u8)) void {
     for (list.items) |s| alloc.free(s);
     list.deinit(alloc);
 }
@@ -305,7 +305,7 @@ fn freeScraped(alloc: std.mem.Allocator, s: *domain.ScrapedThread) void {
 /// scan linearly for the marker, slice the inner text. Bounded so a
 /// pathological page can't blow up the slice. Caller owns the outer
 /// slice and every inner string.
-pub fn extractTags(alloc: std.mem.Allocator, html: []const u8) ![]const []const u8 {
+fn extractTags(alloc: std.mem.Allocator, html: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (out.items) |t| alloc.free(t);
@@ -339,7 +339,7 @@ pub fn extractTags(alloc: std.mem.Allocator, html: []const u8) ![]const []const 
 
 /// XenForo's rating widget exposes the average rating through several
 /// markers depending on skin/version.
-pub fn extractRating(html: []const u8) ?f32 {
+fn extractRating(html: []const u8) ?f32 {
     const markers = [_][]const u8{
         "data-initial-rating=\"",
         "data-rating=\"",
@@ -357,7 +357,7 @@ pub fn extractRating(html: []const u8) ?f32 {
 
 /// XenForo's rating widget exposes the count through several markers
 /// depending on skin/version. Try each in order — first hit wins.
-pub fn extractVoteCount(html: []const u8) ?u32 {
+fn extractVoteCount(html: []const u8) ?u32 {
     // F95's BetterRatings tooltip — the actual server-side source on
     // every thread page. Lives inside the `data-vote-content`
     // attribute on the rating <select>, HTML-double-escaped:
@@ -816,7 +816,7 @@ fn looksLikeVersion(token: []const u8) bool {
 /// Pull the page title — the first `<title>...</title>` block. F95
 /// titles look like "Game Name [v1.2] [Developer] | F95zone"; strip the
 /// trailing site suffix but keep the rest as-is for now.
-pub fn extractName(html: []const u8) ?[]const u8 {
+fn extractName(html: []const u8) ?[]const u8 {
     const open = "<title>";
     const start = std.mem.indexOf(u8, html, open) orelse return null;
     const value_start = start + open.len;
@@ -844,7 +844,7 @@ pub fn extractName(html: []const u8) ?[]const u8 {
 /// Walk every match and return the first that *isn't* obviously a
 /// site asset; if every candidate looks like a logo/favicon we
 /// return null and the UI falls back to the placeholder.
-pub fn extractCoverUrl(html: []const u8) ?[]const u8 {
+fn extractCoverUrl(html: []const u8) ?[]const u8 {
     // Primary strategy (matches XLibrary): the cover IS the first
     // image in the OP body. F95 OPs always lead with the banner, so
     // grabbing the first `attachments.f95zone.to` image inside the
@@ -1193,13 +1193,13 @@ const SECTION_HEADERS = [_][]const u8{
     "DOWNLOAD",      "Download",     "Downloads",
 };
 
-pub fn extractOverview(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
+fn extractOverview(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
     return extractSectionByHeaders(alloc, html, &[_][]const u8{
         "Overview", "Description", "Story", "Plot",
     });
 }
 
-pub fn extractChangelog(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
+fn extractChangelog(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
     return extractStructuredSection(alloc, html, &[_][]const u8{
         "Changelog", "Change Log", "Change-log",
     });
@@ -1217,7 +1217,7 @@ pub fn extractChangelog(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
 /// `<b>DOWNLOAD</b>` heading with no trailing colon. The generic
 /// `locateHeader` requires a colon close by, so we use the relaxed
 /// variant for the Downloads marker.
-pub fn extractDownloadsSection(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
+fn extractDownloadsSection(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
     const op = opBodyRange(html) orelse {
         log.warn("downloads: opBodyRange missing — couldn't scope the OP article", .{});
         return null;
@@ -1476,7 +1476,7 @@ fn locateHeaderAfter(scope: []const u8, from: usize, headers: []const []const u8
 /// whitespace runs, decodes HTML entities. Bounded by `MAX_SECTION_LEN`
 /// so a runaway section doesn't OOM. Returns null if the result is
 /// empty after trimming.
-pub fn stripHtmlToText(alloc: std.mem.Allocator, src: []const u8) !?[]u8 {
+fn stripHtmlToText(alloc: std.mem.Allocator, src: []const u8) !?[]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     var in_tag: bool = false;
@@ -1542,11 +1542,11 @@ pub fn stripHtmlToText(alloc: std.mem.Allocator, src: []const u8) !?[]u8 {
 /// version heading on its own line) and Downloads (where `<b>…</b>`
 /// reads as an inline bold span — `WINDOWS:` glued to its mirror
 /// list on the next line). The `bold_as_heading` knob picks which.
-pub fn formatStructuredHtml(alloc: std.mem.Allocator, src: []const u8) !?[]u8 {
+fn formatStructuredHtml(alloc: std.mem.Allocator, src: []const u8) !?[]u8 {
     return formatStructuredHtmlOpts(alloc, src, .{ .bold_as_heading = true });
 }
 
-pub const StructuredFormatOpts = struct {
+const StructuredFormatOpts = struct {
     /// When true, `<b>`/`<strong>` and `<h1..h4>` emit `\n## …\n`
     /// (block-level heading). When false, `<b>`/`<strong>` emit
     /// `[B]…[/B]` inline bold spans and the heading-y tags emit
@@ -1557,7 +1557,7 @@ pub const StructuredFormatOpts = struct {
     bold_as_heading: bool = true,
 };
 
-pub fn formatStructuredHtmlOpts(
+fn formatStructuredHtmlOpts(
     alloc: std.mem.Allocator,
     src: []const u8,
     opts: StructuredFormatOpts,
@@ -1822,7 +1822,7 @@ fn isBlockTagEnd(prefix: []const u8) bool {
 /// are typically community feedback. Each reply is rendered as a
 /// plain-text block separated by `---`. Bounded by `MAX_SECTION_LEN`
 /// and by `MAX_REVIEWS` so we don't keep an entire forum thread.
-pub fn extractReviews(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
+fn extractReviews(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
     const max_reviews: usize = 5;
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
@@ -1879,7 +1879,7 @@ pub fn extractReviews(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
 /// Scan the OP body for download links — known file hosts plus F95
 /// attachment URLs that aren't images. Caller owns outer slice and
 /// each inner `url` / `label`.
-pub fn extractDownloadLinks(
+fn extractDownloadLinks(
     alloc: std.mem.Allocator,
     html: []const u8,
 ) ![]const domain.DownloadLink {
@@ -1940,7 +1940,7 @@ const HOST_PATTERNS = [_]struct { needle: []const u8, host: domain.DownloadHost 
 
 /// Classify a URL into a known download host. Returns null for things
 /// we don't care about (forum chrome, mailto:, internal anchors, …).
-pub fn classifyDownloadHost(url: []const u8) ?domain.DownloadHost {
+fn classifyDownloadHost(url: []const u8) ?domain.DownloadHost {
     if (std.mem.startsWith(u8, url, "https://attachments.f95zone.to/")) return .f95_attachment;
     inline for (HOST_PATTERNS) |p| {
         if (containsHost(url, p.needle)) return p.host;
@@ -2017,7 +2017,7 @@ test "extractDownloadLinks: dedup + host classify" {
 /// Updated:" label and convert the date that follows into unix
 /// seconds. Returns null when no marker is present or the value
 /// isn't a recognisable date.
-pub fn extractLastUpdatedAt(html: []const u8) ?i64 {
+fn extractLastUpdatedAt(html: []const u8) ?i64 {
     const scope = opBodyRange(html) orelse html;
     const markers = [_][]const u8{
         "Thread Updated",
@@ -2084,7 +2084,7 @@ fn parseFirstDateInWindow(s: []const u8, window: usize) ?i64 {
 /// seconds (00:00 UTC of that day). Returns null on any parse error
 /// or out-of-range value. Uses Howard Hinnant's date-to-serial-day
 /// algorithm — no leap-year tables, no stdlib date deps.
-pub fn dateStringToUnixSeconds(s: []const u8) ?i64 {
+fn dateStringToUnixSeconds(s: []const u8) ?i64 {
     if (s.len < 10) return null;
     const sep1 = s[4];
     const sep2 = s[7];
@@ -2154,7 +2154,7 @@ test "extractLastUpdatedAt: bare Updated label" {
 /// `[LINK=URL]label[/LINK]` markers — the UI's
 /// `renderStructuredText` walks lines through
 /// `renderInlineLineWithLinks` and renders them as clickable spans.
-pub fn extractThreadInfo(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
+fn extractThreadInfo(alloc: std.mem.Allocator, html: []const u8) !?[]u8 {
     const op = opBodyRange(html) orelse return null;
 
     var out: std.ArrayList(u8) = .empty;
