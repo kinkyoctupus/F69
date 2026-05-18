@@ -561,6 +561,31 @@ pub fn parseTitleParts(title: []const u8) TitleParts {
 /// Returns a slice of `out_buf` containing the decoded text. Falls
 /// back to returning the original `src` verbatim whenever the output
 /// would overflow — caller never sees a truncated/garbled result.
+const HTML_ENTITIES = std.StaticStringMap(u21).initComptime(.{
+    .{ "amp", '&' },
+    .{ "quot", '"' },
+    .{ "apos", '\'' },
+    .{ "nbsp", ' ' },
+    .{ "lt", '<' },
+    .{ "gt", '>' },
+    .{ "hellip", 0x2026 },
+    .{ "mdash", 0x2014 },
+    .{ "ndash", 0x2013 },
+    .{ "ldquo", 0x201C },
+    .{ "rdquo", 0x201D },
+    .{ "lsquo", 0x2018 },
+    .{ "rsquo", 0x2019 },
+    .{ "sbquo", 0x201A },
+    .{ "bdquo", 0x201E },
+    .{ "bull", 0x2022 },
+    .{ "copy", 0x00A9 },
+    .{ "reg", 0x00AE },
+    .{ "trade", 0x2122 },
+    .{ "deg", 0x00B0 },
+    .{ "middot", 0x00B7 },
+    .{ "euro", 0x20AC },
+});
+
 pub fn decodeHtmlEntities(out_buf: []u8, src: []const u8) []const u8 {
     if (src.len > out_buf.len) return src;
     var n: usize = 0;
@@ -595,29 +620,11 @@ pub fn decodeHtmlEntities(out_buf: []u8, src: []const u8) []const u8 {
         // Decide on a codepoint (or null for "unknown"). We then go
         // through a single UTF-8 emit at the bottom so both named
         // and numeric refs handle multi-byte output identically.
+        // Named entities resolve through a comptime perfect-hash map
+        // (`HTML_ENTITIES`) so each lookup is one probe instead of
+        // the 22-arm mem.eql cascade the table replaced.
         const codepoint: ?u21 = blk: {
-            if (std.mem.eql(u8, entity, "amp")) break :blk '&';
-            if (std.mem.eql(u8, entity, "quot")) break :blk '"';
-            if (std.mem.eql(u8, entity, "apos")) break :blk '\'';
-            if (std.mem.eql(u8, entity, "nbsp")) break :blk ' ';
-            if (std.mem.eql(u8, entity, "lt")) break :blk '<';
-            if (std.mem.eql(u8, entity, "gt")) break :blk '>';
-            if (std.mem.eql(u8, entity, "hellip")) break :blk 0x2026;
-            if (std.mem.eql(u8, entity, "mdash")) break :blk 0x2014;
-            if (std.mem.eql(u8, entity, "ndash")) break :blk 0x2013;
-            if (std.mem.eql(u8, entity, "ldquo")) break :blk 0x201C;
-            if (std.mem.eql(u8, entity, "rdquo")) break :blk 0x201D;
-            if (std.mem.eql(u8, entity, "lsquo")) break :blk 0x2018;
-            if (std.mem.eql(u8, entity, "rsquo")) break :blk 0x2019;
-            if (std.mem.eql(u8, entity, "sbquo")) break :blk 0x201A;
-            if (std.mem.eql(u8, entity, "bdquo")) break :blk 0x201E;
-            if (std.mem.eql(u8, entity, "bull")) break :blk 0x2022;
-            if (std.mem.eql(u8, entity, "copy")) break :blk 0x00A9;
-            if (std.mem.eql(u8, entity, "reg")) break :blk 0x00AE;
-            if (std.mem.eql(u8, entity, "trade")) break :blk 0x2122;
-            if (std.mem.eql(u8, entity, "deg")) break :blk 0x00B0;
-            if (std.mem.eql(u8, entity, "middot")) break :blk 0x00B7;
-            if (std.mem.eql(u8, entity, "euro")) break :blk 0x20AC;
+            if (HTML_ENTITIES.get(entity)) |cp| break :blk cp;
             // Numeric: `&#NNN;` (decimal) or `&#xNN;` (hex).
             if (entity.len >= 2 and entity[0] == '#') {
                 const num_start: usize = if (entity[1] == 'x' or entity[1] == 'X') 2 else 1;
