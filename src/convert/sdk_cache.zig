@@ -15,13 +15,12 @@ const Io = std.Io;
 const log = std.log.scoped(.sdk_cache);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
+const util_http = @import("util_http");
 
 /// Cap on a single SDK download. Ren'Py SDKs run ~95 MiB compressed
 /// (~250 MiB uncompressed); nwjs ~50 MiB compressed. 1 GiB is the
 /// safety net against pulling a wrong URL that returns something huge.
 pub const MAX_SDK_BYTES: usize = 1024 * 1024 * 1024;
-
-const USER_AGENT = "f69/" ++ @import("build_options").version;
 
 pub const Cache = struct {
     alloc: std.mem.Allocator,
@@ -90,39 +89,30 @@ pub const Cache = struct {
 
         // 1. Download the .tar.gz body into memory. Large but bounded
         // by MAX_SDK_BYTES; nwjs/renpy SDKs fit comfortably.
-        var body: Io.Writer.Allocating = Io.Writer.Allocating.initCapacity(self.alloc, 16 * 1024 * 1024) catch return errs.Error.OutOfMemory;
-        defer body.deinit();
-
-        var http: std.http.Client = .{ .allocator = self.alloc, .io = self.io };
-        defer http.deinit();
-
-        const extra_headers = [_]std.http.Header{
+        const extra_headers = [_]util_http.Header{
             .{ .name = "accept", .value = "application/gzip, application/octet-stream, */*" },
         };
 
-        const result = http.fetch(.{
-            .location = .{ .url = url },
-            .response_writer = &body.writer,
-            .headers = .{ .user_agent = .{ .override = USER_AGENT } },
+        const resp = util_http.fetch(self.alloc, self.io, url, .{
             .extra_headers = &extra_headers,
-            .keep_alive = false,
+            .max_response_bytes = MAX_SDK_BYTES,
         }) catch |e| {
             log.warn("SDK fetch network error: {s}", .{@errorName(e)});
             self.alloc.free(dest_dir);
             return errs.Error.NetworkError;
         };
+        defer self.alloc.free(resp.body);
 
-        const code: u16 = @intFromEnum(result.status);
-        if (result.status != .ok) {
-            log.warn("SDK fetch status {d} for {s}", .{ code, url });
+        if (resp.status != 200) {
+            log.warn("SDK fetch status {d} for {s}", .{ resp.status, url });
             self.alloc.free(dest_dir);
-            return switch (code) {
+            return switch (resp.status) {
                 404 => errs.Error.NotFound,
                 else => errs.Error.NetworkError,
             };
         }
 
-        const compressed = body.written();
+        const compressed = resp.body;
         log.info("SDK download done: {d} bytes compressed", .{compressed.len});
 
         // 2. Decompress (gzip) + extract tar into dest_dir.
