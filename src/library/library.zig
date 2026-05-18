@@ -631,33 +631,8 @@ pub const Library = struct {
         }) catch return errs.Error.DatabaseError;
     }
 
-    // -- mods --
-
-    pub fn upsertMod(self: *Library, m: *const dom.Mod) errs.Error!void {
-        _ = self;
-        _ = m;
-    }
-
-    pub fn listMods(self: *Library, game_thread_id: u64) errs.Error![]dom.Mod {
-        _ = self;
-        _ = game_thread_id;
-        return &.{};
-    }
-
-    // -- mod_installs (which mods are layered on which install) --
-
-    pub fn setModInstalls(self: *Library, install_id: []const u8, items: []const dom.ModInstall) errs.Error!void {
-        _ = self;
-        _ = install_id;
-        _ = items;
-        // DELETE WHERE install_id=?, then bulk INSERT atomically.
-    }
-
-    pub fn listModInstalls(self: *Library, install_id: []const u8) errs.Error![]dom.ModInstall {
-        _ = self;
-        _ = install_id;
-        return &.{};
-    }
+    // TODO: mods table — upsertMod / listMods / setModInstalls /
+    // listModInstalls were no-op stubs with zero callers; dropped.
 
     // -- compat fixes applied to an install --
     //
