@@ -99,7 +99,11 @@ pub const Job = struct {
     }
 
     pub fn currentPhase(self: *const Job) Phase {
-        return @enumFromInt(self.phase.load(.monotonic));
+        // `.acquire` pairs with the worker's `.release` store on
+        // phase transitions, making the err_buf / err_len / archive_path
+        // writes that precede the store visible to the UI thread.
+        // `.monotonic` would risk reading stale buffer bytes.
+        return @enumFromInt(self.phase.load(.acquire));
     }
 
     pub fn errMessage(self: *const Job) []const u8 {

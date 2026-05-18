@@ -62,6 +62,26 @@ pub const Client = struct {
         self.cookie = dup;
     }
 
+    /// Drop the stored cookie. Acquires `cookie_lock` first so worker
+    /// threads that are mid-snapshot (see the request paths below)
+    /// can't observe a half-cleared optional or a freed pointer.
+    pub fn clearCookie(self: *Client) void {
+        self.cookie_lock.lockUncancelable(self.io);
+        defer self.cookie_lock.unlock(self.io);
+        if (self.cookie) |old| {
+            self.cookie = null;
+            self.alloc.free(old);
+        }
+    }
+
+    /// Lock-protected "is a cookie set?" probe. Returns the same bit
+    /// the request path checks. Cheap when the lock is uncontended.
+    pub fn hasCookie(self: *Client) bool {
+        self.cookie_lock.lockUncancelable(self.io);
+        defer self.cookie_lock.unlock(self.io);
+        return self.cookie != null;
+    }
+
     /// Accept header for image fetches. Pinned to formats stb_image
     /// (the decoder dvui uses) understands. Without this, Cloudflare's
     /// Polish layer happily returns AVIF/WebP for `attachments.f95zone.to`

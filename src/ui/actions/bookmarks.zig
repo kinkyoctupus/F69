@@ -89,7 +89,7 @@ pub fn cancelBookmarks(frame: *Frame) void {
 pub fn startPullBookmarks(frame: *Frame) void {
     const state = frame.state;
     if (state.pending_bookmarks != null) return;
-    if (frame.f95_svc.client.cookie == null) {
+    if (!frame.f95_svc.client.hasCookie()) {
         state.setBookmarksMsg("not logged in — log in first");
         return;
     }

@@ -63,11 +63,14 @@ pub fn doLogin(frame: *Frame, username: []const u8, password: []const u8) void {
 
 pub fn doLogout(frame: *Frame) void {
     const state = frame.state;
-    // Wipe in-memory cookie on the f95 client.
-    if (frame.f95_svc.client.cookie) |old| {
-        frame.lib.alloc.free(old);
-        frame.f95_svc.client.cookie = null;
-    }
+    // Wipe in-memory cookie on the f95 client via the lock-protected
+    // helper. Workers snapshot the cookie under cookie_lock; doing the
+    // clear via that helper closes the UAF window where a worker
+    // could read a freed slice if logout ran between snapshot dup
+    // and snapshot use. Also frees with the client's own allocator
+    // rather than lib.alloc (currently the same gpa, but no longer
+    // a load-bearing assumption).
+    frame.f95_svc.client.clearCookie();
     // Best-effort delete the on-disk cookie.
     std.Io.Dir.cwd().deleteFile(frame.io, frame.info.cookie_path) catch {};
     @memset(&state.f95_user_buf, 0);

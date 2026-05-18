@@ -483,7 +483,18 @@ fn detectBrowsers(io: std.Io, gpa: std.mem.Allocator, environ: std.process.Envir
     defer gpa.free(path_env);
 
     var out: std.ArrayList(ui.Browser) = .empty;
-    errdefer freeBrowsers(gpa, out.toOwnedSlice(gpa) catch unreachable);
+    // Don't use `out.toOwnedSlice` inside the errdefer — it allocates,
+    // and the path we're cleaning up via errdefer is the OOM path that
+    // brought us here. Walk the items directly so cleanup itself never
+    // touches the allocator after the failure.
+    errdefer {
+        // `display` is a comptime literal from BROWSER_CANDIDATES;
+        // only `path` is alloc'd (see `freeBrowsers`). Don't use
+        // `out.toOwnedSlice` here — that allocates, and we're already
+        // unwinding the OOM path that brought us here.
+        for (out.items) |b| gpa.free(b.path);
+        out.deinit(gpa);
+    }
 
     candidates: for (BROWSER_CANDIDATES) |c| {
         var dir_iter = std.mem.tokenizeScalar(u8, path_env, ':');
