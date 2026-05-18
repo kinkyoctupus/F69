@@ -70,10 +70,12 @@ pub const Bundle = struct {
 
 pub const f95checker = @import("f95checker.zig");
 pub const xlibrary = @import("xlibrary.zig");
+pub const folder_scan = @import("folder_scan.zig");
 pub const migrate = @import("migrate.zig");
 
 test {
     _ = f95checker;
     _ = xlibrary;
+    _ = folder_scan;
     _ = migrate;
 }
