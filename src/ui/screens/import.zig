@@ -1,4 +1,13 @@
-// Import screen — paste F95 thread URLs / IDs, bulk-create rows.
+// Import screens — three separate dialogs:
+//
+//   - `importUrlsScreen`       paste F95 thread URLs/IDs
+//   - `importF95CheckerScreen` scan an F95Checker / xLibrary games dir
+//   - `importFolderScreen`     scan any flat games directory
+//
+// The two folder-scan screens share the same scan/resolve backend but
+// carry different intro copy so the user can pick the path that
+// matches what they actually have on disk. All three wrap their body
+// in `dvui.scrollArea` so cramped windows scroll instead of clipping.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -8,14 +17,16 @@ const f95 = @import("f95");
 const types = @import("../types.zig");
 const style = @import("../style.zig");
 const actions = @import("../actions.zig");
+const state_mod = @import("../state.zig");
 
 const Frame = types.Frame;
+const State = state_mod.State;
 
 // ============================================================
-//  import screen — paste F95 thread URLs / IDs, bulk-create rows
+//  Screen 1 — paste F95 thread URLs / IDs
 // ============================================================
 
-pub fn importScreen(frame: *Frame) !bool {
+pub fn importUrlsScreen(frame: *Frame) !bool {
     const state = frame.state;
 
     {
@@ -26,7 +37,7 @@ pub fn importScreen(frame: *Frame) !bool {
         defer top.deinit();
         if (style.button(@src(), "← Back", .{}, .{})) state.screen = .library;
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        dvui.label(@src(), "Import F95 threads", .{}, .{ .gravity_y = 0.5, .style = .highlight });
+        dvui.label(@src(), "Import by F95 URL / ID", .{}, .{ .gravity_y = 0.5, .style = .highlight });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (style.button(@src(), "Import", .{}, .{ .style = .highlight })) {
             const result = doImport(frame, state.importBufSlice());
@@ -46,8 +57,11 @@ pub fn importScreen(frame: *Frame) !bool {
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
+    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+    defer scroll.deinit();
+
     var body = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
+        .expand = .horizontal,
         .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
     });
     defer body.deinit();
@@ -59,7 +73,7 @@ pub fn importScreen(frame: *Frame) !bool {
         .text = .{ .buffer = &state.import_buf },
         .multiline = true,
     }, .{
-        .expand = .both,
+        .expand = .horizontal,
         .min_size_content = .{ .w = 600, .h = 300 },
     });
     te.deinit();
@@ -71,46 +85,90 @@ pub fn importScreen(frame: *Frame) !bool {
         dvui.label(@src(), "Imported games show up as \"(unsynced)\". Click Sync on each to populate.", .{}, .{});
     }
 
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 24 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
-    renderFolderScanSection(frame);
-
-    // Per-entry resolution popup — opens when the user clicks "F95
-    // URL…" on a row. Sits on top of the scan list so the user can
-    // see the parsed name + version while pasting.
-    renderResolvePopup(frame);
-
     return true;
 }
 
 // ============================================================
-//  folder-scan import section — scan a games folder, review parsed
-//  entries, commit each as either a real F95 thread or a "custom"
-//  (synthetic-id) row.
+//  Screen 2 — F95Checker / xLibrary folder scan
 // ============================================================
 
-fn renderFolderScanSection(frame: *Frame) void {
+pub fn importF95CheckerScreen(frame: *Frame) !bool {
+    return renderFolderScanScreen(frame, .{
+        .title = "Import from F95Checker / xLibrary",
+        .intro =
+        "Point at an F95Checker or xLibrary games directory. These tools store " ++
+            "each game as a subfolder using the F95Zone thread naming convention " ++
+            "(\"Name vX.Y\", \"Name [vX.Y]\", or \"Name-version-pc-final\"). " ++
+            "f69 parses each folder for a name + version, then asks you to confirm " ++
+            "the F95 thread for any entry it couldn't link automatically.",
+        .placeholder = "/path/to/F95Checker/games  or  /path/to/xLibrary",
+    });
+}
+
+// ============================================================
+//  Screen 3 — generic folder scan
+// ============================================================
+
+pub fn importFolderScreen(frame: *Frame) !bool {
+    return renderFolderScanScreen(frame, .{
+        .title = "Import from a folder",
+        .intro =
+        "Point at any directory of installed games. Each subfolder is parsed for " ++
+            "a name + version using common patterns. For each entry you'll then " ++
+            "paste an F95Zone URL or add it as a custom row.",
+        .placeholder = "/path/to/games",
+    });
+}
+
+// ============================================================
+//  shared folder-scan rendering
+// ============================================================
+
+const FolderScanCopy = struct {
+    title: []const u8,
+    intro: []const u8,
+    placeholder: []const u8,
+};
+
+fn renderFolderScanScreen(frame: *Frame, copy: FolderScanCopy) !bool {
     const state = frame.state;
 
-    dvui.label(@src(), "Or import from an existing games folder", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    dvui.label(
+    {
+        var top = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
+        });
+        defer top.deinit();
+        if (style.button(@src(), "← Back", .{}, .{})) state.screen = .library;
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+        dvui.labelNoFmt(@src(), copy.title, .{}, .{ .gravity_y = 0.5, .style = .highlight });
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+    defer scroll.deinit();
+
+    var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
+    });
+    defer body.deinit();
+
+    dvui.labelNoFmt(@src(), copy.intro, .{}, .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    const tip_text: []const u8 = switch (state.folder_scan_mode) {
+        .move =>
+        "Tip — Move mode: each imported game's folder is cut+pasted into f69's library root. " ++
+            "Same-filesystem moves are a near-instant rename; cross-filesystem moves fall back " ++
+            "to copy-verify-delete (peaks at 2x disk during the copy, then frees the source).",
+        .copy =>
+        "Warning — Copy mode: each imported game's folder is duplicated into f69's library root. " ++
+            "Final disk use is 2x. Pick Move below unless you really need to keep the originals.",
+    };
+    dvui.labelNoFmt(
         @src(),
-        "Point at a directory of installed games (subfolders like \"AHouseInTheRift-0.8.09r1-pc\"). " ++
-            "f69 parses each folder name for a game name + version. For each entry you'll then paste " ++
-            "an F95Zone URL or add it as a custom row.",
-        .{},
-        .{ .expand = .horizontal },
-    );
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    dvui.label(
-        @src(),
-        "Tip: each imported game's folder is MOVED into f69's library root. " ++
-            "If the source folder lives on the same filesystem as the library, " ++
-            "the move is a near-instant rename. Cross-filesystem moves fall back " ++
-            "to a copy-verify-delete pass (much slower for large games).",
+        tip_text,
         .{},
         .{ .expand = .horizontal, .color_text = .{ .r = 0xA0, .g = 0x80, .b = 0x90 } },
     );
@@ -121,7 +179,7 @@ fn renderFolderScanSection(frame: *Frame) void {
         defer row.deinit();
         const te = style.textEntry(@src(), .{
             .text = .{ .buffer = &state.folder_scan_path_buf },
-            .placeholder = "/path/to/games",
+            .placeholder = copy.placeholder,
         }, .{ .expand = .horizontal, .min_size_content = .{ .w = 400, .h = 24 } });
         te.deinit();
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
@@ -135,14 +193,26 @@ fn renderFolderScanSection(frame: *Frame) void {
         }
     }
 
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    renderFolderScanModeToggle(state);
+
     if (!state.folder_scan_msg.isEmpty()) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
         dvui.labelNoFmt(@src(), state.folderScanMsg(), .{}, .{});
     }
 
-    const bundle = actions.folderScanBundle(state) orelse return;
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    if (actions.folderScanBundle(state)) |bundle| {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+        renderScanResults(frame, bundle);
+    }
 
+    renderResolvePopup(frame);
+
+    return true;
+}
+
+fn renderScanResults(frame: *Frame, bundle: anytype) void {
+    const state = frame.state;
     // One row per parsed entry. Two actions per row: "Custom" (commit
     // with the synthetic id) and "F95 URL…" (open the resolve popup).
     for (bundle.games, 0..) |g, idx| {
@@ -159,7 +229,6 @@ fn renderFolderScanSection(frame: *Frame) void {
         });
         defer row.deinit();
 
-        // Name + version block. Expands to fill row width.
         {
             var col = dvui.box(@src(), .{ .dir = .vertical }, .{
                 .id_extra = @intCast(idx),
@@ -185,6 +254,26 @@ fn renderFolderScanSection(frame: *Frame) void {
             state.folder_resolve_idx = idx;
             @memset(&state.folder_resolve_url_buf, 0);
         }
+    }
+}
+
+/// Two-button mutually-exclusive toggle. The selected mode renders with
+/// `.style = .highlight`; the other is plain. Plain `dvui.checkbox`
+/// wouldn't communicate the "either/or" intent and the tip text above
+/// already explains the trade-off.
+fn renderFolderScanModeToggle(state: *State) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer row.deinit();
+    dvui.label(@src(), "Transfer mode:", .{}, .{ .gravity_y = 0.5 });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+    const move_style: dvui.Options = if (state.folder_scan_mode == .move) .{ .style = .highlight } else .{};
+    if (style.button(@src(), "Move (cut+paste)", .{}, move_style)) {
+        state.folder_scan_mode = .move;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+    const copy_style: dvui.Options = if (state.folder_scan_mode == .copy) .{ .style = .highlight } else .{};
+    if (style.button(@src(), "Copy (keep originals — 2x disk)", .{}, copy_style)) {
+        state.folder_scan_mode = .copy;
     }
 }
 

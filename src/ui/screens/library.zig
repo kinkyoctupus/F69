@@ -252,7 +252,7 @@ fn renderAddSplitButton(frame: *Frame) void {
     defer bar.deinit();
 
     if (components.iconButton(@src(), "Add", entypo.plus, .{})) {
-        state.screen = .import;
+        state.screen = .import_urls;
     }
 
     if (dvui.menuItemIcon(@src(), "add-source", entypo.chevron_down, .{ .submenu = true }, .{
@@ -266,10 +266,24 @@ fn renderAddSplitButton(frame: *Frame) void {
         var fw = dvui.floatingMenu(@src(), .{ .from = anchor }, .{});
         defer fw.deinit();
 
-        if (dvui.menuItemLabel(@src(), "Add by paste (URLs / thread IDs)…", .{}, .{
+        if (dvui.menuItemLabel(@src(), "Add by F95 URL / ID…", .{}, .{
             .expand = .horizontal,
         }) != null) {
-            state.screen = .import;
+            state.screen = .import_urls;
+            bar.close();
+        }
+
+        if (dvui.menuItemLabel(@src(), "Import from F95Checker / xLibrary…", .{}, .{
+            .expand = .horizontal,
+        }) != null) {
+            state.screen = .import_f95checker;
+            bar.close();
+        }
+
+        if (dvui.menuItemLabel(@src(), "Import from a folder…", .{}, .{
+            .expand = .horizontal,
+        }) != null) {
+            state.screen = .import_folder;
             bar.close();
         }
 

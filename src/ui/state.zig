@@ -9,7 +9,28 @@ const owned = @import("owned.zig");
 const import_job_mod = @import("import_job.zig");
 pub const MessageBuf = buf_mod.MessageBuf;
 
-pub const Screen = enum { library, detail, settings, import, downloads, diagnostics, recipe_editor, mods_for_game };
+pub const Screen = enum {
+    library,
+    detail,
+    settings,
+    /// Paste F95Zone thread URLs / IDs — bulk-create library rows.
+    import_urls,
+    /// Scan an F95Checker / xLibrary games directory.
+    import_f95checker,
+    /// Scan any flat directory of game subfolders.
+    import_folder,
+    downloads,
+    diagnostics,
+    recipe_editor,
+    mods_for_game,
+};
+
+/// Folder-import transfer mode. `move` (default) cuts and pastes: cheap
+/// rename on same FS, or copy-verify-delete cross-FS — final disk use
+/// is 1x. `copy` leaves the source intact — final disk use is 2x. Move
+/// is the default because the typical 15GB+ game folder would blow up
+/// a small drive otherwise.
+pub const ImportMode = enum { move, copy };
 /// Sort options. `weighted` uses Game.weightedRating against the
 /// library's mean rating + a fixed prior weight, so games with few
 /// votes don't unfairly dominate over well-rated games. `sync_state`
@@ -667,6 +688,10 @@ pub const State = struct {
     folder_scan_path_buf: [512]u8 = [_]u8{0} ** 512,
     folder_scan_bundle: ?*anyopaque = null,
     folder_scan_msg: buf_mod.MessageBuf(192) = .{},
+    /// Per-bundle transfer mode. Defaults to `.move` (cut+paste) so a
+    /// user with limited disk doesn't double their footprint. The UI
+    /// exposes a radio next to the scan results.
+    folder_scan_mode: ImportMode = .move,
     /// Per-row resolution-popup state. `null` = no popup. Otherwise
     /// the index into `bundle.games` whose F95 association the user
     /// is editing right now. The user can paste an F95 URL/id to

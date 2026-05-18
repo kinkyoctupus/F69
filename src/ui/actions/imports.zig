@@ -625,6 +625,14 @@ pub fn folderScanBundle(state: *const State) ?*const importers_mod.Bundle {
 /// On success the entry is removed from the scan bundle and a
 /// reload is requested so the library grid picks up the new row.
 pub fn resolveFolderEntry(frame: *Frame, idx: usize, thread_id: ?u64) void {
+    resolveFolderEntryWithMode(frame, idx, thread_id, frame.state.folder_scan_mode);
+}
+
+/// Same as `resolveFolderEntry` but takes an explicit transfer mode
+/// rather than reading `folder_scan_mode`. Kept as the inner
+/// implementation so the public entry point stays a single-arg call
+/// from the UI and the mode is sourced from the user's radio.
+fn resolveFolderEntryWithMode(frame: *Frame, idx: usize, thread_id: ?u64, mode: @import("../state.zig").ImportMode) void {
     const state = frame.state;
     const bundle = folderScanBundle(state) orelse return;
     if (idx >= bundle.games.len) return;
@@ -670,9 +678,10 @@ pub fn resolveFolderEntry(frame: *Frame, idx: usize, thread_id: ?u64) void {
     };
     defer alloc.free(dst_path);
 
-    moveImported(alloc, frame.io, src_path, dst_path) catch |e| {
+    transferImported(alloc, frame.io, src_path, dst_path, mode) catch |e| {
         var buf: [256]u8 = undefined;
-        const m = std.fmt.bufPrint(&buf, "Folder move failed ({s}). Library row kept; you can install the game manually later.", .{@errorName(e)}) catch "Folder move failed";
+        const verb: []const u8 = if (mode == .copy) "copy" else "move";
+        const m = std.fmt.bufPrint(&buf, "Folder {s} failed ({s}). Library row kept; you can install the game manually later.", .{ verb, @errorName(e) }) catch "Folder transfer failed";
         state.setFolderScanMsg(m);
         // Still drop the entry from the scan list — the library row
         // is in place; the user can use Manual install later if
@@ -703,25 +712,41 @@ pub fn resolveFolderEntry(frame: *Frame, idx: usize, thread_id: ?u64) void {
     dropEntryFromBundle(state, idx);
 }
 
-/// Move-or-copy semantics. Tries `renameAbsolute` first (cheap on
-/// same-filesystem) and falls back to `migrate.copyVerifyDelete`
-/// (expensive but cross-FS-correct) on any error from rename.
-fn moveImported(alloc: std.mem.Allocator, io: std.Io, src: []const u8, dst: []const u8) !void {
+/// Transfer the source folder into the library. `mode = .move` uses
+/// `renameAbsolute` first (cheap on same-FS) and falls back to
+/// `migrate.copyVerifyDelete` on cross-FS or any rename error.
+/// `mode = .copy` skips rename entirely and runs copy-verify with
+/// `keep_source = true` so the originals stay intact (peak AND final
+/// disk = 2x — the user opted into that with the radio).
+fn transferImported(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    src: []const u8,
+    dst: []const u8,
+    mode: @import("../state.zig").ImportMode,
+) !void {
     // Make sure the destination's parent directory exists; rename
     // won't create it for us.
     if (std.mem.lastIndexOfScalar(u8, dst, '/')) |slash| {
         const parent = dst[0..slash];
         if (parent.len > 0) std.Io.Dir.cwd().createDirPath(io, parent) catch {};
     }
-    // Fast path: rename. Works on same FS in one syscall. Any
-    // error (CrossDevice, PermissionDenied, DirNotEmpty, …) falls
-    // through to the slower copy-verify-delete; the migrator
-    // bails up front if the destination already exists, so we
-    // don't risk overwriting a previous import on retry.
-    std.Io.Dir.renameAbsolute(src, dst, io) catch |e| {
-        log.info("folder-import: rename failed ({s}); falling back to copy-verify-delete", .{@errorName(e)});
-        _ = try importers_mod.migrate.copyVerifyDelete(alloc, io, src, dst, .{});
-    };
+    switch (mode) {
+        .move => {
+            // Fast path: rename. Works on same FS in one syscall. Any
+            // error (CrossDevice, PermissionDenied, DirNotEmpty, …)
+            // falls through to the slower copy-verify-delete; the
+            // migrator bails up front if the destination already exists,
+            // so we don't risk overwriting a previous import on retry.
+            std.Io.Dir.renameAbsolute(src, dst, io) catch |e| {
+                log.info("folder-import: rename failed ({s}); falling back to copy-verify-delete", .{@errorName(e)});
+                _ = try importers_mod.migrate.copyVerifyDelete(alloc, io, src, dst, .{});
+            };
+        },
+        .copy => {
+            _ = try importers_mod.migrate.copyVerifyDelete(alloc, io, src, dst, .{ .keep_source = true });
+        },
+    }
 }
 
 /// 36-char hex+dash UUID built from io clock + Wyhash, same shape
