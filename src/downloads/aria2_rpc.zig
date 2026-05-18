@@ -132,9 +132,38 @@ pub const Daemon = struct {
     pub fn deinit(self: *Daemon) void {
         self.shutdown() catch {};
         if (self.child) |*c| {
-            // Aria2 should exit on its own from the shutdown RPC. Wait
-            // for it; if it's misbehaving, kill on a 1s timeout.
-            _ = c.wait(self.io) catch {};
+            // Aria2 should exit on its own from the shutdown RPC.
+            // `c.wait` blocks though, and a hung daemon (dropped RPC,
+            // stuck seed teardown) would freeze app exit forever. To
+            // bound the wait, spawn a side thread to do the blocking
+            // `c.wait` and poll an atomic from the main thread for up
+            // to 1s. If still alive, SIGKILL — that unblocks the side
+            // thread's `wait` and lets us join it cleanly.
+            const WaitCtx = struct {
+                child: *std.process.Child,
+                io: std.Io,
+                done: std.atomic.Value(bool) = .init(false),
+                fn run(ctx: *@This()) void {
+                    _ = ctx.child.wait(ctx.io) catch {};
+                    ctx.done.store(true, .release);
+                }
+            };
+            var wait_ctx: WaitCtx = .{ .child = c, .io = self.io };
+            if (std.Thread.spawn(.{}, WaitCtx.run, .{&wait_ctx})) |t| {
+                const tick = std.Io.Duration.fromMilliseconds(50);
+                var i: usize = 0;
+                while (i < 20 and !wait_ctx.done.load(.acquire)) : (i += 1) {
+                    std.Io.sleep(self.io, tick, .awake) catch break;
+                }
+                if (!wait_ctx.done.load(.acquire)) {
+                    log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
+                    c.kill(self.io);
+                }
+                t.join();
+            } else |_| {
+                // Thread spawn failed — fall back to a blocking wait.
+                _ = c.wait(self.io) catch {};
+            }
         }
         self.http.deinit();
         self.* = undefined;

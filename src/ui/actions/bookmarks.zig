@@ -244,16 +244,19 @@ fn drainStagedBookmarks(frame: *Frame, job: *BookmarksJob) void {
     const state = frame.state;
     const p = &job.payload;
 
-    // Snapshot the new tail under the mutex; insert outside the lock.
+    // Hold staged_mu across the entire insert loop. Earlier shape
+    // grabbed a slice header under the lock and iterated outside —
+    // but the slice points into `p.staged.items`'s backing buffer,
+    // and a worker append between unlock and the for-loop could
+    // realloc + invalidate it. Worker appends ~50 entries per page
+    // and blocks at most one drain (< 1 ms); holding the lock is
+    // cheaper than copying entries by value.
     p.staged_mu.lockUncancelable(frame.io);
+    defer p.staged_mu.unlock(frame.io);
     const new_count = p.staged.items.len - p.staged_drained;
-    if (new_count == 0) {
-        p.staged_mu.unlock(frame.io);
-        return;
-    }
+    if (new_count == 0) return;
     const new_slice = p.staged.items[p.staged_drained .. p.staged_drained + new_count];
     p.staged_drained += new_count;
-    p.staged_mu.unlock(frame.io);
 
     var any_inserted = false;
     for (new_slice) |e| {
