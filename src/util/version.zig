@@ -341,16 +341,26 @@ pub fn canonicalize(buf: []u8, input: []const u8) ?Canonical {
 /// Stop-words dropped silently during tokenization. Conservative —
 /// these are tokens we've seen attached to versions on F95 / RPDL
 /// that never carry release information.
+///
+/// Stored as a comptime perfect-hash set keyed by the lowercase form
+/// so each call is one probe instead of the 28-entry `eqlAsciiCase`
+/// cascade the table replaced.
+const STOP_WORDS = std.StaticStringMap(void).initComptime(.{
+    .{ "linux", {} },     .{ "windows", {} },  .{ "win", {} },     .{ "mac", {} },     .{ "macos", {} },   .{ "android", {} }, .{ "pc", {} },
+    .{ "public", {} },    .{ "patreon", {} },  .{ "steam", {} },   .{ "demo", {} },    .{ "bugfix", {} },  .{ "hotfix", {} },
+    .{ "build", {} },     .{ "release", {} },  .{ "rel", {} },     .{ "ver", {} },     .{ "version", {} },
+    .{ "x64", {} },       .{ "x86_64", {} },   .{ "x86", {} },     .{ "i686", {} },    .{ "aarch64", {} },
+    .{ "free", {} },      .{ "paid", {} },     .{ "uncensored", {} }, .{ "censored", {} },
+});
+
 fn isStopWord(t: []const u8) bool {
-    const stops = [_][]const u8{
-        "linux",  "windows", "win",      "mac",     "macos",   "android", "pc",
-        "public", "patreon", "steam",    "demo",    "bugfix",  "hotfix",
-        "build",  "release", "rel",      "ver",     "version",
-        "x64",    "x86_64",  "x86",      "i686",    "aarch64",
-        "free",   "paid",    "uncensored", "censored",
-    };
-    for (stops) |s| if (eqlAsciiCase(t, s)) return true;
-    return false;
+    // Lowercase into a stack buffer so the lookup can be case-sensitive
+    // against the all-lowercase key set. Tokens longer than the buffer
+    // can't be stop-words (longest key is 10 chars: "uncensored").
+    if (t.len > 16) return false;
+    var buf: [16]u8 = undefined;
+    for (t, 0..) |c, i| buf[i] = std.ascii.toLower(c);
+    return STOP_WORDS.has(buf[0..t.len]);
 }
 
 fn parseAllDigits(s: []const u8) ?u32 {
