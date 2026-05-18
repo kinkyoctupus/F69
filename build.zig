@@ -284,6 +284,13 @@ pub fn build(b: *std.Build) void {
         .name = "f69",
         .root_module = exe_mod,
     });
+    // Emit a GNU build-ID note (`.note.gnu.build-id`). Fedora's
+    // rpmbuild + Debian's debian-policy require this for every
+    // installed ELF — otherwise `find-debuginfo` aborts the .rpm
+    // build with "No build ID note found". `.sha1` is deterministic
+    // over the binary content (same input → same id), good for
+    // crash-dump symbol matching.
+    exe.build_id = .sha1;
     b.installArtifact(exe);
 
     // Compat resources — directories the compat module's recipes

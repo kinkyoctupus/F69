@@ -203,6 +203,11 @@
             zlib zlib.dev
             bzip2 bzip2.dev
             xz xz.dev
+            zstd zstd.dev
+            lz4 lz4.dev
+            libxml2 libxml2.dev
+            acl acl.dev
+            nettle nettle.dev
             dbus dbus.dev
           ];
 
@@ -308,6 +313,21 @@
             bzip2.dev
             xz
             xz.dev
+            # libarchive's full-feature build pulls in every codec
+            # and metadata format — zstd / lz4 / xml2 / acl / nettle.
+            # NixOS, Debian and Fedora all ship libarchive built with
+            # these enabled, so the static .a refs the symbols and we
+            # have to link them at the f69 binary level.
+            zstd
+            zstd.dev
+            lz4
+            lz4.dev
+            libxml2
+            libxml2.dev
+            acl
+            acl.dev
+            nettle
+            nettle.dev
 
             # libdbus — needed by the vendored NFDe portal backend
             # (zig-pkg/nfde) so the file picker talks XDG portal over
