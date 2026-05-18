@@ -1414,10 +1414,15 @@ const DEBIAN_RULES =
     "\n" ++
     "override_dh_auto_configure:\n" ++
     "\n" ++
+    "# Compile in %build-equivalent (just emits to zig-out/), install in\n" ++
+    "# %install-equivalent. dh sequences may clean the staging dir\n" ++
+    "# between phases — keeping the install-into-staging in the install\n" ++
+    "# target is the safe pattern (same reason as the RPM .spec).\n" ++
     "override_dh_auto_build:\n" ++
-    "\tzig build install --prefix debian/f69/usr -Doptimize=ReleaseSafe -Dgui=true\n" ++
+    "\tzig build -Doptimize=ReleaseSafe -Dgui=true\n" ++
     "\n" ++
     "override_dh_auto_install:\n" ++
+    "\tzig build install --prefix debian/f69/usr -Doptimize=ReleaseSafe -Dgui=true\n" ++
     "\tinstall -Dm644 LICENSE debian/f69/usr/share/doc/f69/copyright\n";
 
 const DEBIAN_CHANGELOG =
@@ -1498,10 +1503,14 @@ const RPM_SPEC =
     \\%prep
     \\%setup -q
     \\
+    \\# RPM wipes %{{buildroot}} between %build and %install — anything we
+    \\# write to the buildroot in %build gets nuked. So %build compiles
+    \\# only; %install does the actual prefix-into-buildroot install.
     \\%build
-    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true
+    \\zig build -Doptimize=ReleaseSafe -Dgui=true
     \\
     \\%install
+    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true
     \\install -Dm644 LICENSE %{{buildroot}}%{{_datadir}}/licenses/%{{name}}/LICENSE
     \\
     \\%files
