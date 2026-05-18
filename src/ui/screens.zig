@@ -41,5 +41,6 @@ pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 
 // ---- Cross-screen overlay widgets (called by ui.zig) ----
 pub const renderSyncRecapPopup = components.renderSyncRecapPopup;
+pub const renderLoginPopup = components.renderLoginPopup;
 pub const renderToasts = components.renderToasts;
 pub const renderSyncBanner = components.renderSyncBanner;

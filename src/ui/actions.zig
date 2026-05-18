@@ -141,6 +141,7 @@ pub const drainBookmarks = bookmarks.drainBookmarks;
 // ---- Auth ----
 pub const doLogin = auth.doLogin;
 pub const doLogout = auth.doLogout;
+pub const checkDonorStatus = auth.checkDonorStatus;
 pub const doRpdlLogin = auth.doRpdlLogin;
 pub const doRpdlLogout = auth.doRpdlLogout;
 

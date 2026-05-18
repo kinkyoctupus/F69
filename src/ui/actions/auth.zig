@@ -59,6 +59,50 @@ pub fn doLogin(frame: *Frame, username: []const u8, password: []const u8) void {
     @memset(&state.f95_pass_buf, 0);
     state.login_status = .logged_in;
     state.setLoginMsg("logged in");
+    // Login popup self-dismisses on successful auth so the user goes
+    // straight back to the library; donor-status probe runs fresh so
+    // the Download button reflects current eligibility.
+    state.login_popup_open = false;
+    state.is_donor = null;
+    checkDonorStatus(frame);
+}
+
+// ============================================================
+//  donor-status probe
+// ============================================================
+//
+// Hits F95's donor DDL step-1 endpoint with a known-stable thread to
+// learn whether the current login has donor eligibility. The UI uses
+// the result to gate the Download button: non-donors see it grayed.
+//
+// Synchronous on the UI thread — same shape as `doLogin` until phase
+// 6+ moves these onto workers. Cost: one HTTP request, gated on the
+// F95 rate-limit mutex like every other call. Cheap; runs once at
+// startup (after login) and once after a fresh login.
+
+pub fn checkDonorStatus(frame: *Frame) void {
+    const state = frame.state;
+    if (state.donor_check_in_flight) return;
+    if (!frame.f95_svc.client.hasCookie()) {
+        // No cookie = not logged in; can't probe. Leave is_donor null.
+        return;
+    }
+    state.donor_check_in_flight = true;
+    defer {
+        state.donor_check_in_flight = false;
+        // Mark as attempted regardless of outcome so the per-frame
+        // gate in `guiFrame` doesn't re-fire the HTTP probe every
+        // tick when the result was a transient error.
+        state.donor_check_attempted = true;
+    }
+    const is_donor = f95.donor_ddl.checkDonorStatus(frame.lib.alloc, frame.f95_svc.client) catch |e| {
+        log.warn("donor probe failed: {s} — leaving is_donor unset", .{@errorName(e)});
+        // Don't set is_donor on transient errors — UI stays optimistic
+        // (button enabled, error surfaces on first download attempt).
+        return;
+    };
+    state.is_donor = is_donor;
+    log.info("donor probe: is_donor={}", .{is_donor});
 }
 
 pub fn doLogout(frame: *Frame) void {
@@ -76,6 +120,8 @@ pub fn doLogout(frame: *Frame) void {
     @memset(&state.f95_user_buf, 0);
     @memset(&state.f95_pass_buf, 0);
     state.login_status = .logged_out;
+    state.is_donor = null;
+    state.donor_check_attempted = false;
     state.setLoginMsg("logged out");
 }
 

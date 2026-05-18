@@ -163,6 +163,16 @@ pub fn runMainLoop(
     } else {
         state.rpdl_status = .logged_out;
     }
+    // Open the login popup at startup when the user is not signed
+    // into F95. The popup also nudges RPDL sign-in. Dismissed via
+    // Skip (set `login_popup_skipped` so we don't re-open this
+    // session) or by completing a login. Donor-status probe runs
+    // once at startup if we already have an F95 cookie so the
+    // Download button's enabled-state is correct before the user
+    // clicks anything.
+    if (state.login_status == .logged_out) {
+        state.login_popup_open = true;
+    }
     defer {
         // Modfile cache + clash modal both own heap state — release
         // them on shutdown so DebugAllocator doesn't flag leaks.
@@ -335,6 +345,14 @@ fn guiFrame(frame: *Frame) !bool {
     for (frame.games) |*g| games_by_thread.put(g.f95_thread_id, g) catch {};
     frame.games_by_thread = &games_by_thread;
 
+    // One-shot donor-status probe on the first frame after sign-in.
+    // Synchronous HTTP (~1-2s) on the UI thread today; phase 6+ would
+    // move it onto a worker. `donor_check_attempted` flips after any
+    // outcome so we don't re-fire every frame on transient errors.
+    if (frame.state.login_status == .logged_in and !frame.state.donor_check_attempted) {
+        actions.checkDonorStatus(frame);
+    }
+
     actions.drainSync(frame);
     actions.drainImageQueue(frame);
     actions.drainBookmarks(frame);
@@ -413,6 +431,12 @@ fn guiFrame(frame: *Frame) !bool {
     // even if they navigated mid-sync.
     if (frame.state.sync_recap_show) {
         screens.renderSyncRecapPopup(frame);
+    }
+
+    // Login popup — auto-opened by runMainLoop at startup when not
+    // signed in; user dismisses via Skip or by completing a login.
+    if (frame.state.login_popup_open) {
+        screens.renderLoginPopup(frame);
     }
 
     // Toast overlay — rendered after every other screen widget so it
