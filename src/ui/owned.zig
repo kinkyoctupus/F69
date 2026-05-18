@@ -1,19 +1,20 @@
-//! Heap-allocated state types shared between `state.zig` and
-//! `actions.zig`.
+//! Heap-allocated state types shared between `state.zig` and the
+//! per-domain modules under `actions/`.
 //!
 //! Background: most of the UI's long-lived state — caches, in-flight
-//! jobs, running-game tables — is heap-allocated by `actions.zig` and
-//! parked through a slot on `state.State` until the next frame drains
-//! it. The "right" home for those types is `actions.zig` (next to
-//! their lifecycle), but `state.zig` is imported by `actions.zig` so
-//! having `state.zig` import the concrete types back would close a
-//! cycle. The previous workaround was to declare every slot as
-//! `?*anyopaque` and pay one `@ptrCast(@alignCast)` per read.
+//! jobs, running-game tables — is heap-allocated by the action modules
+//! and parked through a slot on `state.State` until the next frame
+//! drains it. The "right" home for those types is alongside their
+//! lifecycle (`actions/*.zig`), but `state.zig` is imported by the
+//! action modules so having `state.zig` import the concrete types
+//! back would close a cycle. The previous workaround was to declare
+//! every slot as `?*anyopaque` and pay one `@ptrCast(@alignCast)` per
+//! read.
 //!
 //! `owned.zig` breaks the cycle: it owns the *data* shape of each
 //! type, imports only modules that don't pull `state`/`actions`, and
 //! is consumed by both. Behavior (workers, drain helpers, lifecycle)
-//! stays in `actions.zig`, operating on `*owned.SyncJob` etc.
+//! stays under `actions/`, operating on `*owned.SyncJob` etc.
 //!
 //! R4 lands these incrementally. Each phase keeps the build + tests
 //! green:

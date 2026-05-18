@@ -127,7 +127,7 @@ fn modsTabLabel(tag: state_mod.ModsTab, name: []const u8, count: usize) []const 
     return out;
 }
 
-/// Tab-strip counters. Defined in `actions.zig` (`actions.ModsTabCounts`)
+/// Tab-strip counters. Defined in `actions/mods.zig` (`actions.ModsTabCounts`)
 /// so the cache that produces them can live alongside `ModfileCache`.
 
 /// Body of the Mods page — picks the active tab + renders the
