@@ -866,7 +866,11 @@ fn notifyOnAbnormalExit(frame: *Frame, thread_id: u64, status: u32) void {
     // Find the game name so the toast is intelligible. Fall back to
     // the thread id when the library hasn't been re-queried yet.
     const name = blk: {
-        for (frame.games) |*g| if (g.f95_thread_id == thread_id) break :blk g.name;
+        if (frame.games_by_thread) |map| {
+            if (map.get(thread_id)) |g| break :blk g.name;
+        } else {
+            for (frame.games) |*g| if (g.f95_thread_id == thread_id) break :blk g.name;
+        }
         break :blk "(unknown game)";
     };
 

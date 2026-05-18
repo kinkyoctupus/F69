@@ -100,6 +100,14 @@ pub const Frame = struct {
     /// so the pointer is **only valid during the current frame** —
     /// don't stash on `State` or on a job payload.
     install_versions: ?*const std.AutoHashMap(u64, []const u8) = null,
+    /// Per-frame snapshot of `(thread_id → *Game)` into `games`.
+    /// `gameByThreadId` reads from this; built once by `guiFrame`
+    /// from dvui's per-frame arena. Same lifetime rules as
+    /// `install_versions` — valid only for the current frame.
+    /// The value type is `*library.Game` (mutable) to match the
+    /// linear-scan call sites; readers that want `const` can
+    /// re-cast at the use site.
+    games_by_thread: ?*const std.AutoHashMap(u64, *library.Game) = null,
 };
 
 /// One detected browser. `path` is the absolute exe path; `display`

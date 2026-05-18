@@ -42,7 +42,11 @@ pub fn detailScreen(frame: *Frame) !bool {
     }
 
     const game = blk: {
-        for (games) |*gg| if (gg.f95_thread_id == tid) break :blk gg;
+        if (frame.games_by_thread) |map| {
+            if (map.get(tid)) |gg| break :blk gg;
+        } else {
+            for (games) |*gg| if (gg.f95_thread_id == tid) break :blk gg;
+        }
         state.screen = .library;
         state.selected_thread = null;
         return true;
