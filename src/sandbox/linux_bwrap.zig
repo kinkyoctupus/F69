@@ -21,6 +21,7 @@ const Io = std.Io;
 const log = std.log.scoped(.bwrap);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
+const util_proc = @import("util_proc");
 
 pub const Bwrap = struct {
     alloc: std.mem.Allocator,
@@ -39,7 +40,7 @@ pub const Bwrap = struct {
         };
         errdefer alloc.free(path);
 
-        if (!testUserns(io)) {
+        if (!testUserns(alloc, io)) {
             log.warn("unprivileged userns is blocked; bwrap backend disabled", .{});
             alloc.free(path);
             return null;
@@ -293,18 +294,15 @@ fn findInPath(alloc: std.mem.Allocator, io: Io, environ: std.process.Environ, na
     return error.NotFound;
 }
 
-fn testUserns(io: Io) bool {
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "unshare", "-Ur", "--", "true" },
-        .stdin = .ignore,
-        .stdout = .ignore,
+fn testUserns(alloc: std.mem.Allocator, io: Io) bool {
+    // Best-effort probe — stderr kept silent so unsupported kernels
+    // don't spam the f69 log; the wrapper's "userns blocked" warn
+    // line is the only signal we want surfaced.
+    const result = util_proc.run(alloc, io, &.{ "unshare", "-Ur", "--", "true" }, .{
         .stderr = .ignore,
     }) catch return false;
-    const term = child.wait(io) catch return false;
-    return switch (term) {
-        .exited => |c| c == 0,
-        else => false,
-    };
+    defer alloc.free(result.stdout);
+    return result.exit_code == 0;
 }
 
 fn detectDistro(alloc: std.mem.Allocator, io: Io) dom.Distro {

@@ -26,6 +26,7 @@ const errs = @import("errors.zig");
 const dom = @import("domain.zig");
 const downloads = @import("downloads");
 const recipe = @import("recipe");
+const util_proc = @import("util_proc");
 const Tracker = @import("tracker.zig").Tracker;
 
 pub const ApplyOpts = struct {
@@ -711,17 +712,11 @@ fn buildTarGzFixture(io: Io, scratch: []const u8, files: []const struct { path: 
     const tar_path = try std.fmt.bufPrint(&tar_buf, "{s}/mod.tar.gz", .{scratch});
     var cmd_buf: [512]u8 = undefined;
     const cmd = try std.fmt.bufPrint(&cmd_buf, "tar czf {s} -C {s} .", .{ tar_path, src_dir });
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "sh", "-c", cmd },
-        .stdin = .ignore,
-        .stdout = .ignore,
+    const result = util_proc.run(testing.allocator, io, &.{ "sh", "-c", cmd }, .{
         .stderr = .ignore,
     }) catch return null;
-    const term = child.wait(io) catch return null;
-    switch (term) {
-        .exited => |code| if (code != 0) return null,
-        else => return null,
-    }
+    defer testing.allocator.free(result.stdout);
+    if (result.exit_code != 0) return null;
     return try testing.allocator.dupe(u8, tar_path);
 }
 
