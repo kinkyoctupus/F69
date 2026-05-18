@@ -58,6 +58,7 @@ pub fn hexDecode(hex: []const u8) errs.Error![32]u8 {
 // ============================================================
 
 const testing = std.testing;
+const test_env = @import("util_test_env");
 
 test "Hasher: empty input" {
     var h = Hasher.init();
@@ -101,48 +102,28 @@ test "hexDecode: non-hex char" {
 }
 
 test "verifyFile: hash matches" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "verify-hit");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-verify-hit";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
-
-    {
-        var f = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
-        defer f.close(io);
-        var buf: [16]u8 = undefined;
-        var w = f.writer(io, &buf);
-        try w.interface.writeAll("abc");
-        try w.interface.flush();
-    }
+    try env.writeFile("data", "abc");
+    const path = try env.path("data");
+    defer testing.allocator.free(path);
 
     const expected = try hexDecode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    try verifyFile(io, path, expected);
+    try verifyFile(env.io, path, expected);
 }
 
 test "verifyFile: hash mismatch" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "verify-miss");
+    defer env.deinit();
 
-    const path = "/tmp/f69-test-verify-miss";
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
-
-    {
-        var f = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
-        defer f.close(io);
-        var buf: [16]u8 = undefined;
-        var w = f.writer(io, &buf);
-        try w.interface.writeAll("def");
-        try w.interface.flush();
-    }
+    try env.writeFile("data", "def");
+    const path = try env.path("data");
+    defer testing.allocator.free(path);
 
     // sha256 of "abc"
     const expected = try hexDecode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    try testing.expectError(errs.Error.HashMismatch, verifyFile(io, path, expected));
+    try testing.expectError(errs.Error.HashMismatch, verifyFile(env.io, path, expected));
 }
 
 test "verifyFile: missing file → HashMismatch" {

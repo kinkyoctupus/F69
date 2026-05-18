@@ -228,49 +228,36 @@ fn hexFromDigest(alloc: std.mem.Allocator, digest: [32]u8) ![]u8 {
 //  tests — exercise snapshot/restore round-trip in a tmpdir
 // -----------------------------------------------------------------
 
-fn tmpRoot(io: std.Io, label: []const u8) ![]const u8 {
-    var buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buf, "/tmp/f69-compat-backup-{s}", .{label});
-    std.Io.Dir.cwd().deleteTree(io, path) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, path);
-    return try std.testing.allocator.dupe(u8, path);
-}
+const test_env = @import("util_test_env");
 
 test "snapshot then restore round-trips file content" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(ta, "compat-backup-roundtrip");
+    defer env.deinit();
 
-    const tmp_path = try tmpRoot(io, "roundtrip");
-    defer ta.free(tmp_path);
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
-
-    const install_root = try std.fmt.allocPrint(ta, "{s}/install", .{tmp_path});
+    const install_root = try env.path("install");
     defer ta.free(install_root);
-    const store_root = try std.fmt.allocPrint(ta, "{s}/backups", .{tmp_path});
+    const store_root = try env.path("backups");
     defer ta.free(store_root);
 
-    const file_dir = try std.fmt.allocPrint(ta, "{s}/lib", .{install_root});
-    defer ta.free(file_dir);
-    try std.Io.Dir.cwd().createDirPath(io, file_dir);
-    const file_path = try std.fmt.allocPrint(ta, "{s}/foo.so", .{file_dir});
+    try env.mkdirP("install/lib");
+    const file_path = try env.path("install/lib/foo.so");
     defer ta.free(file_path);
 
     const original = "original-bytes";
-    try writeBytes(io, file_path, original);
+    try writeBytes(env.io, file_path, original);
 
-    var store = Store.init(ta, io, store_root);
+    var store = Store.init(ta, env.io, store_root);
     const touched = dom.TouchedPath{ .relpath = "lib/foo.so" };
     const rec = try store.snapshot("test-install-id", install_root, touched);
     defer store.freeRecord(rec);
 
-    try writeBytes(io, file_path, "modified-bytes-by-fix");
+    try writeBytes(env.io, file_path, "modified-bytes-by-fix");
 
     try store.restore("test-install-id", install_root, rec);
 
     const restored = try std.Io.Dir.cwd().readFileAlloc(
-        io,
+        env.io,
         file_path,
         ta,
         .limited(64 * 1024),
@@ -281,32 +268,27 @@ test "snapshot then restore round-trips file content" {
 
 test "verify catches corrupted snapshot" {
     const ta = std.testing.allocator;
-    var tio = std.Io.Threaded.init(ta, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(ta, "compat-backup-verify");
+    defer env.deinit();
 
-    const tmp_path = try tmpRoot(io, "verify");
-    defer ta.free(tmp_path);
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
-
-    const install_root = try std.fmt.allocPrint(ta, "{s}/install", .{tmp_path});
+    try env.mkdirP("install");
+    const install_root = try env.path("install");
     defer ta.free(install_root);
-    const store_root = try std.fmt.allocPrint(ta, "{s}/backups", .{tmp_path});
+    const store_root = try env.path("backups");
     defer ta.free(store_root);
 
-    try std.Io.Dir.cwd().createDirPath(io, install_root);
-    const file_path = try std.fmt.allocPrint(ta, "{s}/data.bin", .{install_root});
+    const file_path = try env.path("install/data.bin");
     defer ta.free(file_path);
-    try writeBytes(io, file_path, "data");
+    try writeBytes(env.io, file_path, "data");
 
-    var store = Store.init(ta, io, store_root);
+    var store = Store.init(ta, env.io, store_root);
     const rec = try store.snapshot("iid", install_root, .{ .relpath = "data.bin" });
     defer store.freeRecord(rec);
     try store.verify("iid", rec);
 
     const snap_path = try store.snapshotPath("iid", rec.sha256);
     defer ta.free(snap_path);
-    try writeBytes(io, snap_path, "corrupted");
+    try writeBytes(env.io, snap_path, "corrupted");
 
     try std.testing.expectError(errs.Error.BackupMismatch, store.verify("iid", rec));
 }

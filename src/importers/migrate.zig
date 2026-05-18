@@ -215,55 +215,47 @@ fn hashFile(io: std.Io, path: []const u8) ![32]u8 {
 // ============================================================
 
 const testing = std.testing;
-
-fn touchFile(io: std.Io, path: []const u8, contents: []const u8) !void {
-    if (std.fs.path.dirname(path)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
-    var f = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
-    defer f.close(io);
-    var buf: [4096]u8 = undefined;
-    var w = f.writer(io, &buf);
-    try w.interface.writeAll(contents);
-    try w.interface.flush();
-}
+const test_env = @import("util_test_env");
 
 test "copyVerifyDelete: simple tree round-trip + source removed" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
+    var env = try test_env.TestEnv.init(testing.allocator, "migrate-simple");
+    defer env.deinit();
 
-    const scratch = "/tmp/f69-migrate-simple";
-    std.Io.Dir.cwd().deleteTree(io, scratch) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, scratch) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, scratch);
+    try env.writeFile("source/a.txt", "hello");
+    try env.writeFile("source/sub/b.txt", "world");
 
-    const src = scratch ++ "/source";
-    const dst = scratch ++ "/dest";
-    try std.Io.Dir.cwd().createDirPath(io, src);
-    try touchFile(io, src ++ "/a.txt", "hello");
-    try touchFile(io, src ++ "/sub/b.txt", "world");
+    const src = try env.path("source");
+    defer testing.allocator.free(src);
+    const dst = try env.path("dest");
+    defer testing.allocator.free(dst);
 
-    const stats = try copyVerifyDelete(testing.allocator, io, src, dst, .{});
+    const stats = try copyVerifyDelete(testing.allocator, env.io, src, dst, .{});
     try testing.expectEqual(@as(u32, 2), stats.files_copied);
     try testing.expectEqual(@as(u32, 2), stats.files_verified);
 
     // Source is gone.
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, src, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(env.io, src, .{}));
     // Dest has both files with original contents.
-    const a = try std.Io.Dir.cwd().readFileAlloc(io, dst ++ "/a.txt", testing.allocator, .limited(64));
+    const a_path = try env.path("dest/a.txt");
+    defer testing.allocator.free(a_path);
+    const a = try std.Io.Dir.cwd().readFileAlloc(env.io, a_path, testing.allocator, .limited(64));
     defer testing.allocator.free(a);
     try testing.expectEqualStrings("hello", a);
-    const b = try std.Io.Dir.cwd().readFileAlloc(io, dst ++ "/sub/b.txt", testing.allocator, .limited(64));
+    const b_path = try env.path("dest/sub/b.txt");
+    defer testing.allocator.free(b_path);
+    const b = try std.Io.Dir.cwd().readFileAlloc(env.io, b_path, testing.allocator, .limited(64));
     defer testing.allocator.free(b);
     try testing.expectEqualStrings("world", b);
 }
 
 test "copyVerifyDelete: missing source → SourceMissing" {
-    var tio = std.Io.Threaded.init(testing.allocator, .{});
-    defer tio.deinit();
-    const io = tio.io();
-    const dst = "/tmp/f69-migrate-no-src-dst";
-    std.Io.Dir.cwd().deleteTree(io, dst) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, dst) catch {};
+    var env = try test_env.TestEnv.init(testing.allocator, "migrate-no-src");
+    defer env.deinit();
 
-    try testing.expectError(Error.SourceMissing, copyVerifyDelete(testing.allocator, io, "/tmp/f69-migrate-no-src-source-nope", dst, .{}));
+    const dst = try env.path("dst");
+    defer testing.allocator.free(dst);
+    const missing_src = try env.path("missing-source");
+    defer testing.allocator.free(missing_src);
+
+    try testing.expectError(Error.SourceMissing, copyVerifyDelete(testing.allocator, env.io, missing_src, dst, .{}));
 }

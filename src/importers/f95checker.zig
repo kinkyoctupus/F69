@@ -198,19 +198,13 @@ fn parseJsonStringArray(alloc: std.mem.Allocator, json: []const u8) ![]const []c
 // ============================================================
 
 const testing = std.testing;
+const test_env = @import("util_test_env");
 
 test "loadFromDb: empty games table → empty bundle" {
-    const tmp = "/tmp/f69-test-f95checker-empty.sqlite3";
-    {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
-    defer {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
+    var env = try test_env.TestEnv.init(testing.allocator, "f95checker-empty");
+    defer env.deinit();
+    const tmp = try env.path("games.sqlite3");
+    defer testing.allocator.free(tmp);
 
     {
         var conn = try dbu.Conn.open(tmp, testing.allocator, .{ .create = true });
@@ -226,17 +220,10 @@ test "loadFromDb: empty games table → empty bundle" {
 }
 
 test "loadFromDb: full row round-trips through the bundle" {
-    const tmp = "/tmp/f69-test-f95checker-full.sqlite3";
-    {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
-    defer {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
+    var env = try test_env.TestEnv.init(testing.allocator, "f95checker-full");
+    defer env.deinit();
+    const tmp = try env.path("games.sqlite3");
+    defer testing.allocator.free(tmp);
 
     {
         var conn = try dbu.Conn.open(tmp, testing.allocator, .{ .create = true });
@@ -288,17 +275,10 @@ test "loadFromDb: full row round-trips through the bundle" {
 }
 
 test "loadFromDb: 'Unchecked' version is normalised to null" {
-    const tmp = "/tmp/f69-test-f95checker-unchecked.sqlite3";
-    {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
-    defer {
-        var tio = std.Io.Threaded.init(testing.allocator, .{});
-        defer tio.deinit();
-        std.Io.Dir.cwd().deleteFile(tio.io(), tmp) catch {};
-    }
+    var env = try test_env.TestEnv.init(testing.allocator, "f95checker-unchecked");
+    defer env.deinit();
+    const tmp = try env.path("games.sqlite3");
+    defer testing.allocator.free(tmp);
 
     {
         var conn = try dbu.Conn.open(tmp, testing.allocator, .{ .create = true });
