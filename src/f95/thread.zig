@@ -758,6 +758,31 @@ fn looksLikeStatus(token: []const u8) bool {
     return false;
 }
 
+/// Comptime perfect-hash set of engine tokens (alphabetic-only,
+/// lowercased) that `looksLikeEngine` accepts. The previous hand-rolled
+/// list carried `"ue4"`, `"ue5"`, and `"html5"` keys that the
+/// alphabetic-only normalisation stripped before comparison — they
+/// were dead letters and are omitted here. `"html"` still catches
+/// `html5` input (digit stripped); `ue4`/`ue5` inputs normalise to
+/// `"ue"` which the original cascade also never accepted.
+const ENGINE_TOKENS = std.StaticStringMap(void).initComptime(.{
+    .{ "renpy", {} },
+    .{ "rpgm", {} },              .{ "rpgmaker", {} },
+    .{ "rpgmmv", {} },            .{ "rpgmakermv", {} },
+    .{ "rpgmmz", {} },            .{ "rpgmakermz", {} },
+    .{ "rpgmvx", {} },            .{ "rpgmakervx", {} },            .{ "rpgmakervxace", {} },
+    .{ "unity", {} },
+    .{ "unreal", {} },            .{ "unrealengine", {} },
+    .{ "html", {} },
+    .{ "flash", {} },
+    .{ "java", {} },
+    .{ "wolfrpg", {} },           .{ "wolfrpgeditor", {} },
+    .{ "qsp", {} },
+    .{ "tyranobuilder", {} },     .{ "tyrano", {} },
+    .{ "twine", {} },
+    .{ "others", {} },            .{ "other", {} },
+});
+
 /// Match common F95 engine bracket tokens. Engine.fromBracket has the
 /// authoritative mapping; this is a coarse pre-filter so we don't claim
 /// random bracket text (genres, "Voyeur", etc.) as the engine.
@@ -770,26 +795,7 @@ fn looksLikeEngine(token: []const u8) bool {
             n += 1;
         }
     }
-    const norm = lc_buf[0..n];
-    const known = [_][]const u8{
-        "renpy",
-        "rpgm",            "rpgmaker",
-        "rpgmmv",          "rpgmakermv",
-        "rpgmmz",          "rpgmakermz",
-        "rpgmvx",          "rpgmakervx",        "rpgmakervxace",
-        "unity",
-        "unreal",          "unrealengine",      "ue4",         "ue5",
-        "html",            "html5",
-        "flash",
-        "java",
-        "wolfrpg",         "wolfrpgeditor",
-        "qsp",
-        "tyranobuilder",   "tyrano",
-        "twine",
-        "others",          "other",
-    };
-    for (known) |k| if (std.mem.eql(u8, norm, k)) return true;
-    return false;
+    return ENGINE_TOKENS.has(lc_buf[0..n]);
 }
 
 /// Heuristic: is this bracket token a version string?
@@ -1916,17 +1922,29 @@ pub fn extractDownloadLinks(
     return try out.toOwnedSlice(alloc);
 }
 
+/// Substring patterns mapped onto a `DownloadHost` tag. Each needle is
+/// unique to one host so order doesn't matter. Kept as a comptime
+/// tuple so the `inline for` below unrolls into straight-line code.
+const HOST_PATTERNS = [_]struct { needle: []const u8, host: domain.DownloadHost }{
+    .{ .needle = "mega.nz", .host = .mega },
+    .{ .needle = "mega.co.nz", .host = .mega },
+    .{ .needle = "mediafire.com", .host = .mediafire },
+    .{ .needle = "gofile.io", .host = .gofile },
+    .{ .needle = "pixeldrain.com", .host = .pixeldrain },
+    .{ .needle = "pixeldrain.net", .host = .pixeldrain },
+    .{ .needle = "workupload.com", .host = .workupload },
+    .{ .needle = "nopy.to", .host = .nopy },
+    .{ .needle = "nopy.net", .host = .nopy },
+    .{ .needle = "zippyshare.com", .host = .zippyshare },
+};
+
 /// Classify a URL into a known download host. Returns null for things
 /// we don't care about (forum chrome, mailto:, internal anchors, …).
 pub fn classifyDownloadHost(url: []const u8) ?domain.DownloadHost {
     if (std.mem.startsWith(u8, url, "https://attachments.f95zone.to/")) return .f95_attachment;
-    if (containsHost(url, "mega.nz") or containsHost(url, "mega.co.nz")) return .mega;
-    if (containsHost(url, "mediafire.com")) return .mediafire;
-    if (containsHost(url, "gofile.io")) return .gofile;
-    if (containsHost(url, "pixeldrain.com") or containsHost(url, "pixeldrain.net")) return .pixeldrain;
-    if (containsHost(url, "workupload.com")) return .workupload;
-    if (containsHost(url, "nopy.to") or containsHost(url, "nopy.net")) return .nopy;
-    if (containsHost(url, "zippyshare.com")) return .zippyshare;
+    inline for (HOST_PATTERNS) |p| {
+        if (containsHost(url, p.needle)) return p.host;
+    }
     // Treat anything else with a plausible scheme as "other" so we
     // don't drop magnet / google-drive / mixdrop / etc.
     if (std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://")) {
