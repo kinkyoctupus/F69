@@ -290,7 +290,7 @@ fn renderImportBanner(frame: *Frame) void {
 
     var line = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     defer line.deinit();
-    dvui.label(@src(), "{s}", .{hdr}, .{ .gravity_y = 0.5, .style = .highlight });
+    dvui.labelNoFmt(@src(), hdr, .{}, .{ .gravity_y = 0.5, .style = .highlight });
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
     if (style.button(@src(), "Cancel", .{}, .{ .style = .err, .gravity_y = 0.5 })) {
@@ -304,7 +304,7 @@ fn renderImportBanner(frame: *Frame) void {
     if (cur.len > 0) {
         var cur_buf: [192]u8 = undefined;
         const cur_text = std.fmt.bufPrint(&cur_buf, "  current: {s}", .{cur}) catch cur;
-        dvui.label(@src(), "{s}", .{cur_text}, .{
+        dvui.labelNoFmt(@src(), cur_text, .{}, .{
             .color_text = HELP_TEXT_COLOR,
             .id_extra = std.hash.Wyhash.hash(0, cur),
         });
@@ -370,14 +370,14 @@ fn renderSettingsDownloads(frame: *Frame) void {
         "(aria2 not yet started)"
     else
         std.fmt.bufPrint(&live_buf, "now bound to {d}", .{live_port}) catch "(bound)";
-    dvui.label(@src(), "{s}", .{live_msg}, .{
+    dvui.labelNoFmt(@src(), live_msg, .{}, .{
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
     });
 
     if (state.aria2_port_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-        dvui.label(@src(), "{s}", .{state.aria2_port_msg_buf[0..state.aria2_port_msg_len]}, .{
+        dvui.labelNoFmt(@src(), state.aria2_port_msg_buf[0..state.aria2_port_msg_len], .{}, .{
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
     }
@@ -432,14 +432,14 @@ fn renderSettingsDownloads(frame: *Frame) void {
         "(aria2 not yet started)"
     else
         std.fmt.bufPrint(&live_sr_buf, "now using {d:.1}×", .{live_sr}) catch "(set)";
-    dvui.label(@src(), "{s}", .{live_sr_msg}, .{
+    dvui.labelNoFmt(@src(), live_sr_msg, .{}, .{
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
     });
 
     if (state.aria2_seed_ratio_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-        dvui.label(@src(), "{s}", .{state.aria2_seed_ratio_msg_buf[0..state.aria2_seed_ratio_msg_len]}, .{
+        dvui.labelNoFmt(@src(), state.aria2_seed_ratio_msg_buf[0..state.aria2_seed_ratio_msg_len], .{}, .{
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
     }
@@ -497,7 +497,7 @@ fn renderTagsRefreshSection(frame: *Frame) void {
         const ts = components.formatUtcDateTime(&ts_buf, state.tags_master_fetched_at) catch "—";
         break :blk std.fmt.bufPrint(&info_buf, "{d} tags · last refresh {s}", .{ state.tags_master.len, ts }) catch "cached";
     };
-    dvui.label(@src(), "{s}", .{info_text}, .{
+    dvui.labelNoFmt(@src(), info_text, .{}, .{
         .gravity_y = 0.5,
         .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
     });
@@ -534,7 +534,7 @@ fn renderSettingsModPresets(frame: *Frame) void {
         defer bar.deinit();
         dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        dvui.label(@src(), "{s}", .{frame.info.mod_presets_dir}, .{
+        dvui.labelNoFmt(@src(), frame.info.mod_presets_dir, .{}, .{
             .font = .theme(.mono),
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
@@ -562,10 +562,10 @@ fn renderSettingsModPresets(frame: *Frame) void {
             {
                 var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
                 defer hdr.deinit();
-                dvui.label(@src(), "{s}", .{p.name}, .{ .style = .highlight });
+                dvui.labelNoFmt(@src(), p.name, .{}, .{ .style = .highlight });
                 _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
                 const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
-                dvui.label(@src(), "{s}", .{tag}, .{
+                dvui.labelNoFmt(@src(), tag, .{}, .{
                     .color_text = if (from_user)
                         .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
                     else
@@ -579,10 +579,10 @@ fn renderSettingsModPresets(frame: *Frame) void {
             const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  \u{00B7}  engine: {s}  \u{00B7}  patterns: {d}  \u{00B7}  weight: {d:.1}", .{
                 p.id, engine_txt, p.match.requires.len, p.weight,
             }) catch p.id;
-            dvui.label(@src(), "{s}", .{sub_txt}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
 
             if (p.description.len > 0) {
-                dvui.label(@src(), "{s}", .{p.description}, .{ .color_text = HELP_TEXT_COLOR });
+                dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
             }
         }
 
@@ -636,7 +636,7 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
         defer bar.deinit();
         dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        dvui.label(@src(), "{s}", .{frame.info.convert_presets_dir}, .{
+        dvui.labelNoFmt(@src(), frame.info.convert_presets_dir, .{}, .{
             .font = .theme(.mono),
             .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
         });
@@ -655,10 +655,10 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
         {
             var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
             defer hdr.deinit();
-            dvui.label(@src(), "{s}", .{p.name}, .{ .style = .highlight });
+            dvui.labelNoFmt(@src(), p.name, .{}, .{ .style = .highlight });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
             const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
-            dvui.label(@src(), "{s}", .{tag}, .{
+            dvui.labelNoFmt(@src(), tag, .{}, .{
                 .color_text = if (from_user)
                     .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
                 else
@@ -677,10 +677,10 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
         const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  -  engine: {s}  -  strategy: {s}  -  weight: {d:.1}", .{
             p.id, engine_txt, spec_txt, p.weight,
         }) catch p.id;
-        dvui.label(@src(), "{s}", .{sub_txt}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
 
         if (p.description.len > 0) {
-            dvui.label(@src(), "{s}", .{p.description}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
         }
     }
 }
@@ -880,7 +880,7 @@ fn renderBrowserSection(frame: *Frame) void {
     }
     if (!state.browser_msg.isEmpty()) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-        dvui.label(@src(), "{s}", .{state.browserMsg()}, .{ .style = .highlight });
+        dvui.labelNoFmt(@src(), state.browserMsg(), .{}, .{ .style = .highlight });
     }
 }
 
@@ -905,7 +905,7 @@ fn renderF95Account(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, status_opts);
     if (!state.login_msg.isEmpty()) {
-        dvui.label(@src(), "{s}", .{state.loginMsg()}, .{});
+        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -967,7 +967,7 @@ fn renderRpdlAccount(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, status_opts);
     if (!state.rpdl_msg.isEmpty()) {
-        dvui.label(@src(), "{s}", .{state.rpdlMsg()}, .{});
+        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -1091,9 +1091,9 @@ fn settingsRow(id_counter: *u32, label: []const u8, value: []const u8) void {
     });
     defer row.deinit();
 
-    dvui.label(@src(), "{s}", .{label}, .{
+    dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 160, .h = 20 },
         .gravity_y = 0.5,
     });
-    dvui.label(@src(), "{s}", .{value}, .{ .gravity_y = 0.5 });
+    dvui.labelNoFmt(@src(), value, .{}, .{ .gravity_y = 0.5 });
 }

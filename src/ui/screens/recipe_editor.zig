@@ -60,7 +60,7 @@ pub fn recipeEditorScreen(frame: *Frame) !bool {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
         var title_buf: [256]u8 = undefined;
         const title = std.fmt.bufPrint(&title_buf, "Set up install plan — {s}", .{game.name}) catch "Set up install plan";
-        dvui.label(@src(), "{s}", .{title}, .{ .style = .highlight, .gravity_y = 0.5 });
+        dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -125,7 +125,7 @@ pub fn recipeEditorScreen(frame: *Frame) !bool {
 fn editorSectionHeader(title: []const u8) void {
     const key = std.hash.Wyhash.hash(0, title);
     _ = dvui.spacer(@src(), .{ .id_extra = key, .min_size_content = .{ .w = 1, .h = 8 } });
-    dvui.label(@src(), "{s}", .{title}, .{
+    dvui.labelNoFmt(@src(), title, .{}, .{
         .style = .highlight,
         .id_extra = key,
     });
@@ -194,7 +194,7 @@ fn renderWizardMeta(w: *state_mod.WizardState) void {
 fn wizardTextRow(src: std.builtin.SourceLocation, label: []const u8, buf: []u8) void {
     var row = dvui.box(src, .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 2, .h = 2 } });
     defer row.deinit();
-    dvui.label(@src(), "{s}", .{label}, .{ .min_size_content = .{ .w = 160, .h = 24 }, .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), label, .{}, .{ .min_size_content = .{ .w = 160, .h = 24 }, .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = buf } }, .{
         .expand = .horizontal,
         .min_size_content = .{ .w = 280, .h = 26 },
@@ -220,7 +220,7 @@ fn wizardPathRow(
 ) void {
     var row = dvui.box(src, .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 2, .h = 2 } });
     defer row.deinit();
-    dvui.label(@src(), "{s}", .{label}, .{ .min_size_content = .{ .w = 160, .h = 24 }, .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), label, .{}, .{ .min_size_content = .{ .w = 160, .h = 24 }, .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = buf } }, .{
         .expand = .horizontal,
         .min_size_content = .{ .w = 280, .h = 26 },
@@ -408,27 +408,27 @@ fn renderSimulationAggregate(sim: *const installer_mod.SimulationResult) void {
         const size_txt = components.humanBytes(&size_buf, total_bytes);
         var buf: [128]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "+ Adds {d} new file(s)  ({s})", .{ add_n, size_txt }) catch "+ Adds files";
-        dvui.label(@src(), "{s}", .{txt}, .{ .color_text = .{ .r = 0x4F, .g = 0xC3, .b = 0x6F } });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = .{ .r = 0x4F, .g = 0xC3, .b = 0x6F } });
     }
     if (ow_van > 0) {
         var buf: [128]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "~ Overwrites {d} vanilla file(s)", .{ow_van}) catch "~ Overwrites vanilla";
-        dvui.label(@src(), "{s}", .{txt}, .{ .color_text = .{ .r = 0xE0, .g = 0xC0, .b = 0x70 } });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = .{ .r = 0xE0, .g = 0xC0, .b = 0x70 } });
     }
     if (ow_mod > 0) {
         var buf: [160]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "\u{26A0} Conflicts: {d} file(s) already owned by another mod", .{ow_mod}) catch "Conflicts with another mod";
-        dvui.label(@src(), "{s}", .{txt}, .{ .color_text = .{ .r = 0xFF, .g = 0x80, .b = 0x80 } });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = .{ .r = 0xFF, .g = 0x80, .b = 0x80 } });
     }
     if (mode_n > 0) {
         var buf: [128]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "* Marks {d} file(s) as runnable", .{mode_n}) catch "Marks file(s) runnable";
-        dvui.label(@src(), "{s}", .{txt}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
     }
     if (del_n > 0) {
         var buf: [128]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "- Removes {d} file(s)", .{del_n}) catch "Removes file(s)";
-        dvui.label(@src(), "{s}", .{txt}, .{ .color_text = .{ .r = 0xE0, .g = 0xC0, .b = 0x70 } });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = .{ .r = 0xE0, .g = 0xC0, .b = 0x70 } });
     }
 
     if (sim.diagnostics.len > 0) {
@@ -442,7 +442,7 @@ fn renderSimulationAggregate(sim: *const installer_mod.SimulationResult) void {
                 .warn => .{ .r = 0xE0, .g = 0xC0, .b = 0x70 },
                 .err => .{ .r = 0xFF, .g = 0x80, .b = 0x80 },
             };
-            dvui.label(@src(), "{s}", .{d.msg}, .{ .color_text = color, .id_extra = std.hash.Wyhash.hash(0, d.msg) });
+            dvui.labelNoFmt(@src(), d.msg, .{}, .{ .color_text = color, .id_extra = std.hash.Wyhash.hash(0, d.msg) });
         }
     }
 }
@@ -500,7 +500,7 @@ fn renderSimulationDetail(frame: *Frame, w: *state_mod.WizardState, sim: *const 
             humanBytesLocal(root.sub_bytes),
         }) catch "";
         const hdr = std.fmt.bufPrint(&hdr_buf, "Game root: {s}/{s}", .{ sim.install_dir, counts_txt }) catch sim.install_dir;
-        dvui.label(@src(), "{s}", .{hdr}, .{ .style = .highlight, .font = .theme(.mono) });
+        dvui.labelNoFmt(@src(), hdr, .{}, .{ .style = .highlight, .font = .theme(.mono) });
     }
 
     var scroll = dvui.scrollArea(@src(), .{}, .{
@@ -672,7 +672,7 @@ fn renderOneRow(
         const line = std.fmt.bufPrint(&line_buf, "{s}{s}/  ({d} file(s), {s})", .{
             indent, name_shown, node.sub_files, humanBytesLocal(node.sub_bytes),
         }) catch node.name;
-        dvui.label(@src(), "{s}", .{line}, .{
+        dvui.labelNoFmt(@src(), line, .{}, .{
             .id_extra = id_extra,
             .color_text = .{ .r = 0xA0, .g = 0x80, .b = 0x90 },
             .font = .theme(.mono),
@@ -735,7 +735,7 @@ fn renderOneRow(
         step_idx + 1,
         extras,
     }) catch node.name;
-    dvui.label(@src(), "{s}", .{line}, .{
+    dvui.labelNoFmt(@src(), line, .{}, .{
         .id_extra = id_extra,
         .color_text = eff_color,
         .font = .theme(.mono),
@@ -857,7 +857,7 @@ fn renderWizardBlockRow(
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         var idx_buf: [16]u8 = undefined;
         const idx_txt = std.fmt.bufPrint(&idx_buf, "step #{d}", .{idx + 1}) catch "step";
-        dvui.label(@src(), "{s}", .{idx_txt}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), idx_txt, .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (style.button(@src(), "Remove", .{}, .{ .style = .err })) {
@@ -867,7 +867,7 @@ fn renderWizardBlockRow(
     }
 
     // ---- one-line help text ----
-    dvui.label(@src(), "{s}", .{blockKindHelp(b.kind)}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), blockKindHelp(b.kind), .{}, .{ .color_text = HELP_TEXT_COLOR });
 
     // ---- per-block live-count summary, when sim is available ----
     if (sim) |s| {
@@ -915,7 +915,7 @@ fn renderWizardBlockRow(
                 .warn => .{ .r = 0xE0, .g = 0xC0, .b = 0x70 },
                 .err => .{ .r = 0xFF, .g = 0x80, .b = 0x80 },
             };
-            dvui.label(@src(), "{s}", .{d.msg}, .{
+            dvui.labelNoFmt(@src(), d.msg, .{}, .{
                 .color_text = color,
                 .id_extra = std.hash.Wyhash.hash(0, d.msg) ^ @as(u64, idx),
             });
@@ -944,7 +944,7 @@ fn renderBlockImpactLine(kind: state_mod.WizardBlockKind, imp: installer_mod.sim
             const line = std.fmt.bufPrint(&buf, "Will write {d} file(s), {s}{s}", .{
                 imp.files_written, size_txt, mod_part,
             }) catch "";
-            dvui.label(@src(), "{s}", .{line}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
+            dvui.labelNoFmt(@src(), line, .{}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
         },
         .move => {
             if (imp.files_written == 0) return;
@@ -954,13 +954,13 @@ fn renderBlockImpactLine(kind: state_mod.WizardBlockKind, imp: installer_mod.sim
             if (imp.deletions == 0) return;
             var buf: [64]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "Will remove {d} path(s).", .{imp.deletions}) catch "";
-            dvui.label(@src(), "{s}", .{line}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
+            dvui.labelNoFmt(@src(), line, .{}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
         },
         .chmod_x => {
             if (imp.mode_changes == 0) return;
             var buf: [64]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "Will mark {d} file(s) runnable.", .{imp.mode_changes}) catch "";
-            dvui.label(@src(), "{s}", .{line}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
+            dvui.labelNoFmt(@src(), line, .{}, .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } });
         },
     }
 }
@@ -981,7 +981,7 @@ fn wizardStripCheckbox(b: *state_mod.WizardBlock) void {
         "Archive's top dir will be flattened — e.g. `MyMod-1.2/game/...` → `<install>/game/...`"
     else
         "Archive is extracted as-is — top dir, if any, becomes a subfolder of the destination.";
-    dvui.label(@src(), "{s}", .{help}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), help, .{}, .{ .color_text = HELP_TEXT_COLOR });
 }
 
 fn renderWizardRelations(frame: *Frame, game: *const library.Game, w: *state_mod.WizardState) void {
