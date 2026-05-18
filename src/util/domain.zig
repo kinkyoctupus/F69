@@ -40,28 +40,34 @@ pub const Engine = enum {
     unknown,
 
     /// Match the kebab / snake / underscore variants users type into
-    /// recipe `.engine` fields.
+    /// recipe `.engine` fields. Comptime perfect-hash map — one O(1)
+    /// probe per call instead of the previous N `mem.eql` cascade.
     pub fn fromStr(s: []const u8) Engine {
-        if (std.mem.eql(u8, s, "renpy")) return .renpy;
-        if (std.mem.eql(u8, s, "rpgm-mv") or std.mem.eql(u8, s, "rpgm_mv")) return .rpgm_mv;
-        if (std.mem.eql(u8, s, "rpgm-mz") or std.mem.eql(u8, s, "rpgm_mz")) return .rpgm_mz;
-        if (std.mem.eql(u8, s, "rpgm-vx") or std.mem.eql(u8, s, "rpgm_vx")) return .rpgm_vx;
-        if (std.mem.eql(u8, s, "unity")) return .unity;
-        if (std.mem.eql(u8, s, "unreal")) return .unreal;
-        if (std.mem.eql(u8, s, "html")) return .html;
-        if (std.mem.eql(u8, s, "flash")) return .flash;
-        if (std.mem.eql(u8, s, "java")) return .java;
-        if (std.mem.eql(u8, s, "wolf_rpg") or std.mem.eql(u8, s, "wolf-rpg")) return .wolf_rpg;
-        if (std.mem.eql(u8, s, "qsp")) return .qsp;
-        if (std.mem.eql(u8, s, "tyranobuilder")) return .tyranobuilder;
-        if (std.mem.eql(u8, s, "twine")) return .twine;
-        if (std.mem.eql(u8, s, "other")) return .other;
-        return .unknown;
+        return FROM_STR_MAP.get(s) orelse .unknown;
     }
+
+    const FROM_STR_MAP = std.StaticStringMap(Engine).initComptime(.{
+        .{ "renpy", .renpy },
+        .{ "rpgm-mv", .rpgm_mv },        .{ "rpgm_mv", .rpgm_mv },
+        .{ "rpgm-mz", .rpgm_mz },        .{ "rpgm_mz", .rpgm_mz },
+        .{ "rpgm-vx", .rpgm_vx },        .{ "rpgm_vx", .rpgm_vx },
+        .{ "unity", .unity },
+        .{ "unreal", .unreal },
+        .{ "html", .html },
+        .{ "flash", .flash },
+        .{ "java", .java },
+        .{ "wolf_rpg", .wolf_rpg },      .{ "wolf-rpg", .wolf_rpg },
+        .{ "qsp", .qsp },
+        .{ "tyranobuilder", .tyranobuilder },
+        .{ "twine", .twine },
+        .{ "other", .other },
+    });
 
     /// Best-effort match for the kind of bracket tokens F95 thread
     /// titles use ("Ren'Py", "RPGM MV", "Unity"). Strips apostrophes
     /// and whitespace so "Ren'Py" / "RenPy" / "Ren Py" all match.
+    /// Lookup itself is a comptime perfect-hash map keyed by the
+    /// normalised (alphanumeric-only, lowercased) form.
     pub fn fromBracket(token: []const u8) Engine {
         var buf: [32]u8 = undefined;
         var n: usize = 0;
@@ -71,24 +77,26 @@ pub const Engine = enum {
                 n += 1;
             }
         }
-        const norm = buf[0..n];
-        if (std.mem.eql(u8, norm, "renpy")) return .renpy;
-        if (std.mem.eql(u8, norm, "rpgmmv") or std.mem.eql(u8, norm, "rpgmakermv")) return .rpgm_mv;
-        if (std.mem.eql(u8, norm, "rpgmmz") or std.mem.eql(u8, norm, "rpgmakermz")) return .rpgm_mz;
-        if (std.mem.eql(u8, norm, "rpgmvx") or std.mem.eql(u8, norm, "rpgmakervx") or std.mem.eql(u8, norm, "rpgmakervxace")) return .rpgm_vx;
-        if (std.mem.eql(u8, norm, "rpgm") or std.mem.eql(u8, norm, "rpgmaker")) return .rpgm_mv;
-        if (std.mem.eql(u8, norm, "unity")) return .unity;
-        if (std.mem.eql(u8, norm, "unrealengine") or std.mem.eql(u8, norm, "unreal") or std.mem.eql(u8, norm, "ue4") or std.mem.eql(u8, norm, "ue5")) return .unreal;
-        if (std.mem.eql(u8, norm, "html") or std.mem.eql(u8, norm, "html5")) return .html;
-        if (std.mem.eql(u8, norm, "flash")) return .flash;
-        if (std.mem.eql(u8, norm, "java")) return .java;
-        if (std.mem.eql(u8, norm, "wolfrpg") or std.mem.eql(u8, norm, "wolfrpgeditor")) return .wolf_rpg;
-        if (std.mem.eql(u8, norm, "qsp")) return .qsp;
-        if (std.mem.eql(u8, norm, "tyranobuilder") or std.mem.eql(u8, norm, "tyrano")) return .tyranobuilder;
-        if (std.mem.eql(u8, norm, "twine")) return .twine;
-        if (std.mem.eql(u8, norm, "others") or std.mem.eql(u8, norm, "other")) return .other;
-        return .unknown;
+        return FROM_BRACKET_MAP.get(buf[0..n]) orelse .unknown;
     }
+
+    const FROM_BRACKET_MAP = std.StaticStringMap(Engine).initComptime(.{
+        .{ "renpy", .renpy },
+        .{ "rpgmmv", .rpgm_mv },         .{ "rpgmakermv", .rpgm_mv },
+        .{ "rpgmmz", .rpgm_mz },         .{ "rpgmakermz", .rpgm_mz },
+        .{ "rpgmvx", .rpgm_vx },         .{ "rpgmakervx", .rpgm_vx },     .{ "rpgmakervxace", .rpgm_vx },
+        .{ "rpgm", .rpgm_mv },           .{ "rpgmaker", .rpgm_mv },
+        .{ "unity", .unity },
+        .{ "unrealengine", .unreal },    .{ "unreal", .unreal },          .{ "ue4", .unreal },             .{ "ue5", .unreal },
+        .{ "html", .html },              .{ "html5", .html },
+        .{ "flash", .flash },
+        .{ "java", .java },
+        .{ "wolfrpg", .wolf_rpg },       .{ "wolfrpgeditor", .wolf_rpg },
+        .{ "qsp", .qsp },
+        .{ "tyranobuilder", .tyranobuilder }, .{ "tyrano", .tyranobuilder },
+        .{ "twine", .twine },
+        .{ "others", .other },           .{ "other", .other },
+    });
 };
 
 /// Linux distro family. Drives per-distro install-hint pickers in the
