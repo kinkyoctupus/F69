@@ -478,7 +478,14 @@ pub const Library = struct {
     /// first within the tie). Caller frees via `freeInstalls`.
     pub fn listInstalls(self: *Library, game_thread_id: u64) errs.Error![]dom.Install {
         var out: std.ArrayList(dom.Install) = .empty;
-        errdefer out.deinit(self.alloc);
+        // Each hydrateInstall dupes 5+ strings onto self.alloc; on
+        // mid-loop OOM (or rows.next failure) we have to walk what's
+        // already appended and free their inner strings, not just
+        // the ArrayList backing store.
+        errdefer {
+            for (out.items) |i| self.freeInstall(i);
+            out.deinit(self.alloc);
+        }
 
         // SQL fetch in any order — sort happens in Zig because
         // version strings need canonical parsing
@@ -493,7 +500,15 @@ pub const Library = struct {
 
         while (rows.next()) |r| {
             const inst = try hydrateInstall(self.alloc, r);
-            out.append(self.alloc, inst) catch return errs.Error.OutOfMemory;
+            // If append OOMs, `inst` is on the stack with freshly
+            // alloc'd strings the errdefer above wouldn't see — free
+            // it explicitly here before returning the error.
+            out.append(self.alloc, inst) catch |e| {
+                self.freeInstall(inst);
+                return switch (e) {
+                    error.OutOfMemory => errs.Error.OutOfMemory,
+                };
+            };
         }
         const slice = out.toOwnedSlice(self.alloc) catch return errs.Error.OutOfMemory;
         std.mem.sort(dom.Install, slice, {}, installNewerFirst);

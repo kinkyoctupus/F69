@@ -41,30 +41,36 @@ const installer_mod = @import("installer.zig");
 const imports_mod = @import("imports.zig");
 const launch_mod = @import("launch.zig");
 
-/// Flip the cancel flag on every in-flight worker (sync,
-/// bookmarks, update-check). Used by the graceful-shutdown path to
-/// nudge detached workers toward their next phase boundary so the
-/// HTTP client can be torn down cleanly. Idempotent.
+/// Flip the cancel flag on every in-flight worker. Used by the
+/// graceful-shutdown path to nudge detached workers toward their
+/// next phase boundary so the HTTP client + DB can be torn down
+/// cleanly. Idempotent. Every slot listed in `workersBusy` below
+/// MUST also flip its cancel flag here, otherwise the shutdown
+/// spin loop will time out on a worker that nobody asked to stop.
 pub fn cancelAllWorkers(state: *types.State) void {
-    if (state.pending_sync) |j| {
-        j.cancel.store(true, .release);
-    }
+    if (state.pending_sync) |j| j.cancel.store(true, .release);
     // Phase-2 image worker: shared cancel flag covers both the active
     // job and any tids still queued.
     state.image_cancel.store(true, .release);
-    if (state.pending_bookmarks) |j| {
-        j.cancel.store(true, .release);
-    }
-    if (state.pending_update_check) |j| {
-        j.cancel.store(true, .release);
-    }
+    if (state.pending_bookmarks) |j| j.cancel.store(true, .release);
+    if (state.pending_update_check) |j| j.cancel.store(true, .release);
+    if (state.pending_rpdl_download) |j| j.cancel.store(true, .release);
+    if (state.pending_donor_download) |j| j.cancel.store(true, .release);
+    if (state.pending_tags_refresh) |j| j.cancel.store(true, .release);
+    if (state.test_install_job) |j| j.cancel.store(true, .release);
+    if (state.import_job) |j| j.cancel.store(true, .release);
 }
 
-/// True when any async worker is still occupying its state slot
-/// (`pending_sync` / `pending_bookmarks` / `pending_update_check`,
-/// pending donor or RPDL handoff, or any in-flight post-install
-/// extract). The graceful-shutdown loop spins on this until
-/// everything clears.
+/// True when any async worker is still occupying its state slot.
+/// The graceful-shutdown loop spins on this until everything clears
+/// (with a 6s budget; if it expires, the process hard-exits and the
+/// OS reaps anything left).
+///
+/// Every long-running worker slot on `State` MUST be listed here.
+/// If a slot is missed, `workersBusy` returns false while the worker
+/// thread is still mid-syscall → the defer chain in `runMainLoop`
+/// races `f95_client.deinit` against the worker's next HTTP call →
+/// UAF. The companion `cancelAllWorkers` must cover every slot too.
 pub fn workersBusy(state: *const types.State) bool {
     if (state.pending_sync != null) return true;
     if (state.image_active != null) return true;
@@ -73,6 +79,9 @@ pub fn workersBusy(state: *const types.State) bool {
     if (state.pending_update_check != null) return true;
     if (state.pending_rpdl_download != null) return true;
     if (state.pending_donor_download != null) return true;
+    if (state.pending_tags_refresh != null) return true;
+    if (state.test_install_job != null) return true;
+    if (state.import_job != null) return true;
     if (state.post_install_jobs) |list_ptr| {
         if (list_ptr.items.len > 0) return true;
     }

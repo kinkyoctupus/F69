@@ -302,6 +302,7 @@ fn composeCompatEnv(frame: *Frame, install_id_ptr: *const [36]u8) ![]sandbox_mod
             };
             break :blk out;
         } else alloc.dupe(u8, p.value) catch return error.OutOfMemory;
+        errdefer alloc.free(value_owned);
         log.info("compat: env override {s} (len {d})", .{ name_owned, value_owned.len });
         overrides.append(alloc, .{
             .name = name_owned,
