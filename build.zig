@@ -343,11 +343,10 @@ pub fn build(b: *std.Build) void {
     const packages_step = b.step("packages", "Build every distribution target");
 
     inline for (.{
-        .{ .kind = DistKind.aur,           .name = "aur",           .desc = "Generate Arch PKGBUILD (zig-out/aur/) — add -Dcontainer-build=true to also build .pkg.tar.zst" },
-        .{ .kind = DistKind.deb,           .name = "deb",           .desc = "Generate Debian source pkg (zig-out/debian/) — container build incomplete (xml2 link issue)" },
-        .{ .kind = DistKind.rpm,           .name = "rpm",           .desc = "Generate RPM spec (zig-out/rpm/) — container build untested" },
-        .{ .kind = DistKind.portable_slim, .name = "portable-slim", .desc = "Portable bundle WITHOUT libs (zig-out/portable-slim/)" },
-        .{ .kind = DistKind.flake,         .name = "flake",         .desc = "Sanity-check flake.nix (nix flake check)" },
+        .{ .kind = DistKind.aur,   .name = "aur",   .desc = "Generate Arch PKGBUILD (zig-out/aur/) — add -Dcontainer-build=true to also build .pkg.tar.zst" },
+        .{ .kind = DistKind.deb,   .name = "deb",   .desc = "Generate Debian source pkg (zig-out/debian/) — container build incomplete" },
+        .{ .kind = DistKind.rpm,   .name = "rpm",   .desc = "Generate RPM spec (zig-out/rpm/) — container build untested" },
+        .{ .kind = DistKind.flake, .name = "flake", .desc = "Sanity-check flake.nix (nix flake check)" },
     }) |t| {
         const dist = DistStep.create(b, t.kind, version, enable_container);
         const named = b.step(t.name, t.desc);
@@ -355,22 +354,24 @@ pub fn build(b: *std.Build) void {
         packages_step.dependOn(&dist.step);
     }
 
-    // Portable (full) is special: it needs a ReleaseSafe binary on disk
-    // BEFORE the bundling pass runs. Wire it as: sub-build → bundle step.
-    {
+    // Portable (full + slim) both need a ReleaseSafe binary on disk
+    // BEFORE the bundling pass runs. Wire each as: sub-build → bundle.
+    // has_side_effects suppresses cache for the sub-build because it
+    // writes into the same zig-out/bin/ the outer step post-processes.
+    inline for (.{
+        .{ .kind = DistKind.portable_full, .name = "portable",      .desc = "Portable bundle with libs (zig-out/bin/)" },
+        .{ .kind = DistKind.portable_slim, .name = "portable-slim", .desc = "Portable bundle WITHOUT libs (zig-out/portable-slim/)" },
+    }) |t| {
         const sub_build = b.addSystemCommand(&.{"zig"});
         sub_build.addArgs(&.{ "build", "install", "-Doptimize=ReleaseSafe", "-Dgui=true" });
-        // The sub-build's output goes into the same zig-out/bin/ we'll
-        // post-process, so we can't let the outer install step run after
-        // and clobber. Setting has_side_effects suppresses the cache.
         sub_build.has_side_effects = true;
 
-        const portable = DistStep.create(b, .portable_full, version, enable_container);
-        portable.step.dependOn(&sub_build.step);
+        const dist = DistStep.create(b, t.kind, version, enable_container);
+        dist.step.dependOn(&sub_build.step);
 
-        const portable_named = b.step("portable", "Portable bundle with libs (zig-out/bin/)");
-        portable_named.dependOn(&portable.step);
-        packages_step.dependOn(&portable.step);
+        const named = b.step(t.name, t.desc);
+        named.dependOn(&dist.step);
+        packages_step.dependOn(&dist.step);
     }
 
     // ----- tests: every module's `test {}` blocks -----
@@ -1460,7 +1461,7 @@ const RPM_SPEC =
     \\BuildRequires:  libxkbcommon-devel
     \\BuildRequires:  libdecor-devel
     \\BuildRequires:  libavif-devel
-    \\BuildRequires:  dav1d-devel
+    \\BuildRequires:  libdav1d-devel
     \\BuildRequires:  sqlite-devel
     \\BuildRequires:  openssl-devel
     \\BuildRequires:  libarchive-devel

@@ -131,7 +131,7 @@ jobs:
             set -euxo pipefail
             cp zig-out/aur/PKGBUILD ./
             # Patch source= to use the working-tree tarball.
-            VER=$(awk -F\" "/^pkgver=/ { print \$2 }" PKGBUILD)
+            VER=$(awk -F= "/^pkgver=/ { print \$2 }" PKGBUILD)
             tar --exclude=./.git --exclude=./.zig-cache --exclude=./zig-out \
                 --exclude=./dist --exclude=./.direnv \
                 --transform "s,^\\./,f69-${VER}/," \
@@ -199,9 +199,9 @@ jobs:
     steps:
       - name: Container deps
         run: |
-          dnf install -y rpm-build rpmdevtools zig pkgconfig git tar \
+          dnf install -y --skip-unavailable rpm-build rpmdevtools zig pkgconfig git tar \
             wayland-devel libxkbcommon-devel libdecor-devel \
-            libavif-devel dav1d-devel sqlite-devel openssl-devel \
+            libavif-devel libdav1d-devel sqlite-devel openssl-devel \
             libarchive-devel dbus-devel \
             libzstd-devel lz4-devel nettle-devel libxml2-devel libacl-devel
       - uses: actions/checkout@v4
