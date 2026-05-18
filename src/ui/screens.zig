@@ -10,7 +10,7 @@
 //   mods.zig           — modsScreen + modfile rows
 //   recipe_editor.zig  — recipeEditorScreen + wizard panels
 //   settings.zig       — settingsScreen + tabs
-//   import.zig         — importScreen
+//   import.zig         — importUrlsScreen, importF95CheckerScreen, importFolderScreen
 //   downloads.zig      — downloadsScreen + job rows
 //   diagnostics.zig    — diagnosticsScreen
 //   components.zig     — iconButton/iconOnly/tabButton/settingsHelpText,
@@ -35,7 +35,9 @@ pub const detailScreen = detail_screen.detailScreen;
 pub const modsScreen = mods_screen.modsScreen;
 pub const recipeEditorScreen = recipe_editor_screen.recipeEditorScreen;
 pub const settingsScreen = settings_screen.settingsScreen;
-pub const importScreen = import_screen.importScreen;
+pub const importUrlsScreen = import_screen.importUrlsScreen;
+pub const importF95CheckerScreen = import_screen.importF95CheckerScreen;
+pub const importFolderScreen = import_screen.importFolderScreen;
 pub const downloadsScreen = downloads_screen.downloadsScreen;
 pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 

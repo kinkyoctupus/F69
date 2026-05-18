@@ -1,0 +1,269 @@
+# f69 — CI / release pipeline.
+#
+# Triggers:
+#   - push to main:    run tests + build all artifacts (no release attached)
+#   - tag v*:          run tests + build all artifacts + publish a GitHub Release
+#   - PR:              run tests only
+#   - manual dispatch: run everything (no release)
+#
+# The deb / rpm jobs run in their target distro's container so the
+# native packaging tools (dpkg-buildpackage, rpmbuild) work without
+# nested docker. They're marked continue-on-error: true initially —
+# cross-distro static-libarchive quirks need polish — so a Debian /
+# Fedora hiccup doesn't block the rest of the release.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: 0.16.0
+
+# Permissions for the release job. Other jobs default to read-only.
+permissions:
+  contents: read
+
+jobs:
+  # ----- Fast feedback: tests + a sanity build on every push/PR -----
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwayland-dev libxkbcommon-dev libdecor-0-dev \
+            libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
+            libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
+            zlib1g-dev libxml2-dev
+      - name: Tests
+        run: zig build test
+
+  # ----- Portable bundle (full): binary + bundled libs + run.sh -----
+  portable:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config patchelf \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev \
+            libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
+            libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
+            zlib1g-dev libxml2-dev
+      - name: Build portable bundle
+        run: zig build portable
+      - name: Package as tarball
+        run: |
+          mkdir -p artifacts
+          tar --exclude=data -C zig-out -czf "artifacts/f69-portable-linux-x86_64.tar.gz" bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-portable
+          path: artifacts/
+
+  # ----- Slim bundle: binary + run.sh + DEPS.md (no libs) -----
+  portable-slim:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwayland-dev libxkbcommon-dev libdecor-0-dev \
+            libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
+            libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
+            zlib1g-dev libxml2-dev
+      - name: Build slim bundle
+        run: zig build portable-slim
+      - name: Package as tarball
+        run: |
+          mkdir -p artifacts
+          tar -C zig-out -czf "artifacts/f69-slim-linux-x86_64.tar.gz" portable-slim
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-slim
+          path: artifacts/
+
+  # ----- Arch: native makepkg inside archlinux:latest -----
+  arch:
+    runs-on: ubuntu-latest
+    needs: test
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Container deps
+        run: |
+          pacman -Sy --noconfirm --needed \
+            base-devel sudo git zig pkg-config wayland-protocols \
+            sqlite openssl dav1d libavif libarchive dbus \
+            vulkan-icd-loader wayland libxkbcommon libdecor libx11 \
+            libxext libxcursor libxi libxrandr
+      - uses: actions/checkout@v4
+      - name: Generate PKGBUILD
+        run: zig build aur
+      - name: Build .pkg.tar.zst
+        run: |
+          # makepkg refuses root, so do it as a build user.
+          useradd -m -s /bin/bash builder
+          chown -R builder:builder .
+          sudo -u builder bash -c '
+            set -euxo pipefail
+            cp zig-out/aur/PKGBUILD ./
+            # Patch source= to use the working-tree tarball.
+            VER=$(awk -F\" "/^pkgver=/ { print \$2 }" PKGBUILD)
+            tar --exclude=./.git --exclude=./.zig-cache --exclude=./zig-out \
+                --exclude=./dist --exclude=./.direnv \
+                --transform "s,^\\./,f69-${VER}/," \
+                -czf "f69-${VER}.tar.gz" .
+            sed -i "s|^source=.*|source=(\"f69-${VER}.tar.gz\")|" PKGBUILD
+            sed -i "s|^sha256sums=.*|sha256sums=(\"SKIP\")|" PKGBUILD
+            makepkg --noconfirm -f --skipchecksums
+          '
+          mkdir -p artifacts
+          mv *.pkg.tar.zst artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-arch
+          path: artifacts/
+
+  # ----- Debian: native dpkg-buildpackage inside debian:bookworm-slim -----
+  # Marked continue-on-error: static-libarchive cross-distro quirks
+  # (xml2 link, etc.) need polish per the README. Removes blocker until
+  # a Debian-host maintainer wires the right linkSystemLibrary calls.
+  debian:
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    container:
+      image: debian:bookworm-slim
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Container deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential debhelper devscripts \
+            pkg-config curl ca-certificates xz-utils git \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev \
+            libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
+            libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
+            zlib1g-dev libxml2-dev
+      - name: Install Zig from upstream
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJf - -C /usr/local
+          ln -sf "/usr/local/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          zig version
+      - uses: actions/checkout@v4
+      - name: Generate debian/
+        run: zig build deb
+      - name: Build .deb
+        run: |
+          cp -r zig-out/debian ./debian
+          dpkg-buildpackage -us -uc -b -d
+          mkdir -p artifacts
+          mv ../*.deb artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-debian
+          path: artifacts/
+
+  # ----- Fedora: native rpmbuild inside fedora:latest -----
+  # Same continue-on-error caveat as debian.
+  fedora:
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true
+    container:
+      image: fedora:latest
+    steps:
+      - name: Container deps
+        run: |
+          dnf install -y rpm-build rpmdevtools zig pkgconfig git tar \
+            wayland-devel libxkbcommon-devel libdecor-devel \
+            libavif-devel dav1d-devel sqlite-devel openssl-devel \
+            libarchive-devel dbus-devel
+      - uses: actions/checkout@v4
+      - name: Generate .spec
+        run: zig build rpm
+      - name: Build .rpm
+        run: |
+          rpmdev-setuptree
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
+          tar --exclude=./.git --exclude=./.zig-cache --exclude=./zig-out \
+              --exclude=./dist --exclude=./.direnv \
+              --transform "s,^\./,f69-${VER}/," \
+              -czf "$HOME/rpmbuild/SOURCES/f69-${VER}.tar.gz" .
+          cp zig-out/rpm/f69.spec "$HOME/rpmbuild/SPECS/"
+          rpmbuild -bb "$HOME/rpmbuild/SPECS/f69.spec"
+          mkdir -p artifacts
+          mv "$HOME"/rpmbuild/RPMS/x86_64/*.rpm artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-fedora
+          path: artifacts/
+
+  # ----- Nix flake build -----
+  nix:
+    runs-on: ubuntu-latest
+    needs: test
+    continue-on-error: true   # impure-zig-fetch problem documented in flake.nix
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix flake check
+        run: nix flake check --no-build
+      - name: nix build .#f69
+        # The flake's packages.f69 derivation needs network access for
+        # Zig's fetch — Nix sandbox blocks that by default. --impure
+        # tolerates the network call but is non-hermetic; a downstream
+        # packager would replace this with a vendored fetchZigDeps.
+        run: nix build .#f69 --impure || echo "nix build failed (impure fetch story TBD)"
+
+  # ----- Release: aggregate artifacts on tag push -----
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, portable, portable-slim, arch, debian, fedora]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: Flatten artifact dirs
+        run: |
+          mkdir -p release/
+          find artifacts/ -type f -exec cp {} release/ \;
+          ls -la release/
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: false

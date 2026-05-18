@@ -5,5 +5,4 @@ zig-out/
 result
 *.swp
 build.log
-spike-01-bwrap
 .vscode/

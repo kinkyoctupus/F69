@@ -132,38 +132,41 @@ pub const Daemon = struct {
     pub fn deinit(self: *Daemon) void {
         self.shutdown() catch {};
         if (self.child) |*c| {
-            // Aria2 should exit on its own from the shutdown RPC.
-            // `c.wait` blocks though, and a hung daemon (dropped RPC,
-            // stuck seed teardown) would freeze app exit forever. To
-            // bound the wait, spawn a side thread to do the blocking
-            // `c.wait` and poll an atomic from the main thread for up
-            // to 1s. If still alive, SIGKILL — that unblocks the side
-            // thread's `wait` and lets us join it cleanly.
-            const WaitCtx = struct {
-                child: *std.process.Child,
-                io: std.Io,
-                done: std.atomic.Value(bool) = .init(false),
-                fn run(ctx: *@This()) void {
-                    _ = ctx.child.wait(ctx.io) catch {};
-                    ctx.done.store(true, .release);
-                }
+            // Aria2 should exit on its own from the shutdown RPC. `c.wait`
+            // would block forever if it doesn't. Bound the wait with a
+            // non-blocking waitpid(WNOHANG) poll. If still alive after 1s,
+            // send SIGKILL directly (NOT `c.kill` — that internally does
+            // kill+wait, which races with anything else waiting on the
+            // same pid and panics with ECHILD). Then one blocking wait
+            // reaps the corpse.
+            const pid = c.id orelse {
+                self.child = null;
+                self.http.deinit();
+                self.* = undefined;
+                return;
             };
-            var wait_ctx: WaitCtx = .{ .child = c, .io = self.io };
-            if (std.Thread.spawn(.{}, WaitCtx.run, .{&wait_ctx})) |t| {
-                const tick = std.Io.Duration.fromMilliseconds(50);
-                var i: usize = 0;
-                while (i < 20 and !wait_ctx.done.load(.acquire)) : (i += 1) {
-                    std.Io.sleep(self.io, tick, .awake) catch break;
+            const tick = std.Io.Duration.fromMilliseconds(50);
+            const pid_usize: usize = @intCast(pid);
+            var reaped = false;
+            var i: usize = 0;
+            while (i < 20) : (i += 1) {
+                var status: u32 = 0;
+                const ret = std.os.linux.waitpid(pid, &status, std.os.linux.W.NOHANG);
+                if (ret == pid_usize) {
+                    reaped = true;
+                    break;
                 }
-                if (!wait_ctx.done.load(.acquire)) {
-                    log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
-                    c.kill(self.io);
-                }
-                t.join();
-            } else |_| {
-                // Thread spawn failed — fall back to a blocking wait.
-                _ = c.wait(self.io) catch {};
+                std.Io.sleep(self.io, tick, .awake) catch break;
             }
+            if (!reaped) {
+                log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
+                _ = std.os.linux.kill(pid, std.os.linux.SIG.KILL);
+                var status: u32 = 0;
+                _ = std.os.linux.waitpid(pid, &status, 0);
+            }
+            // Hand-reaped — don't let std.process.Child.wait/kill run
+            // again from a destructor or stray path.
+            self.child = null;
         }
         self.http.deinit();
         self.* = undefined;

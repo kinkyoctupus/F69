@@ -167,6 +167,94 @@
         packages.rpgm-mv-fhs-libs = rpgm-mv-fhs-libs;
         packages.unity-fhs-libs = unity-fhs-libs;
 
+        # ----- f69 itself ------------------------------------------------
+        # `nix build .#f69` produces a wrapped binary at result/bin/f69.
+        # The wrapper sets LD_LIBRARY_PATH for the runtime display/GPU
+        # libs and DOES NOT bundle them into the closure — keeps the
+        # closure small and the binary still benefits from the host's
+        # NVIDIA / Mesa driver via the wrapper's hardcoded paths.
+        #
+        # Build inputs duplicate the devShell's list; consolidating into
+        # a single attrset would be tidier but the devShell intentionally
+        # carries extras (zls, cacert, SDL2) that the package doesn't.
+        packages.f69 = pkgs.stdenv.mkDerivation rec {
+          pname = "f69";
+          version = "0.9.0";
+          src = ./.;
+
+          nativeBuildInputs = with pkgs; [
+            zig
+            pkg-config
+            wayland-scanner
+            wayland-protocols
+            makeWrapper
+          ];
+
+          buildInputs = with pkgs; [
+            sdl3
+            sqlite.dev
+            openssl
+            libavif-static
+            libavif-static.dev
+            dav1d-static
+            dav1d-static.dev
+            libarchive-static
+            libarchive-static.dev
+            zlib zlib.dev
+            bzip2 bzip2.dev
+            xz xz.dev
+            dbus dbus.dev
+          ];
+
+          # Zig fetches build deps over the network on first build. Nix
+          # sandboxing blocks that unless we either pre-fetch into the
+          # cache or run impure. For an MVP, point ZIG_GLOBAL_CACHE_DIR
+          # at a writable per-build location. Downstream packagers
+          # following the proper Nix-Zig story will replace this with
+          # `fetchZigDeps` or a vendored `zig-pkg/`.
+          dontConfigure = true;
+          ZIG_GLOBAL_CACHE_DIR = "/build/.zig-cache";
+
+          buildPhase = ''
+            runHook preBuild
+            mkdir -p $ZIG_GLOBAL_CACHE_DIR
+            zig build install \
+              --prefix $out \
+              -Doptimize=ReleaseSafe \
+              -Dgui=true
+            runHook postBuild
+          '';
+
+          # Runtime dlopens: libwayland-client / libX11 / libxkbcommon /
+          # libdecor / libvulkan / libGL all need to be on LD_LIBRARY_PATH
+          # because they're loaded at runtime (not via DT_NEEDED).
+          postFixup = ''
+            wrapProgram $out/bin/f69 \
+              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [
+                pkgs.wayland
+                pkgs.libxkbcommon
+                pkgs.libdecor
+                pkgs.libx11
+                pkgs.libxext
+                pkgs.libxrandr
+                pkgs.libxcursor
+                pkgs.libxi
+                pkgs.libGL
+                pkgs.vulkan-loader
+                pkgs.dbus
+              ]}"
+          '';
+
+          meta = with pkgs.lib; {
+            description = "F95Zone-focused game library manager (Zig + dvui)";
+            license = licenses.mit;
+            platforms = [ "x86_64-linux" ];
+            mainProgram = "f69";
+          };
+        };
+
+        packages.default = self.packages.${system}.f69;
+
         devShells.default = pkgs.mkShell {
           # Build-time tools for the Zig project.
           nativeBuildInputs = with pkgs; [

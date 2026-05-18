@@ -40,6 +40,11 @@ pub const Opts = struct {
     /// migrator returns `error.Canceled` *before* deleting the source,
     /// so a cancel during the copy phase is safe.
     cancel: ?*const std.atomic.Value(bool) = null,
+    /// When true, skip phase 4 (the source delete). Used by the
+    /// folder-import "Copy" mode where the user wants to keep their
+    /// originals — peak disk goes up to 2x permanently, but the
+    /// originals stay intact.
+    keep_source: bool = false,
 };
 
 pub const Stats = struct {
@@ -146,6 +151,7 @@ pub fn copyVerifyDelete(
     }
 
     // ---- Phase 4: delete source. ----
+    if (opts.keep_source) return stats;
     std.Io.Dir.cwd().deleteTree(io, src_dir) catch {
         // Verification already passed, so destination is good. Delete
         // failure is a soft warning, not a rollback trigger — the user
