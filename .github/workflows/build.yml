@@ -204,7 +204,7 @@ jobs:
     steps:
       - name: Container deps
         run: |
-          dnf install -y --skip-unavailable rpm-build rpmdevtools zig pkgconfig git tar \
+          dnf install -y --skip-unavailable rpm-build rpmdevtools patchelf zig pkgconfig git tar \
             wayland-devel libxkbcommon-devel libdecor-devel \
             libavif-devel libdav1d-devel sqlite-devel openssl-devel \
             libarchive-devel dbus-devel \
