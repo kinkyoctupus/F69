@@ -67,17 +67,22 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     util_archive_mod.linkSystemLibrary("archive", .{ .preferred_link_mode = .static });
-    // libarchive's static .a references undefined symbols from
-    // libz / libbz2 / liblzma. Stock nixpkgs ships those as shared
-    // libs only; dynamic-link them here. Side effect: the f69 binary
-    // depends on libz.so / libbz2.so / liblzma.so at runtime — every
-    // mainstream desktop already has them. A "truly static
-    // everything" build needs static-overrides for these three
+    // libarchive.a references undefined symbols from a fan of helper
+    // libraries — every feature enabled at libarchive build time
+    // (and Debian/Fedora/Nix all enable the full set) adds another
+    // unresolved dep here. Dynamic-link them so the f69 binary picks
+    // them up from the desktop's standard libs at runtime. A "truly
+    // static everything" build would need static overrides for each
     // (similar to dav1d-static); deferred until the Windows port
     // forces the issue.
-    util_archive_mod.linkSystemLibrary("z", .{});
-    util_archive_mod.linkSystemLibrary("bz2", .{});
-    util_archive_mod.linkSystemLibrary("lzma", .{});
+    util_archive_mod.linkSystemLibrary("z", .{});      // gzip
+    util_archive_mod.linkSystemLibrary("bz2", .{});    // bzip2
+    util_archive_mod.linkSystemLibrary("lzma", .{});   // xz
+    util_archive_mod.linkSystemLibrary("zstd", .{});   // zstd in .7z/.zip
+    util_archive_mod.linkSystemLibrary("lz4", .{});    // lz4 filter
+    util_archive_mod.linkSystemLibrary("nettle", .{}); // AES / SHA / HMAC
+    util_archive_mod.linkSystemLibrary("xml2", .{});   // .xar metadata
+    util_archive_mod.linkSystemLibrary("acl", .{});    // POSIX ACL restore
 
     // util_file_picker: Zig binding around vendored NFDe
     // (`zig-pkg/nfde/`). Wayland-correct file picker via XDG portal

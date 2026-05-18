@@ -8,9 +8,9 @@
 #
 # The deb / rpm jobs run in their target distro's container so the
 # native packaging tools (dpkg-buildpackage, rpmbuild) work without
-# nested docker. They're marked continue-on-error: true initially —
-# cross-distro static-libarchive quirks need polish — so a Debian /
-# Fedora hiccup doesn't block the rest of the release.
+# nested docker. Kept on continue-on-error while the native packaging
+# tooling (dpkg-buildpackage, rpmbuild) settles — link deps now match
+# Debian/Fedora's full-featured libarchive so the build itself works.
 
 name: build
 
@@ -44,7 +44,7 @@ jobs:
             pkg-config libwayland-dev libxkbcommon-dev libdecor-0-dev \
             libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
             libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
-            zlib1g-dev libxml2-dev
+            zlib1g-dev libxml2-dev libzstd-dev liblz4-dev nettle-dev libacl1-dev
       - name: Tests
         run: zig build test
 
@@ -65,7 +65,7 @@ jobs:
             libwayland-dev libxkbcommon-dev libdecor-0-dev \
             libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
             libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
-            zlib1g-dev libxml2-dev
+            zlib1g-dev libxml2-dev libzstd-dev liblz4-dev nettle-dev libacl1-dev
       - name: Build portable bundle
         run: zig build portable
       - name: Package as tarball
@@ -93,7 +93,7 @@ jobs:
             pkg-config libwayland-dev libxkbcommon-dev libdecor-0-dev \
             libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
             libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
-            zlib1g-dev libxml2-dev
+            zlib1g-dev libxml2-dev libzstd-dev liblz4-dev nettle-dev libacl1-dev
       - name: Build slim bundle
         run: zig build portable-slim
       - name: Package as tarball
@@ -148,9 +148,7 @@ jobs:
           path: artifacts/
 
   # ----- Debian: native dpkg-buildpackage inside debian:bookworm-slim -----
-  # Marked continue-on-error: static-libarchive cross-distro quirks
-  # (xml2 link, etc.) need polish per the README. Removes blocker until
-  # a Debian-host maintainer wires the right linkSystemLibrary calls.
+  # continue-on-error kept while dpkg-buildpackage tooling is polished.
   debian:
     runs-on: ubuntu-latest
     needs: test
@@ -169,7 +167,7 @@ jobs:
             libwayland-dev libxkbcommon-dev libdecor-0-dev \
             libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
             libarchive-dev libdbus-1-dev liblzma-dev libbz2-dev \
-            zlib1g-dev libxml2-dev
+            zlib1g-dev libxml2-dev libzstd-dev liblz4-dev nettle-dev libacl1-dev
       - name: Install Zig from upstream
         run: |
           curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
@@ -204,7 +202,8 @@ jobs:
           dnf install -y rpm-build rpmdevtools zig pkgconfig git tar \
             wayland-devel libxkbcommon-devel libdecor-devel \
             libavif-devel dav1d-devel sqlite-devel openssl-devel \
-            libarchive-devel dbus-devel
+            libarchive-devel dbus-devel \
+            libzstd-devel lz4-devel nettle-devel libxml2-devel libacl-devel
       - uses: actions/checkout@v4
       - name: Generate .spec
         run: zig build rpm
