@@ -1,306 +1,213 @@
 # f69
 
-F95Zone-focused game library manager, written in Zig 0.16 with a dvui +
-SDL3-GPU front end. Tracks installs, scrapes thread metadata, manages mod
-recipes, and runs games through an optional bwrap sandbox.
+A Linux-native game library + update tracker for F95Zone content, written in Zig with a dvui + SDL3-GPU front end.
+
+<!-- Drop a screenshot here once the UI stabilizes:
+<p align="center"><img src=".github/images/f69-library.png"></p>
+-->
 
 Status: alpha (0.9.x). Linux x86-64 only. NVIDIA + Mesa GPUs.
 
-## Quick start
+## Inspiration:
 
-f69 has no released binaries yet (alpha) — to install, clone and build a
-portable bundle:
+f69 stands on the shoulders of two great projects:
+
+- **[F95Checker](https://github.com/WillyJL/F95Checker)** — the OG. Most of the workflow ideas (library grid, per-thread state, update tracking, donor-DDL handling) came from spending years using it. f69 is what happens when a long-time F95Checker user wants the same UX but native, sandboxed, and shaped around how Linux actually works.
+- **xLibrary** — the previous-life project this rewrites. Same problem space, different language and approach.
+
+If you're already happy with F95Checker, that's great — go use it. f69 exists for the niche where you want bwrap sandboxing, native Vulkan rendering, a 60 MB single binary, and aren't allergic to "alpha".
+
+## Features:
+
+- **Native Vulkan UI** via dvui + SDL3-GPU. No browser stack, no electron, no nwjs. The whole library renders at ~18 ms on a 3080; idle is essentially free.
+- **F95Zone scraping** — sync thread metadata (rating, votes, version, dev status, last-updated, cover image), pull your bookmark list, watch for updates.
+- **Multi-protocol downloads** — donor DDL + RPDL torrents + plain HTTP/HTTPS. Driven by an embedded `aria2c` daemon via JSON-RPC; the f69 binary auto-spawns it and tears it down on exit.
+- **Recipe-based mod installs** — mods declare what they touch via a JSON DAG; the resolver topo-orders + the installer flat-copies with a tracker so uninstalls are clean.
+- **Sandboxed game launches** via `bwrap` — minimal mount tree, no host home leakage.
+- **Engine fix-ups** built in — Ren'Py 7/8, RPGM-MV/MZ (nwjs), Unity, generic libGL/libGLU FHS bundles. NixOS users get the dynamic-linker dance handled automatically.
+- **Portable data layout** — DB, library, covers, recipes, downloads all live in `<dir-of-binary>/data/`. Drop the folder on a USB stick and it carries its state.
+- **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. Choose Move (frees source disk) or Copy per import.
+
+## Download:
+
+No released binaries yet. Build from source:
 
 ```sh
-git clone <repo-url> f69
+git clone git@github.com:Moordp/F69.git f69
 cd f69
-direnv allow                    # NixOS / direnv users; or: nix develop
-
+direnv allow                    # NixOS users; or `nix develop` on other Nix
 zig build portable
 ./zig-out/bin/run.sh
 ```
 
-That gives you a self-contained `zig-out/bin/` folder (~78 MB, binary +
-bundled libs + launcher). Move it anywhere on disk — the app's data
-travels with it.
+That gives you a self-contained `zig-out/bin/` folder (~78 MB, binary + bundled libs + launcher). Move it anywhere — the data travels with it.
 
-NixOS users can skip the bundle and run directly via the flake:
+NixOS users can skip the bundle:
 
 ```sh
-nix run github:your-org/f69        # once published; or `.#f69` from a clone
+nix run github:Moordp/F69#f69
 ```
 
-## Data directory
+## Running:
 
-The app's state — DB, library, covers, recipes, downloaded mod
-archives — lives in `<dir-of-the-binary>/data/` by default. Drop the
-binary's folder onto a USB stick or another machine and the data
-travels with it.
+The launcher (`run.sh`) execs the bundled glibc loader and primes `LD_LIBRARY_PATH` with the host's standard GPU driver paths (`/run/opengl-driver/lib`, `/usr/lib*`). GPU vendor libs (libGL, libGLX_nvidia, libvulkan) **always come from the host driver** — never from the bundle. A Vulkan driver from one machine generally won't work on another.
 
-Override the location with the `F69_DATA_DIR` env var; the bundled
-`run.sh` launchers set it explicitly so data lands next to the
-launcher (not next to the loader inside `lib/`).
+The slim bundle (`zig build portable-slim` → ~57 MB, no bundled libs) is the alternative if you trust your users to install runtime deps via their distro package manager. See `zig-out/portable-slim/DEPS.md` for the per-distro install commands.
 
-## Running
-
-### From a portable bundle
-
-```sh
-zig build portable
-./zig-out/bin/run.sh
-```
-
-`run.sh` execs the bundled glibc loader and primes `LD_LIBRARY_PATH`
-with the host's standard GPU driver paths (`/run/opengl-driver/lib`,
-`/usr/lib*`) so it works on every major distro. GPU vendor libs
-(libGL_*, libGLX_nvidia, etc.) always come from the host driver —
-never from the bundle.
-
-To ship the bundle:
+To ship a portable bundle as a tarball:
 
 ```sh
 tar --exclude=data -C zig-out -czf f69-portable.tar.gz bin
 ```
 
-### From a slim bundle
+## Building from source:
 
-```sh
-zig build portable-slim
-cat zig-out/portable-slim/DEPS.md     # check the deps list for your distro
-sudo apt install libvulkan1 libwayland-client0 libxkbcommon0 ...    # Debian/Ubuntu
-./zig-out/portable-slim/run.sh
-```
-
-The slim bundle is ~57 MB vs ~78 MB full. Use it if you trust your
-users to install runtime deps themselves, or if you want one binary
-that benefits from the host's library updates instead of carrying a
-frozen copy.
-
-### Via a distro package
-
-| Distro          | Steps                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------- |
-| Arch            | `zig build aur -Dcontainer-build=true && sudo pacman -U zig-out/aur/f69-*.pkg.tar.zst`   |
-| Debian / Ubuntu | See `zig-out/debian/README.txt` — manifest is ready, build on a Debian host              |
-| Fedora / RHEL   | See `zig-out/rpm/README.txt` — stages an `rpmbuild` source tree                          |
-| NixOS / Nix     | `nix build .#f69 && ./result/bin/f69`                                                 |
-
-### Via the Nix flake
-
-```sh
-# From a fresh clone:
-nix build .#f69
-./result/bin/f69
-
-# Or run without installing:
-nix run .#f69
-
-# As an input from another flake:
-inputs.f69.url = "github:your-org/f69";
-# then reference f69.packages.x86_64-linux.f69
-```
-
-The flake's `packages.f69` derivation wraps the binary with
-`makeWrapper`, so `result/bin/f69` works directly without sourcing
-the dev shell — the wrapper bakes the runtime `LD_LIBRARY_PATH` into
-the binary.
-
-## Building from source
-
-### Prerequisites
-
-- **NixOS / Nix users**: `flake.nix` provides every dep. `direnv
-  allow` (or `nix develop`) drops you in a shell with zig, zls,
-  SDL3, sqlite, openssl, libavif, dav1d, libarchive, libdbus,
-  libwayland, libxkbcommon, libdecor, libvulkan-loader, and the
-  X11 client libs all on the path.
-- **Other distros**: install the build deps listed in §
-  *Dependencies* below; bring your own Zig 0.16.
-
-### Build targets
-
-All flavors run via `zig build <step>`. Default `install` is the dev
-binary; the others are for distribution.
+`zig build` lists every target. The headline ones:
 
 | Step             | Output                       | What it is                                                                  |
 | ---------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| `install`        | `zig-out/bin/f69`            | Plain binary; respects `-Doptimize=` and `-Dgui=true`                       |
-| `portable`       | `zig-out/bin/` (full folder) | ReleaseSafe binary + bundled libs + `run.sh` — runs on any glibc distro     |
-| `portable-slim`  | `zig-out/portable-slim/`        | ReleaseSafe binary + `run.sh` + `DEPS.md` — relies on host packages         |
-| `aur`            | `zig-out/aur/PKGBUILD`          | Arch PKGBUILD; add `-Dcontainer-build=true` to also produce `.pkg.tar.zst`  |
-| `deb`            | `zig-out/debian/`               | Debian source pkg (control / rules / changelog); container build incomplete |
-| `rpm`            | `zig-out/rpm/f69.spec`          | RPM spec for Fedora / RHEL / openSUSE; container build untested             |
+| `install`        | `zig-out/bin/f69`            | Dev binary; respects `-Doptimize=` and `-Dgui=true`                         |
+| `portable`       | `zig-out/bin/`               | ReleaseSafe binary + bundled libs + `run.sh` — drop on any glibc distro     |
+| `portable-slim`  | `zig-out/portable-slim/`     | ReleaseSafe binary + `run.sh` + `DEPS.md` — host supplies the libs          |
+| `aur`            | `zig-out/aur/PKGBUILD`       | Arch PKGBUILD; add `-Dcontainer-build=true` to also produce `.pkg.tar.zst`  |
+| `deb`            | `zig-out/debian/`            | Debian source pkg; container build is experimental (see below)              |
+| `rpm`            | `zig-out/rpm/f69.spec`       | Fedora / RHEL / openSUSE spec; container build is experimental              |
 | `flake`          | —                            | Sanity-checks `flake.nix` (consumer uses `nix build .#f69`)                 |
-| `packages`       | all of the above             | Runs every distribution target                                              |
-| `test`           | —                            | Runs every module's `test {}` blocks                                        |
+| `packages`       | all of the above             | Aggregate                                                                   |
+| `test`           | —                            | Every module's `test {}` blocks                                             |
 
-### Build flags
+**Build flags:**
 
 ```sh
-zig build install -Doptimize=Debug         # default — fast compile, assertions on, no opt
-zig build install -Doptimize=ReleaseSafe   # asserts + opt — best "release with debug info"
-zig build install -Doptimize=ReleaseFast   # max speed — no safety checks, panics give no info
-zig build install -Dgui=true               # link dvui + SDL3-GPU (default true)
-zig build install -Dgui=false              # headless build — for CI / non-GUI smoke tests
-zig build aur -Dcontainer-build=true       # also invoke podman/docker (see below)
+-Doptimize=Debug          # default, fast compile, assertions on
+-Doptimize=ReleaseSafe    # asserts + opt — "release with debug info"
+-Doptimize=ReleaseFast    # max speed, no safety, panics give no info
+-Dgui=true                # link dvui + SDL3-GPU (default)
+-Dgui=false               # headless build, for CI smoke tests
+-Dcontainer-build=true    # invoke podman/docker for aur/deb/rpm (opt-in, see below)
 ```
 
-The `portable*` steps always force `ReleaseSafe -Dgui=true` regardless
-of the flag you pass — they're meant for distribution.
+## Distribution targets:
 
-### Container builds (opt-in)
+The `aur` / `deb` / `rpm` steps produce **source manifests** that downstream packagers feed to their distro's native packaging tool (`makepkg`, `dpkg-buildpackage`, `rpmbuild`). They're the durable handoff contract.
 
-Pass `-Dcontainer-build=true` to make `aur` / `deb` / `rpm` also
-invoke podman or docker against the target distro's image and produce
-the actual binary package alongside the manifest. **Status:**
+Pass `-Dcontainer-build=true` to also invoke podman or docker against the target distro's image and produce the actual binary package alongside the manifest:
 
-- **AUR** (`archlinux:latest`) — working end-to-end; produces
-  `f69-<ver>-1-x86_64.pkg.tar.zst` in `zig-out/aur/`.
-- **Debian** (`debian:bookworm-slim`) — incomplete. Apt deps are
-  resolvable, source extraction works, but the project's static
-  `libarchive` link strategy references xml2 symbols that Debian's
-  libarchive13 build expects to find but Zig isn't told to link.
-  Workaround left to a Debian-host packager who can fix the
-  `linkSystemLibrary` call to match local conditions.
-- **RPM** (`fedora:latest`) — script written but not yet exercised.
-  Expected to hit similar cross-distro static-lib mismatches that
-  need polish on a Fedora host.
+- **AUR** (`archlinux:latest`): working end-to-end. Produces `f69-<ver>-1-x86_64.pkg.tar.zst`.
+- **Debian** (`debian:bookworm-slim`): incomplete. Cross-distro static-libarchive symbol mismatch (xml2). Needs a Debian-host packager to wire the right `linkSystemLibrary` call.
+- **RPM** (`fedora:latest`): script written, not exercised. Same class of issue expected.
 
-The fundamental constraint: each distro builds its static libraries
-with different feature flags, so a "one build script, every distro"
-container approach hits a long tail of per-distro fixes. The
-manifests themselves (PKGBUILD / debian/ / .spec) are the durable
-contract — downstream packagers on each distro use them to build
-properly, with that distro's normal CI.
+The deeper constraint: each distro builds its static libraries with different feature flags, so "one build script, every distro" hits a long tail of per-distro fixes. Run the build on the target distro itself (your dev box or a CI matrix) for the reliable path; the container shortcut from a NixOS dev host is a convenience, not a guarantee.
 
-Recommendation:
-- Default `zig build packages` for the manifest set.
-- AUR users get a bonus working `-Dcontainer-build=true` path.
-- Debian / Fedora `.deb` / `.rpm` builds: run on the target distro
-  (a dev box or a CI matrix) using the generated manifest — that's
-  the reliable path; the container shortcut from a NixOS host is a
-  convenience, not a guarantee.
+## CI / releases:
 
-## Development
+[`.github/workflows/build.yml`](.github/workflows/build.yml) runs on every push to `main`, every PR, and every `v*` tag. The matrix:
 
-### Dev iteration loop
+- `test` — `zig build test` on Ubuntu
+- `portable` — uploads `f69-portable-linux-x86_64.tar.gz`
+- `portable-slim` — uploads `f69-slim-linux-x86_64.tar.gz`
+- `arch` — runs `makepkg` inside `archlinux:latest`, uploads `.pkg.tar.zst`
+- `debian` / `fedora` / `nix` — *continue-on-error*, marked experimental
+- `release` — on `v*` tag, collects every successful artifact and posts a GitHub Release
+
+To cut a release: `git tag v0.9.1 && git push origin v0.9.1`.
+
+## FAQ:
+
+<details>
+<summary><b>Why a new app instead of contributing to F95Checker?</b></summary>
+
+F95Checker is a Python + ImGui + browser-extension stack. f69 is single-binary native + Linux-only + sandbox-first. Different design point; the codebases share basically zero in implementation while sharing many UX ideas.
+
+If you don't need bwrap sandboxing or native rendering, F95Checker is the more mature option.
+
+</details>
+
+<details>
+<summary><b>Why Zig?</b></summary>
+
+Static linking story is straightforward, the language is small enough that contributors can be productive without months of ramp-up, and the cross-compile + build system handle producing the portable bundles without external tooling. Zig 0.16's `std.Io` made the aria2-RPC + concurrent-download story particularly clean.
+
+</details>
+
+<details>
+<summary><b>Where does my data live?</b></summary>
+
+Next to the binary by default — `<dir-of-binary>/data/{f69.db, library/, covers/, recipes/, downloads/, ...}`. Override with `F69_DATA_DIR`. The bundled `run.sh` launchers set it explicitly so data lands next to the launcher (not next to the loader inside `lib/`).
+
+</details>
+
+<details>
+<summary><b>Does f69 store my F95 password?</b></summary>
+
+No. It does an XenForo login dance once and persists the resulting session cookie at `<data_dir>/f95_cookie`. The cookie is what authenticates donor DDL pulls and the bookmark importer.
+
+</details>
+
+<details>
+<summary><b>How do I clean up build artifacts?</b></summary>
+
+```sh
+rm -rf zig-out/
+```
+
+If you've run `-Dcontainer-build=true`, podman/docker may have written root-owned files under `zig-out/<distro>/work/`. The container scripts chown back to host UID at the end, but a crashed container leaves them as root — `sudo rm -rf zig-out/<distro>/work/` clears them.
+
+</details>
+
+<details>
+<summary><b>What about Windows / macOS?</b></summary>
+
+Not on the roadmap. The whole compat / sandbox layer is Linux-FHS / bwrap shaped, and the install volume is overwhelmingly Linux-NixOS-and-friends. A future port wouldn't be impossible (Zig's cross-compile handles it; SDL3 / dvui / sqlite / libavif all build on Win + Mac) but it'd be a substantial rewrite of `sandbox/`, `compat/`, and the recipe runner.
+
+</details>
+
+## Contributing:
+
+The codebase lives under `src/`, one bounded context per directory:
+
+```
+src/
+  main.zig          entry point; resolves data root, spawns aria2, opens DB
+  ui/               dvui screens, state, components, actions
+  f95/              F95Zone scraper (XenForo login, donor DDL, BBcode → plain)
+  library/          SQLite-backed game store (migrations, queries)
+  downloads/        aria2 JSON-RPC client + queue manager
+  installer/        post-download extract / apply / sandbox launch
+  importers/        F95Checker / xLibrary / folder-scan migration
+  recipe/           mod recipes (JSON DAG, version constraints)
+  resolver/         Kahn-style topological mod ordering
+  convert/          Ren'Py SDK + nwjs / Unity / RPGM fix-ups
+  compat/           per-engine FHS lib bundles (NixOS workarounds)
+  sandbox/          bwrap wrapper for game launches
+  util/             atomic_io, http, archive, version, paths, db, …
+```
+
+Build deps are in [`flake.nix`](flake.nix); on non-Nix systems install them with your distro's package manager (the slim-bundle `DEPS.md` has per-distro names).
+
+Dev loop:
 
 ```sh
 zig build install -Dgui=true
 ./zig-out/bin/f69
 ```
 
-Inside the dev shell, `direnv` (or `nix develop`) supplies the runtime
-libs so the bare binary launches without `run.sh`. Watch stderr for
-the per-frame log output.
+Inside the dev shell, `direnv` / `nix develop` supplies the runtime libs so the bare binary launches without `run.sh`. Watch stderr for logs.
 
-The codebase follows the workflow + style notes in `CLAUDE.md`. tldr:
-caveman prose, lead with files-modified lists, no unnecessary
-abstractions.
-
-### Running tests
+Tests:
 
 ```sh
 zig build test
 ```
 
-Tests live in each module's `test {}` block.
+Style + workflow notes live in [`CLAUDE.md`](CLAUDE.md). tldr: caveman prose, lead with files-modified lists, no unnecessary abstractions.
 
-### Project layout
+## LLM usage:
 
-```
-src/
-  main.zig          # entry point; resolves data root + spawns aria2 + opens DB
-  ui/               # dvui screens, state, components, actions
-  f95/              # F95Zone scraper (XenForo login, donor DDL, BBcode → plain)
-  library/          # SQLite-backed game store (migrations, queries)
-  downloads/        # aria2 JSON-RPC client + queue manager
-  installer/        # post-download extract / apply / sandbox launch
-  importers/        # folder-scan + F95Checker + xLibrary migration
-  recipe/           # mod recipes (JSON DAG, version constraints)
-  resolver/         # Kahn-style topological mod ordering
-  convert/          # Ren'Py SDK + nwjs / Unity / RPGM fix-ups
-  compat/           # per-engine FHS lib bundles (NixOS workarounds)
-  sandbox/          # bwrap wrapper for game launches
-  util/             # atomic_io, http, archive, version, paths, db, …
-flake.nix           # dev shell + packages.f69 derivation
-build.zig           # all build steps, including every distribution
-                    # target as a custom Step.MakeFn (no shell scripts)
-```
+This has been supervised vibe coded. I as a software engineer told it how I wanted the code structure to be and Claude made it.
 
-### Dependencies — build time
+## License:
 
-The repo's `flake.nix` is the single source of truth. The short list:
+MIT — see [`LICENSE`](LICENSE).
 
-- Zig 0.16 (build tool)
-- pkg-config, wayland-protocols, wayland-scanner (linker glue)
-- SDL3 (rendering backend)
-- SQLite (game library DB)
-- OpenSSL (TLS for HTTPS)
-- libavif + dav1d (cover-image decoding; statically linked into the
-  binary)
-- libarchive (`.7z` / `.tar.bz2` / `.tar.xz` / `.rar` extraction)
-- zlib, bzip2, xz (libarchive transitive deps)
-- libdbus (file-picker XDG portal)
-- libwayland / libxkbcommon / libdecor / libX11 + extensions (SDL3
-  runtime dlopens — only needed at runtime, not at link)
-
-### Dependencies — runtime
-
-GPU vendor libraries (NVIDIA proprietary, Mesa) MUST come from the
-host. We deliberately never bundle them — a Vulkan driver from one
-machine generally won't work on another.
-
-The `portable-slim` bundle's `DEPS.md` lists exact runtime package
-names per distro.
-
-## CI / releases
-
-`.github/workflows/build.yml` runs on every push to `main`, every PR,
-and every `v*` tag:
-
-| Job             | What it does                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------------- |
-| `test`          | `zig build test` on Ubuntu with apt-installed deps. Fast feedback for PRs.                    |
-| `portable`      | `zig build portable` → uploads `f69-portable-linux-x86_64.tar.gz`                             |
-| `portable-slim` | `zig build portable-slim` → uploads `f69-slim-linux-x86_64.tar.gz`                            |
-| `arch`          | Runs `makepkg` inside `archlinux:latest` → uploads `.pkg.tar.zst`                             |
-| `debian`        | Runs `dpkg-buildpackage` inside `debian:bookworm-slim` → uploads `.deb` *(continue-on-error)* |
-| `fedora`        | Runs `rpmbuild` inside `fedora:latest` → uploads `.rpm` *(continue-on-error)*                 |
-| `nix`           | `nix flake check` + `nix build .#f69` *(continue-on-error — impure fetch)*                    |
-| `release`       | On `v*` tag: collects every artifact and creates a GitHub Release                             |
-
-The `debian` / `fedora` / `nix` jobs are marked `continue-on-error: true`
-because cross-distro static-libarchive quirks (xml2 link, etc.) and the
-flake's Zig-fetch-needs-network story aren't resolved yet — they're
-documented under §*Container builds (opt-in)*. They run on every push
-so we get telemetry on what's still broken, but a failure doesn't block
-the release.
-
-To cut a release: `git tag v0.9.1 && git push origin v0.9.1`. The
-pipeline gathers every artifact that succeeded and posts them as a
-GitHub Release with auto-generated notes.
-
-## Cleaning generated artifacts
-
-`zig build packages` writes everything under `zig-out/` (gitignored).
-Clear it any time:
-
-```sh
-rm -rf zig-out/
-```
-
-If you've run `-Dcontainer-build=true`, podman/docker may have
-written root-owned files under `zig-out/<distro>/work/` (the container
-scripts chown back to the host UID at the end, but a crashed
-container leaves them as root). Those need `sudo rm -rf
-zig-out/<distro>/work/` to clear.
-
-## LLM usage
-
-This has been supervised vibe coded. 
-I as a software engineer told it how I wanted the code structure to be and claude made it.
-
-## License
-
-MIT — see `LICENSE`.
+Thanks to **WillyJL** for F95Checker — the workflow and ideas this app builds on. And to whoever maintained xLibrary before this rewrite.
