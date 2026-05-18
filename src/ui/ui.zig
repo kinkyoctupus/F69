@@ -317,14 +317,20 @@ pub fn runMainLoop(
 }
 
 fn guiFrame(frame: *Frame) !bool {
-    // Build the per-frame install-version snapshot. One SELECT over
-    // the installs table feeds N card renders + the detail-page
-    // status line. The backing storage lives in dvui's per-frame
-    // arena so it disappears at frame end — `frame.install_versions`
-    // is only valid for the current frame. Failure is non-fatal:
-    // callers fall back to per-card SQL lookups via the legacy path.
+    // Build per-frame snapshots. Both sit in dvui's per-frame arena
+    // so the storage disappears at frame end; `frame.install_versions`
+    // and `frame.games_by_thread` are only valid for the current
+    // frame. Failure is non-fatal — callers fall back to the
+    // legacy per-game SQL / linear-scan paths via `orelse`.
     var install_versions = frame.lib.latestInstallVersionMap(dvui.currentWindow().arena()) catch null;
-    frame.install_versions = if (install_versions) |*m| m else null;
+    if (install_versions) |*m| {
+        frame.install_versions = m;
+    }
+
+    var games_by_thread = std.AutoHashMap(u64, *library.Game).init(dvui.currentWindow().arena());
+    games_by_thread.ensureTotalCapacity(@intCast(frame.games.len)) catch {};
+    for (frame.games) |*g| games_by_thread.put(g.f95_thread_id, g) catch {};
+    frame.games_by_thread = &games_by_thread;
 
     actions.drainSync(frame);
     actions.drainImageQueue(frame);

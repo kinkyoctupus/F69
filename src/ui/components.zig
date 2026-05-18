@@ -19,8 +19,11 @@ const Frame = types.Frame;
 /// Resolve a Game by thread id from the frame's game array. Shared
 /// helper — both `recipeEditorScreen` and `modsScreen` arrive at a
 /// screen carrying only the thread id (wizard state / selected thread
-/// respectively).
+/// respectively). Hits `frame.games_by_thread` (per-frame snapshot
+/// built at the top of `guiFrame`) for O(1) lookup; falls back to a
+/// linear scan if the snapshot is missing (e.g. arena-alloc OOM).
 pub fn gameByThreadId(frame: *Frame, thread_id: u64) ?*const library.Game {
+    if (frame.games_by_thread) |map| return map.get(thread_id);
     for (frame.games) |*g| {
         if (g.f95_thread_id == thread_id) return g;
     }
