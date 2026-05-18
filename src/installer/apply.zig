@@ -756,14 +756,22 @@ test "apply: empty install dir → all files added" {
     defer testing.allocator.free(cheats_body);
     try testing.expectEqualStrings("cheats", cheats_body);
 
-    // Tracker should have 2 added entries.
+    // Tracker should have 2 added_file entries plus 1 created_dir for
+    // `game/` (so uninstall can sweep the empty dir after deleting files).
     var read_log = try Tracker.load(testing.allocator, io, log_path);
     defer read_log.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 2), read_log.entries.len);
+    var added: usize = 0;
+    var dirs: usize = 0;
     for (read_log.entries) |e| {
-        try testing.expectEqual(dom.InstallLog.Kind.added_file, e.kind);
         try testing.expectEqualStrings("cheat-mod", e.mod_id);
+        switch (e.kind) {
+            .added_file => added += 1,
+            .created_dir => dirs += 1,
+            else => return error.UnexpectedKind,
+        }
     }
+    try testing.expectEqual(@as(usize, 2), added);
+    try testing.expectEqual(@as(usize, 1), dirs);
 }
 
 test "apply: existing file → recorded as modified, no backup created" {
