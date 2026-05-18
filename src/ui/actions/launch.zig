@@ -214,7 +214,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     };
 
     if (result.pid > 0) {
-        runningGamesMap(frame).put(game.f95_thread_id, result.pid) catch {};
+        if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, result.pid) catch {};
     }
     var ok_buf: [128]u8 = undefined;
     const ok_msg = std.fmt.bufPrint(&ok_buf, "Launched (pid {d}, {s})", .{
@@ -767,9 +767,9 @@ pub fn doConvertGame(frame: *Frame, game: *const library.Game) void {
 
 // `RunningGamesMap` aliased from `owned.zig` at the top of the file.
 
-fn runningGamesMap(frame: *Frame) *RunningGamesMap {
+fn runningGamesMap(frame: *Frame) ?*RunningGamesMap {
     if (frame.state.running_games) |p| return p;
-    const map_ptr = frame.lib.alloc.create(RunningGamesMap) catch unreachable;
+    const map_ptr = frame.lib.alloc.create(RunningGamesMap) catch return null;
     map_ptr.* = RunningGamesMap.init(frame.lib.alloc);
     frame.state.running_games = map_ptr;
     return map_ptr;
@@ -778,14 +778,18 @@ fn runningGamesMap(frame: *Frame) *RunningGamesMap {
 /// Read-only probe — screens.zig uses this to swap Launch ↔ Stop.
 pub fn isGameRunning(frame: *Frame, thread_id: u64) bool {
     if (frame.state.running_games == null) return false;
-    return runningGamesMap(frame).contains(thread_id);
+    const m = runningGamesMap(frame) orelse return false;
+    return m.contains(thread_id);
 }
 
 /// SIGTERM the running game for `game.f95_thread_id` and drop the
 /// state entry. No-op + cleanup when the process is already dead.
 pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
-    const m = runningGamesMap(frame);
+    const m = runningGamesMap(frame) orelse {
+        state.setLaunchMsg("Game is not tracked as running.");
+        return;
+    };
     const pid = m.get(game.f95_thread_id) orelse {
         state.setLaunchMsg("Game is not tracked as running.");
         return;
@@ -818,7 +822,7 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
 /// reaps the zombie in a single non-blocking call.
 pub fn drainRunningGames(frame: *Frame) void {
     if (frame.state.running_games == null) return;
-    const m = runningGamesMap(frame);
+    const m = runningGamesMap(frame) orelse return;
 
     var doomed: std.ArrayList(struct { tid: u64, status: u32, pid: i32 }) = .empty;
     defer doomed.deinit(frame.lib.alloc);

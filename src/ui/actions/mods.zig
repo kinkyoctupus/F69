@@ -196,7 +196,7 @@ pub fn freeModsPageCacheState(state: *State, alloc: std.mem.Allocator) void {
 /// Always returns a valid pointer — on disk-iter errors it falls back
 /// to an empty cache (counts.needs_recipe still counts orphan archives,
 /// which are read from the already-cached modfile list).
-pub fn modsPageCache(frame: *Frame, game: *const library.Game) *ModsPageCache {
+pub fn modsPageCache(frame: *Frame, game: *const library.Game) ?*ModsPageCache {
     const state = frame.state;
     const alloc = frame.lib.alloc;
 
@@ -355,9 +355,9 @@ pub fn modsPageCache(frame: *Frame, game: *const library.Game) *ModsPageCache {
 /// Fallback path for OOM during cache build — returns a stub cache
 /// that's harmless to render against. NOT published to state so the
 /// next frame will try to rebuild.
-fn makeEmptyModsPageCache(state: *State, alloc: std.mem.Allocator) *ModsPageCache {
+fn makeEmptyModsPageCache(state: *State, alloc: std.mem.Allocator) ?*ModsPageCache {
     _ = state;
-    const c = alloc.create(ModsPageCache) catch unreachable;
+    const c = alloc.create(ModsPageCache) catch return null;
     c.* = .{
         .game_parsed = null,
         .mods = &.{},
