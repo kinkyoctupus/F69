@@ -208,6 +208,7 @@ pub fn main(init: std.process.Init) !void {
     // Recipe repository — points at `<config>/f69/recipes/`. UI's
     // per-game Download button calls `findGameByThread` against this.
     var recipe_repo = recipe.Repo.init(gpa, init.io, recipes_dir);
+    defer recipe_repo.deinit();
 
     // Sandbox backend — bwrap on Linux, sandboxie on Windows, none
     // otherwise. Failures fall through to `.none` (Launch then surfaces
