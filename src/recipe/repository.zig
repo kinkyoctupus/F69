@@ -16,9 +16,80 @@ pub const Repo = struct {
     alloc: std.mem.Allocator,
     io: std.Io,
     local_dir: []const u8,
+    /// Lazy-built `(thread_id → game recipe id)` index. Null until
+    /// the first `findGameByThread` call; populated by walking
+    /// `local_dir` once. Invalidated by `saveGame` (a new or
+    /// changed recipe might add / shift a thread mapping). The
+    /// recipe-id strings are `alloc`-owned; `deinit` frees them.
+    ///
+    /// Without the index, `findGameByThread` ran a directory iterate
+    /// + ZON parse for every `*.game.zon` file every time it was
+    /// called — and the UI's outdated-dot path on the detail screen
+    /// calls it every frame. Per-session cache is enough: writes go
+    /// through `saveGame` so we know exactly when to invalidate.
+    thread_index: ?std.AutoHashMap(u64, []u8) = null,
 
     pub fn init(alloc: std.mem.Allocator, io: std.Io, local_dir: []const u8) Repo {
         return .{ .alloc = alloc, .io = io, .local_dir = local_dir };
+    }
+
+    /// Release the lazy thread index. Idempotent; safe to call on a
+    /// Repo whose index was never built. `main.zig` defers this on
+    /// shutdown so the GPA leak detector stays clean.
+    pub fn deinit(self: *Repo) void {
+        self.invalidateThreadIndex();
+    }
+
+    fn invalidateThreadIndex(self: *Repo) void {
+        if (self.thread_index) |*m| {
+            var it = m.valueIterator();
+            while (it.next()) |v| self.alloc.free(v.*);
+            m.deinit();
+            self.thread_index = null;
+        }
+    }
+
+    /// Build the thread → recipe-id index if it isn't already loaded.
+    /// Best-effort: a missing `local_dir` produces an empty map
+    /// (legitimate — no recipes authored yet); a parse error on one
+    /// file just skips that file.
+    fn ensureThreadIndex(self: *Repo) errs.Error!void {
+        if (self.thread_index != null) return;
+        var map = std.AutoHashMap(u64, []u8).init(self.alloc);
+        errdefer {
+            var it = map.valueIterator();
+            while (it.next()) |v| self.alloc.free(v.*);
+            map.deinit();
+        }
+
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.local_dir, .{ .iterate = true }) catch |e| switch (e) {
+            error.FileNotFound, error.NotDir => {
+                // No recipes dir yet — fine. Store the empty map so
+                // we don't re-attempt the dir open per call.
+                self.thread_index = map;
+                return;
+            },
+            else => return errs.Error.RecipeNotFound,
+        };
+        defer dir.close(self.io);
+
+        var it = dir.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".game.zon")) continue;
+
+            var path_buf: [512]u8 = undefined;
+            const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.local_dir, entry.name }) catch continue;
+            var parsed = zon.loadGame(self.io, self.alloc, path) catch continue;
+            defer parsed.deinit();
+
+            const id_dup = self.alloc.dupe(u8, parsed.recipe.id) catch continue;
+            map.put(parsed.recipe.f95_thread, id_dup) catch {
+                self.alloc.free(id_dup);
+                continue;
+            };
+        }
+        self.thread_index = map;
     }
 
     /// Find a game recipe by its id. Returns owned ParsedGame; caller deinits.
@@ -32,12 +103,23 @@ pub const Repo = struct {
         return parsed;
     }
 
-    /// Look up a game recipe by its F95 thread id. Walks the local
-    /// recipes directory and parses every `*.game.zon` until one
-    /// matches. O(N) over the user's authored recipes — fine for the
-    /// tens-to-hundreds we expect. Promote to an index if it ever
-    /// becomes hot.
+    /// Look up a game recipe by its F95 thread id. Hits the lazy
+    /// `thread_index` first — one file open + one ZON parse on a
+    /// match; nothing on a miss. Falls back to the full directory
+    /// walk if the index build failed (e.g. OOM): correctness wins
+    /// over the optimisation. Per-call disk traffic when the index
+    /// is loaded: 0 (miss) or 1 file (hit).
     pub fn findGameByThread(self: *Repo, thread_id: u64) errs.Error!?zon.ParsedGame {
+        self.ensureThreadIndex() catch {
+            // Fall through to the legacy scan below.
+        };
+        if (self.thread_index) |map| {
+            const recipe_id = map.get(thread_id) orelse return null;
+            return self.findGame(recipe_id);
+        }
+
+        // Legacy fallback: directory iterate + parse every file until
+        // a match. Only reached when the index couldn't be built.
         var dir = std.Io.Dir.cwd().openDir(self.io, self.local_dir, .{ .iterate = true }) catch |e| switch (e) {
             error.FileNotFound, error.NotDir => return null,
             else => return errs.Error.RecipeNotFound,
@@ -157,7 +239,12 @@ pub const Repo = struct {
     pub fn saveGame(self: *Repo, recipe: *const dom.GameRecipe) errs.Error!void {
         var path_buf: [512]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.game.zon", .{ self.local_dir, recipe.id }) catch return errs.Error.OutOfMemory;
-        return zon.saveGame(self.io, self.alloc, path, recipe);
+        const result = zon.saveGame(self.io, self.alloc, path, recipe);
+        // A new or modified recipe might add / shift a thread →
+        // recipe-id mapping; drop the cached index either way.
+        // Cheap; rebuilt on next lookup.
+        self.invalidateThreadIndex();
+        return result;
     }
 
     pub fn saveMod(self: *Repo, recipe: *const dom.ModRecipe) errs.Error!void {
