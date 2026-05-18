@@ -233,6 +233,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("compat", compat_mod);
     exe_mod.addImport("ui", ui_mod);
     exe_mod.addImport("util_crash", util_crash_mod);
+    exe_mod.addImport("util_setting", util_setting_mod);
 
     // dvui — opt-in. After `zig fetch --save git+…/dvui`, build with
     // `-Dgui=true` to link the SDL3 backend.

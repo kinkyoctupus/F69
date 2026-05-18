@@ -16,6 +16,7 @@ const sandbox_mod = @import("sandbox");
 const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const ui = @import("ui");
+const util_setting = @import("util_setting");
 
 /// Override the stdlib's default log level so `log.debug(...)` actually
 /// reaches stderr. While we're still in phase-1 alpha, debug-level
@@ -141,7 +142,7 @@ pub fn main(init: std.process.Init) !void {
     // at spawn).
     const aria2_port_path = try std.fmt.allocPrint(gpa, "{s}/aria2_port", .{data_root});
     defer gpa.free(aria2_port_path);
-    const initial_aria2_port: u16 = loadU16(init.io, gpa, aria2_port_path) catch 0;
+    const initial_aria2_port: u16 = util_setting.loadInt(u16, init.io, gpa, aria2_port_path, 0);
     log.info("aria2 port {d} ({s})", .{ initial_aria2_port, if (initial_aria2_port == 0) "random" else "user-configured" });
 
     // aria2 seed ratio — `<data_root>/aria2_seed_ratio`. Floor 2.0,
@@ -149,7 +150,9 @@ pub fn main(init: std.process.Init) !void {
     // Changes take effect on the next launch.
     const aria2_seed_ratio_path = try std.fmt.allocPrint(gpa, "{s}/aria2_seed_ratio", .{data_root});
     defer gpa.free(aria2_seed_ratio_path);
-    const initial_aria2_seed_ratio: f32 = loadSeedRatio(init.io, gpa, aria2_seed_ratio_path) catch 5.0;
+    // Seed ratio is clamped to ≥ 2.0 (RPDL community floor) — generic
+    // loadFloat handles the parse + default, the floor stays here.
+    const initial_aria2_seed_ratio: f32 = @max(util_setting.loadFloat(f32, init.io, gpa, aria2_seed_ratio_path, 5.0), 2.0);
     log.info("aria2 seed_ratio {d:.2}", .{initial_aria2_seed_ratio});
 
     // Downloads layout — split between `direct/` (plain HTTP) and
@@ -312,7 +315,7 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(browser_choice_path);
 
     var browser_path_buf: [512]u8 = [_]u8{0} ** 512;
-    if (loadBrowserChoice(init.io, gpa, browser_choice_path)) |loaded_opt| {
+    if (util_setting.readSingleLine(init.io, gpa, browser_choice_path)) |loaded_opt| {
         if (loaded_opt) |loaded| {
             defer gpa.free(loaded);
             const n = @min(loaded.len, browser_path_buf.len - 1);
@@ -330,7 +333,9 @@ pub fn main(init: std.process.Init) !void {
     // Slider in Settings rewrites this file when the user adjusts it.
     const ui_scale_path = try std.fmt.allocPrint(gpa, "{s}/ui_scale", .{data_root});
     defer gpa.free(ui_scale_path);
-    const initial_ui_scale: f32 = loadUiScale(init.io, gpa, ui_scale_path) catch 1.25;
+    // ui_scale is clamped to [0.75, 3.0] so a bad file can't render the
+    // UI unreadable.
+    const initial_ui_scale: f32 = std.math.clamp(util_setting.loadFloat(f32, init.io, gpa, ui_scale_path, 1.25), 0.75, 3.0);
 
     // Last-update-check timestamp — used as the stop-cursor when
     // walking F95's latest-updates pages. 0 (file missing) means the
@@ -338,7 +343,7 @@ pub fn main(init: std.process.Init) !void {
     // doesn't scan years of history.
     const last_update_check_path = try std.fmt.allocPrint(gpa, "{s}/last_update_check", .{data_root});
     defer gpa.free(last_update_check_path);
-    const initial_last_update_check_ts: i64 = loadInt64(init.io, gpa, last_update_check_path) catch 0;
+    const initial_last_update_check_ts: i64 = util_setting.loadInt(i64, init.io, gpa, last_update_check_path, 0);
 
     // Auto-check preferences (on-startup toggle + recurring interval).
     const auto_check_path = try std.fmt.allocPrint(gpa, "{s}/auto_check", .{data_root});
@@ -349,14 +354,14 @@ pub fn main(init: std.process.Init) !void {
     // single `true` / `false`. Default false.
     const auto_convert_path = try std.fmt.allocPrint(gpa, "{s}/auto_convert", .{data_root});
     defer gpa.free(auto_convert_path);
-    const initial_auto_convert: bool = loadBool(init.io, gpa, auto_convert_path) catch false;
+    const initial_auto_convert: bool = util_setting.loadBool(init.io, gpa, auto_convert_path, false);
 
     // Global sandbox-on-launch default — single-line `true` / `false`.
     // Default on (the safer choice). Per-game `SandboxOverride.use_default`
     // consults this value; `.always` / `.never` ignore it.
     const sandbox_default_path = try std.fmt.allocPrint(gpa, "{s}/sandbox_default", .{data_root});
     defer gpa.free(sandbox_default_path);
-    const initial_sandbox_default: bool = loadBoolDefault(init.io, gpa, sandbox_default_path, true) catch true;
+    const initial_sandbox_default: bool = util_setting.loadBool(init.io, gpa, sandbox_default_path, true);
 
     // Global auto-update default — single-line `true` / `false`.
     // Default off (auto-downloading in the background = bandwidth +
@@ -364,7 +369,7 @@ pub fn main(init: std.process.Init) !void {
     // consults this value; `.always` / `.never` ignore it.
     const auto_update_default_path = try std.fmt.allocPrint(gpa, "{s}/auto_update_default", .{data_root});
     defer gpa.free(auto_update_default_path);
-    const initial_auto_update_default: bool = loadBoolDefault(init.io, gpa, auto_update_default_path, false) catch false;
+    const initial_auto_update_default: bool = util_setting.loadBool(init.io, gpa, auto_update_default_path, false);
 
     // Master tag list cache path. `runMainLoop` loads its contents
     // into State on startup so the sidebar's checkbox list is
@@ -408,62 +413,6 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
-/// Read a single-line bool from a file, returning `default` when the
-/// file is missing. Recognises `true`, `1`, `on`, `yes` as true;
-/// anything else as false.
-fn loadBoolDefault(io: std.Io, gpa: std.mem.Allocator, path: []const u8, default: bool) !bool {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch |e| {
-        if (e == error.FileNotFound) return default;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (trimmed.len == 0) return default;
-    return std.mem.eql(u8, trimmed, "true") or std.mem.eql(u8, trimmed, "1") or
-        std.mem.eql(u8, trimmed, "on") or std.mem.eql(u8, trimmed, "yes");
-}
-
-/// Read a single-line bool from a file. Returns false on missing /
-/// unparseable. Recognises `true`, `1`, `on`, `yes` as true; anything
-/// else as false.
-fn loadBool(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !bool {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch |e| {
-        if (e == error.FileNotFound) return false;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    return std.mem.eql(u8, trimmed, "true") or std.mem.eql(u8, trimmed, "1") or
-        std.mem.eql(u8, trimmed, "on") or std.mem.eql(u8, trimmed, "yes");
-}
-
-/// Read a `f32` seed-ratio target from a single-line file. Returns
-/// 5.0 (the default) on missing/malformed values. Clamped to ≥ 2.0
-/// because anything below is below the RPDL community floor.
-fn loadSeedRatio(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !f32 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch |e| {
-        if (e == error.FileNotFound) return 5.0;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    const parsed = std.fmt.parseFloat(f32, trimmed) catch return 5.0;
-    return @max(parsed, 2.0);
-}
-
-/// Read an unsigned 16-bit integer from a single-line file. Returns
-/// 0 (= "random port") on missing/malformed, with the calling site
-/// treating 0 as the "let aria2 pick" sentinel.
-fn loadU16(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !u16 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16)) catch |e| {
-        if (e == error.FileNotFound) return 0;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    return std.fmt.parseInt(u16, trimmed, 10) catch 0;
-}
-
 /// Parse `<data_root>/auto_check`. Format is `key=value` per line.
 /// Recognized keys: `on_startup`, `interval_enabled` (both
 /// `true`/`false`), `interval_count` (integer 1..999),
@@ -497,33 +446,6 @@ fn loadAutoCheck(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !ui.AutoC
         }
     }
     return out;
-}
-
-/// Read a signed 64-bit integer from a single-line file. Returns 0
-/// if the file is missing or contains anything unparseable; never
-/// fatal — callers treat 0 as "never set".
-fn loadInt64(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !i64 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch |e| {
-        if (e == error.FileNotFound) return 0;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    return std.fmt.parseInt(i64, trimmed, 10) catch 0;
-}
-
-/// Read a `f32` from the ui_scale file. Returns 1.25 on missing /
-/// malformed values, clamped to a sane range so a bad file can't
-/// render the UI unreadable.
-fn loadUiScale(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !f32 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(32)) catch |e| {
-        if (e == error.FileNotFound) return 1.25;
-        return e;
-    };
-    defer gpa.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    const parsed = std.fmt.parseFloat(f32, trimmed) catch return 1.25;
-    return std.math.clamp(parsed, 0.75, 3.0);
 }
 
 /// One entry in the "Browser:" dropdown. We mirror `ui.Browser`'s
@@ -606,22 +528,6 @@ fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Envi
     const exe_path = link_buf[0..n];
     const exe_dir = std.fs.path.dirname(exe_path) orelse return gpa.dupe(u8, "./data");
     return std.fmt.allocPrint(gpa, "{s}/data", .{exe_dir});
-}
-
-fn loadBrowserChoice(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !?[]u8 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(2 * 1024)) catch |e| {
-        if (e == error.FileNotFound) return null;
-        return e;
-    };
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (trimmed.len == 0) {
-        gpa.free(bytes);
-        return null;
-    }
-    if (trimmed.len == bytes.len) return bytes;
-    const dup = try gpa.dupe(u8, trimmed);
-    gpa.free(bytes);
-    return dup;
 }
 
 /// Remove orphan `*.tmp` cover files left by a prior run that crashed
