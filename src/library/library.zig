@@ -44,6 +44,21 @@ pub const Library = struct {
         // schema's `REFERENCES … ON DELETE CASCADE` clauses actually
         // fire. Per-connection setting, set once at open.
         conn.setPragmaInt(alloc, "foreign_keys", 1) catch return errs.Error.SchemaMigrationFailed;
+        // Performance pragmas. WAL gives concurrent reads + faster
+        // writes; synchronous=NORMAL still survives application + OS
+        // crashes (WAL durability) while skipping fsyncs that FULL
+        // requires; a 64 MB page cache + 256 MB mmap window keep hot
+        // pages out of disk on a library scrolling through hundreds
+        // of games; temp tables stay in RAM. journal_mode persists in
+        // the DB file header, so re-opens inherit it; the rest are
+        // per-connection. Audited from the perf review — every
+        // listInstalls / listGames call previously paid the default
+        // rollback-journal + 2 MB cache penalty.
+        conn.exec("PRAGMA journal_mode = WAL") catch return errs.Error.SchemaMigrationFailed;
+        conn.exec("PRAGMA synchronous = NORMAL") catch return errs.Error.SchemaMigrationFailed;
+        conn.exec("PRAGMA cache_size = -65536") catch return errs.Error.SchemaMigrationFailed;
+        conn.exec("PRAGMA mmap_size = 268435456") catch return errs.Error.SchemaMigrationFailed;
+        conn.exec("PRAGMA temp_store = MEMORY") catch return errs.Error.SchemaMigrationFailed;
         runMigrations(alloc, &conn) catch return errs.Error.SchemaMigrationFailed;
         return .{ .alloc = alloc, .conn = conn };
     }
