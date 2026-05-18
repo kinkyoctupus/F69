@@ -1,30 +1,29 @@
 # f69
 
-A Linux-native game library + update tracker for F95Zone content, written in Zig with a dvui + SDL3-GPU front end.
+A native (for now linux only) F95 game manager. You can also add custom games.
 
 <!-- Drop a screenshot here once the UI stabilizes:
 <p align="center"><img src=".github/images/f69-library.png"></p>
 -->
 
-Status: alpha (0.9.x). Linux x86-64 only. NVIDIA + Mesa GPUs.
+Status: alpha (0.9.x).
 
 ## Inspiration:
 
 f69 stands on the shoulders of two great projects:
 
-- **[F95Checker](https://github.com/WillyJL/F95Checker)** — the OG. Most of the workflow ideas (library grid, per-thread state, update tracking, donor-DDL handling) came from spending years using it. f69 is what happens when a long-time F95Checker user wants the same UX but native, sandboxed, and shaped around how Linux actually works.
-- **xLibrary** — the previous-life project this rewrites. Same problem space, different language and approach.
+- **[F95Checker](https://github.com/WillyJL/F95Checker)** — The first app I found, was nice to easily import my library and check for updates. I took inspiration from how it worked and bits from it's UI.
+- **xLibrary** — Later I found Xlibrary, also a great app, I took most inspiration from it's UI.
 
-If you're already happy with F95Checker, that's great — go use it. f69 exists for the niche where you want bwrap sandboxing, native Vulkan rendering, a 60 MB single binary, and aren't allergic to "alpha".
+
 
 ## Features:
 
-- **Native Vulkan UI** via dvui + SDL3-GPU. No browser stack, no electron, no nwjs. The whole library renders at ~18 ms on a 3080; idle is essentially free.
 - **F95Zone scraping** — sync thread metadata (rating, votes, version, dev status, last-updated, cover image), pull your bookmark list, watch for updates.
-- **Multi-protocol downloads** — donor DDL + RPDL torrents + plain HTTP/HTTPS. Driven by an embedded `aria2c` daemon via JSON-RPC; the f69 binary auto-spawns it and tears it down on exit.
-- **Recipe-based mod installs** — mods declare what they touch via a JSON DAG; the resolver topo-orders + the installer flat-copies with a tracker so uninstalls are clean.
-- **Sandboxed game launches** via `bwrap` — minimal mount tree, no host home leakage.
-- **Engine fix-ups** built in — Ren'Py 7/8, RPGM-MV/MZ (nwjs), Unity, generic libGL/libGLU FHS bundles. NixOS users get the dynamic-linker dance handled automatically.
+- **Multi-protocol downloads** — For automatic download and install you can use rpdl and donor ddls. Or you can manually download something through the downloads links.
+- **Recipe-based mod installs** — Through mod recipes, modding has never been easier. There are several default recipes for renpy and rpgm games. And for more involved mods you can make a custom recipe that you can save and reuse later, or share.(would be great if modders added this themselves)
+- **Sandboxed game launches** via `bwrap` — Optional sandbox. Safer, and keeps your saves in a single place.
+- **Engine fix-ups** — Not all games are released with linux support, but it's possible to add it most of the time, I've included several fix-ups that add native linux support to renpy and rpgm games that don't include it.
 - **Portable data layout** — DB, library, covers, recipes, downloads all live in `<dir-of-binary>/data/`. Drop the folder on a USB stick and it carries its state.
 - **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. Choose Move (frees source disk) or Copy per import.
 
@@ -59,6 +58,43 @@ To ship a portable bundle as a tarball:
 ```sh
 tar --exclude=data -C zig-out -czf f69-portable.tar.gz bin
 ```
+
+## Roadmap:
+
+Not a strict plan — more "things I'd like to get to". Order is roughly priority, not commitment.
+
+**Next (0.10):**
+
+- First proper release tag + signed binaries (current `zig build packages` already produces them locally; need to actually `git tag v0.10.0` and let CI publish them)
+- F95 search-by-name in the importer's resolve popup (right now you paste a URL — fine for power users, but searching by title is the obvious UX)
+- Auto-update donor status after every download (currently probed once at startup; if your donor flag drops mid-session you don't notice)
+- Debian + Fedora container builds working end-to-end (cross-distro static-libarchive symbol mismatch needs a Debian-host packager to resolve)
+
+**Soon-ish:**
+
+- More engine fix-up recipes — Godot, Ren'Py 6, Unity edge cases (uses fix-up library for missing libGLU.so.1 / libcurl-gnutls)
+- Hermetic Nix flake build (replace the `--impure` Zig-fetch with a vendored `fetchZigDeps` setup)
+- Mod recipe sharing — built-in fetch-from-URL so you can paste a recipe link and have it ready to install
+- A proper screenshot in this README (the section above has an HTML comment marking the spot)
+
+**Maybe one day:**
+
+<details>
+<summary>Things I want but aren't committing to</summary>
+
+- **Browser extension** — F95Checker's pattern of "right-click thread → add to library" is hard to beat
+- **Translation runner hooks** — some games are JP-only; integrating with the usual MTL tooling would be nice
+- **Steam-style game time tracking** + last-played per game
+- **Discord Rich Presence** — playing X for Y minutes
+- **Custom themes** — current style is pink-on-dark; could expose the palette
+
+</details>
+
+**Won't:**
+
+- Windows / macOS ports — the whole sandbox / compat / FHS layer is Linux-shaped. Zig + dvui + SDL3 build there, but the rewrite would be substantial. If someone wants to drive it, the codebase is laid out to make it tractable.
+- Cloud sync — the portable data layout is the explicit goal; if you want sync, point `F69_DATA_DIR` at a Syncthing folder.
+- Phone apps — neither the UI nor the workflow makes sense on a phone screen.
 
 ## Building from source:
 
