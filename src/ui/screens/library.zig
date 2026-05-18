@@ -408,10 +408,27 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     else
         LIST_ROW_PITCH;
 
-    var total_visible: usize = 0;
-    for (games) |*g| if (cardVisible(state, g, query)) {
-        total_visible += 1;
-    };
+    // Snapshot which game indices pass the current filter once per
+    // frame. Without this, `cardVisible` (which does N case-insensitive
+    // substring scans + an installed_set lookup) ran three times over
+    // every game per frame — once for the row count, once for the
+    // grid window, once for the list window. For a 1500-game library
+    // with a non-trivial search query that's ~4500 cardVisible calls
+    // per frame, each doing up to 3 `asciiContainsIgnoreCase` walks.
+    //
+    // Storage is the dvui per-frame arena, so it's reclaimed at end
+    // of frame. On alloc failure we fall back to a zero-length slice
+    // — render windows then show an empty library this frame; next
+    // frame retries from a fresh arena.
+    var filtered_buf: std.ArrayList(u32) = .empty;
+    filtered_buf.ensureTotalCapacity(dvui.currentWindow().arena(), games.len) catch {};
+    for (games, 0..) |*g, i| {
+        if (cardVisible(state, g, query)) {
+            filtered_buf.append(dvui.currentWindow().arena(), @intCast(i)) catch break;
+        }
+    }
+    const filtered: []const u32 = filtered_buf.items;
+    const total_visible: usize = filtered.len;
 
     const total_rows: usize = (total_visible + cols - 1) / cols;
     const virtual_h: f32 = @max(@as(f32, @floatFromInt(total_rows)) * pitch, 1.0);
@@ -450,8 +467,8 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     }
 
     switch (state.view) {
-        .grid => renderGridWindow(frame, games, query, layout, start_idx, end_idx),
-        .list => renderListWindow(frame, games, query, start_idx, end_idx),
+        .grid => renderGridWindow(frame, games, filtered, layout, start_idx, end_idx),
+        .list => renderListWindow(frame, games, filtered, start_idx, end_idx),
     }
 
     if (bot_spacer_h > 0.5) {
@@ -902,23 +919,19 @@ fn gridLayout() GridLayout {
 fn renderGridWindow(
     frame: *Frame,
     games: []const library.Game,
-    query: []const u8,
+    filtered: []const u32,
     layout: GridLayout,
     start_idx: usize,
     end_idx: usize,
 ) void {
     const cols = layout.cols;
-    var f_idx: usize = 0;
     var row_box: ?*dvui.BoxWidget = null;
     defer if (row_box) |rb| rb.deinit();
 
-    for (games) |*g| {
-        if (!cardVisible(frame.state, g, query)) continue;
-        const my_idx = f_idx;
-        f_idx += 1;
-
-        if (my_idx < start_idx) continue;
-        if (my_idx >= end_idx) break;
+    var my_idx = start_idx;
+    while (my_idx < end_idx and my_idx < filtered.len) : (my_idx += 1) {
+        const game_i: usize = filtered[my_idx];
+        const g = &games[game_i];
 
         const col = my_idx % cols;
         if (col == 0) {
@@ -935,19 +948,15 @@ fn renderGridWindow(
 fn renderListWindow(
     frame: *Frame,
     games: []const library.Game,
-    query: []const u8,
+    filtered: []const u32,
     start_idx: usize,
     end_idx: usize,
 ) void {
     const state = frame.state;
-    var f_idx: usize = 0;
-    for (games) |*g| {
-        if (!cardVisible(state, g, query)) continue;
-        const my_idx = f_idx;
-        f_idx += 1;
-
-        if (my_idx < start_idx) continue;
-        if (my_idx >= end_idx) break;
+    var my_idx = start_idx;
+    while (my_idx < end_idx and my_idx < filtered.len) : (my_idx += 1) {
+        const game_i: usize = filtered[my_idx];
+        const g = &games[game_i];
 
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = g.f95_thread_id,
