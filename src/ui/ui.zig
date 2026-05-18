@@ -325,8 +325,10 @@ fn guiFrame(frame: *Frame) !bool {
     actions.drainDonorDownload(frame);
     actions.drainRefreshTags(frame);
     // Refresh aria2-driven download progress. Cheap on localhost
-    // (sub-ms RPC) and only walks non-terminal jobs.
-    frame.dl_mgr.tick();
+    // (sub-ms RPC) and only walks non-terminal jobs. Skip the call
+    // entirely when there are no jobs — pure dead work for idle
+    // sessions that never touched a download.
+    if (frame.dl_mgr.jobs.count() > 0) frame.dl_mgr.tick();
     // Aria2 progress + the detail-page "Installing…" sweep both
     // arrive/animate between input events. Without an explicit
     // re-render request, the main loop's `waitEventTimeout` would
@@ -417,6 +419,7 @@ fn guiFrame(frame: *Frame) !bool {
 /// Drives the `dvui.refresh` call in `guiFrame` so progress bars
 /// keep moving between input events.
 fn anyDownloadActive(dl_mgr: *downloads.Manager) bool {
+    if (dl_mgr.jobs.count() == 0) return false;
     var it = dl_mgr.jobs.iterator();
     while (it.next()) |entry| {
         switch (entry.value_ptr.status) {
