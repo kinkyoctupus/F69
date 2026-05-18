@@ -44,21 +44,21 @@ pub const Matched = struct {
 };
 
 // ============================================================
-//  Embedded built-in presets
+//  Built-in presets — parsed at comptime via `@import("foo.zon")`
 // ============================================================
+//
+// Zig 0.16's `@import` accepts ZON files and returns the parsed
+// structure as a comptime-known constant baked into rodata. Replacing
+// the previous `@embedFile + runtime fromSliceAlloc` path with
+// `@import` eliminates four ZON parses + four arena allocations from
+// every startup; the built-in `Preset` values are now plain `const`
+// data the loader can hand back without any runtime work.
 
-const BUILTIN_SOURCES = struct {
-    const renpy_standard: []const u8 = @embedFile("presets/renpy-standard.preset.zon");
-    const rpgm_mv_standard: []const u8 = @embedFile("presets/rpgm-mv-standard.preset.zon");
-    const rpgm_mv_no_codecs: []const u8 = @embedFile("presets/rpgm-mv-no-codecs.preset.zon");
-    const rpgm_mz_standard: []const u8 = @embedFile("presets/rpgm-mz-standard.preset.zon");
-};
-
-const BUILTIN_LIST = [_][]const u8{
-    BUILTIN_SOURCES.renpy_standard,
-    BUILTIN_SOURCES.rpgm_mv_standard,
-    BUILTIN_SOURCES.rpgm_mv_no_codecs,
-    BUILTIN_SOURCES.rpgm_mz_standard,
+const BUILTIN_LIST: []const Preset = &.{
+    @import("presets/renpy-standard.preset.zon"),
+    @import("presets/rpgm-mv-standard.preset.zon"),
+    @import("presets/rpgm-mv-no-codecs.preset.zon"),
+    @import("presets/rpgm-mz-standard.preset.zon"),
 };
 
 pub const PRESET_FILE_SUFFIX = ".preset.zon";
@@ -89,18 +89,14 @@ pub fn loadMerged(
     var combined: std.ArrayList(Preset) = .empty;
     var from_user_list: std.ArrayList(bool) = .empty;
 
-    for (BUILTIN_LIST) |src| {
-        const bytes_z = aalloc.dupeZ(u8, src) catch return errs.Error.OutOfMemory;
-        const parsed = std.zon.parse.fromSliceAlloc(
-            Preset,
-            aalloc,
-            bytes_z,
-            null,
-            .{ .ignore_unknown_fields = true, .free_on_error = false },
-        ) catch return errs.Error.ParseFailed;
-        try combined.append(aalloc, parsed);
+    // Built-ins are `const Preset` values in rodata (see BUILTIN_LIST).
+    // Append a copy to the ArrayList; the parser-arena that previously
+    // owned each Preset's strings is gone — strings now live in the
+    // binary's read-only segment and outlive any runtime allocator.
+    for (BUILTIN_LIST) |*p| {
+        try combined.append(aalloc, p.*);
         try from_user_list.append(aalloc, false);
-        by_id.put(parsed.id, combined.items.len - 1) catch return errs.Error.OutOfMemory;
+        by_id.put(p.id, combined.items.len - 1) catch return errs.Error.OutOfMemory;
     }
 
     // User dir scan — best-effort. Missing dir is fine.
@@ -207,21 +203,15 @@ pub fn save(
 //  tests
 // ============================================================
 
-test "embedded built-ins parse" {
-    // Pure parse pass — no io. Verifies every shipped ZON is valid.
-    const aalloc = std.testing.allocator;
-    for (BUILTIN_LIST) |src| {
-        const bytes_z = try aalloc.dupeZ(u8, src);
-        defer aalloc.free(bytes_z);
-        var arena = std.heap.ArenaAllocator.init(aalloc);
-        defer arena.deinit();
-        _ = try std.zon.parse.fromSliceAlloc(
-            Preset,
-            arena.allocator(),
-            bytes_z,
-            null,
-            .{ .ignore_unknown_fields = true, .free_on_error = false },
-        );
+test "embedded built-ins are well-formed" {
+    // Comptime `@import("foo.zon")` already proved every shipped ZON
+    // parses — if any file were malformed the build wouldn't compile.
+    // The runtime check left here is a smoke test: every preset has a
+    // non-empty id (the rest of the app keys off it).
+    try std.testing.expect(BUILTIN_LIST.len > 0);
+    for (BUILTIN_LIST) |p| {
+        try std.testing.expect(p.id.len > 0);
+        try std.testing.expect(p.name.len > 0);
     }
 }
 
