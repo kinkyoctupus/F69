@@ -271,6 +271,19 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
     }
 }
 
+/// Wrap a Library mutation in toast surfacing. The previous pattern
+/// `frame.lib.upsertGame(game) catch {};` silently dropped DB write
+/// errors — user changes notes / rating / sandbox, click does
+/// nothing, no feedback. Push an error toast on failure so the user
+/// at least sees that the save didn't stick.
+fn saveOrToast(frame: *Frame, what: []const u8, err_opt: anyerror!void) void {
+    err_opt catch |e| {
+        var buf: [192]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Save failed ({s}): {s}", .{ what, @errorName(e) }) catch "Save failed";
+        frame.state.notifyErr(msg);
+    };
+}
+
 fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
     var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = game.f95_thread_id ^ 0xF9,
@@ -341,7 +354,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             .min_size_content = .{ .w = 200, .h = 26 },
         })) {
             game.completion_status = @enumFromInt(picked);
-            frame.lib.upsertGame(game) catch {};
+            saveOrToast(frame, "game", frame.lib.upsertGame(game));
         }
     }
     {
@@ -372,7 +385,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
                     null,
             })) {
                 if (ur_int == n) game.user_rating = null else game.user_rating = @floatFromInt(n);
-                frame.lib.upsertGame(game) catch {};
+                saveOrToast(frame, "game", frame.lib.upsertGame(game));
             }
         }
     }
@@ -396,7 +409,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             .min_size_content = .{ .w = 220, .h = 26 },
         })) {
             game.sandbox = @enumFromInt(picked);
-            frame.lib.upsertGame(game) catch {};
+            saveOrToast(frame, "game", frame.lib.upsertGame(game));
         }
     }
 
@@ -420,7 +433,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             .min_size_content = .{ .w = 220, .h = 26 },
         })) {
             game.auto_update = @enumFromInt(picked);
-            frame.lib.upsertGame(game) catch {};
+            saveOrToast(frame, "game", frame.lib.upsertGame(game));
         }
     }
 }
@@ -1096,12 +1109,12 @@ fn renderNotesTab(frame: *Frame, game: *library.Game) void {
         if (style.button(@src(), "Save", .{}, .{ .style = .highlight })) {
             const text_end = std.mem.indexOfScalar(u8, &state.notes_buf, 0) orelse state.notes_buf.len;
             const trimmed = std.mem.trim(u8, state.notes_buf[0..text_end], " \t\n\r");
-            frame.lib.setNotes(game, trimmed) catch {};
+            saveOrToast(frame, "notes", frame.lib.setNotes(game, trimmed));
         }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         if (style.button(@src(), "Clear", .{}, .{})) {
             @memset(&state.notes_buf, 0);
-            frame.lib.setNotes(game, "") catch {};
+            saveOrToast(frame, "notes", frame.lib.setNotes(game, ""));
         }
     }
 
