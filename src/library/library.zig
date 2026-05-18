@@ -515,6 +515,50 @@ pub const Library = struct {
         return slice;
     }
 
+    /// Per-frame cache primitive: one SELECT pulls every install
+    /// row, grouped into `(game_thread_id → "latest version string")`.
+    /// "Latest" is decided in Zig via `util_version.compare` (same
+    /// comparator `installNewerFirst` uses) so this matches the
+    /// per-game `latestInstallForGame` semantics — but pays one query
+    /// up front instead of one per visible card.
+    ///
+    /// `arena` is expected to be a per-frame arena (dvui's
+    /// `currentWindow().arena()`); the version strings + the
+    /// HashMap's internal buckets all allocate from it and get
+    /// reclaimed when the arena resets at frame end. **Do not pass
+    /// a long-lived allocator** — the returned map is keyed on
+    /// per-frame storage and reads next frame will dangle.
+    ///
+    /// Before this method existed, the Library screen called
+    /// `latestInstallForGame` once per visible card per frame
+    /// (60+ SQLite prepare+step+hydrate cycles); now it's one query
+    /// + N HashMap lookups.
+    pub fn latestInstallVersionMap(
+        self: *Library,
+        arena: std.mem.Allocator,
+    ) errs.Error!std.AutoHashMap(u64, []const u8) {
+        var map = std.AutoHashMap(u64, []const u8).init(arena);
+        var rows = self.conn.inner.rows(
+            "SELECT game_thread_id, version FROM installs",
+            .{},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| {
+            const tid: u64 = @intCast(r.int(0));
+            const ver_src = r.text(1);
+            const ver_dup = arena.dupe(u8, ver_src) catch return errs.Error.OutOfMemory;
+            const gop = map.getOrPut(tid) catch return errs.Error.OutOfMemory;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = ver_dup;
+            } else if (version_mod.compare(gop.value_ptr.*, ver_dup) == .lt) {
+                // Arena owns both — no free needed when we drop the
+                // pointer to the older version.
+                gop.value_ptr.* = ver_dup;
+            }
+        }
+        return map;
+    }
+
     /// One SELECT DISTINCT over the installs table — returns every
     /// `game_thread_id` that has at least one install row. The UI
     /// builds an `AutoHashMap(u64, void)` from this once per frame to

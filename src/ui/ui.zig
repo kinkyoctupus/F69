@@ -317,6 +317,15 @@ pub fn runMainLoop(
 }
 
 fn guiFrame(frame: *Frame) !bool {
+    // Build the per-frame install-version snapshot. One SELECT over
+    // the installs table feeds N card renders + the detail-page
+    // status line. The backing storage lives in dvui's per-frame
+    // arena so it disappears at frame end — `frame.install_versions`
+    // is only valid for the current frame. Failure is non-fatal:
+    // callers fall back to per-card SQL lookups via the legacy path.
+    var install_versions = frame.lib.latestInstallVersionMap(dvui.currentWindow().arena()) catch null;
+    frame.install_versions = if (install_versions) |*m| m else null;
+
     actions.drainSync(frame);
     actions.drainImageQueue(frame);
     actions.drainBookmarks(frame);

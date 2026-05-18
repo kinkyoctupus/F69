@@ -544,19 +544,31 @@ pub const InstallDotState = enum {
 };
 
 /// Per-game install state. Uses `installed_set` as a fast first-
-/// check (1 HashMap lookup); only when installed do we hit the DB
-/// for the actual install version. Cheap: one O(log N) SELECT per
-/// rendered card, all on a small + indexed table.
+/// check (1 HashMap lookup); when installed, look up the latest
+/// version via `frame.install_versions` (per-frame snapshot built
+/// once at the top of `guiFrame` from a single SELECT). Falls back
+/// to the legacy per-game `latestInstallForGame` SQL only when the
+/// snapshot is unavailable (e.g. the cache build OOM'd).
 pub fn installDotState(frame: *Frame, game: *const library.Game) InstallDotState {
     if (!isInstalled(frame, game.f95_thread_id)) return .none;
+    const scraped = game.latest_version orelse return .up_to_date;
+    if (scraped.len == 0) return .up_to_date;
+    if (frame.install_versions) |map| {
+        if (map.get(game.f95_thread_id)) |installed_ver| {
+            // Treat the placeholder version "unversioned" as "we don't
+            // really know what's installed" — show green, since we
+            // can't claim it's outdated.
+            if (std.mem.eql(u8, installed_ver, "unversioned")) return .up_to_date;
+            if (version_mod.equivalent(installed_ver, scraped)) return .up_to_date;
+            return .outdated;
+        }
+        // installed_set said yes but the map has no entry — race
+        // with a mid-frame uninstall. Fall through to the legacy
+        // path so the indicator settles on the next frame.
+    }
     const latest = frame.lib.latestInstallForGame(game.f95_thread_id) catch return .up_to_date;
     if (latest) |inst| {
         defer frame.lib.freeInstall(inst);
-        const scraped = game.latest_version orelse return .up_to_date;
-        if (scraped.len == 0) return .up_to_date;
-        // Treat the placeholder version "unversioned" as "we don't
-        // really know what's installed" — show green, since we
-        // can't claim it's outdated.
         if (std.mem.eql(u8, inst.version, "unversioned")) return .up_to_date;
         if (version_mod.equivalent(inst.version, scraped)) return .up_to_date;
         return .outdated;
