@@ -300,6 +300,217 @@ pub fn humanRate(buf: []u8, bytes_per_sec: u64) []const u8 {
 }
 
 // ============================================================
+//  Login popup — shown at startup when the user isn't logged into
+//  F95. Combines F95 + RPDL forms with a Skip button so the user
+//  can dismiss for the session. Layout is responsive: side-by-side
+//  on wide windows, stacked on narrow.
+// ============================================================
+
+/// Modal login overlay. Idempotent — render every frame while
+/// `state.login_popup_open` is true; close via Skip, RPDL login, or
+/// successful F95 login (auth.zig auto-closes on the latter).
+pub fn renderLoginPopup(frame: *Frame) void {
+    const state = frame.state;
+    if (!state.login_popup_open) return;
+    // If the user logged into F95 in some other way (e.g. cookie
+    // loaded after popup opened), self-dismiss.
+    if (state.login_status == .logged_in) {
+        state.login_popup_open = false;
+        return;
+    }
+
+    var win = dvui.floatingWindow(@src(), .{ .open_flag = &state.login_popup_open }, .{
+        .min_size_content = .{ .w = 520, .h = 360 },
+    });
+    defer win.deinit();
+    _ = dvui.windowHeader("Sign in to F95Zone", "", &state.login_popup_open);
+
+    {
+        var msg_box = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
+        });
+        defer msg_box.deinit();
+        dvui.labelNoFmt(
+            @src(),
+            "f69 works best when you're signed in. F95Zone unlocks " ++
+                "donor-tier downloads; RPDL is a community-run torrent " ++
+                "mirror that f69 falls back to when DDL isn't available.",
+            .{},
+            .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
+        );
+    }
+
+    // Responsive: side-by-side via flexbox justify=.start; narrow
+    // windows get auto-wrapping by the layout. Each card declares
+    // a fixed min width so the flexbox can decide whether to fit
+    // them in a single row or stack.
+    var forms = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 16, .y = 4, .w = 16, .h = 12 },
+    });
+    defer forms.deinit();
+
+    renderF95LoginCard(frame);
+    renderRpdlLoginCard(frame);
+
+    // Footer with Skip button — full-width row aligned right.
+    {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+        var footer = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
+            .gravity_x = 1.0,
+        });
+        defer footer.deinit();
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (style.button(@src(), "Skip for now", .{}, .{ .gravity_x = 1.0 })) {
+            state.login_popup_open = false;
+            state.login_popup_skipped = true;
+        }
+    }
+}
+
+/// F95 login sub-card inside the popup. Self-contained — owns its
+/// own status line + form. Submit triggers `actions.doLogin`; the
+/// auth helper auto-closes the popup on success.
+fn renderF95LoginCard(frame: *Frame) void {
+    const state = frame.state;
+    var card = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .id_extra = 0xCB00,
+        .min_size_content = .{ .w = 240, .h = 200 },
+        .background = true,
+        .border = style.border_thin,
+        .corner_radius = style.corner_radius,
+        .color_fill = style.card_fill,
+        .color_border = style.border_color,
+        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+        .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+    });
+    defer card.deinit();
+
+    dvui.label(@src(), "F95Zone", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    // Status line. Cheap repeat of the Settings → Accounts pattern.
+    const status_text = switch (state.login_status) {
+        .unknown => "(checking)",
+        .logged_out => "not signed in",
+        .logged_in => "signed in",
+        .logging_in => "signing in…",
+        .err => "error",
+    };
+    dvui.label(@src(), "status: {s}", .{status_text}, .{});
+    if (!state.login_msg.isEmpty()) {
+        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    // Form: user / pass / Sign in.
+    {
+        dvui.label(@src(), "username", .{}, .{});
+        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.f95_user_buf } }, .{
+            .expand = .horizontal,
+            .id_extra = 0xCB01,
+        });
+        te.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    {
+        dvui.label(@src(), "password", .{}, .{});
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.f95_pass_buf },
+            .password_char = "•",
+        }, .{
+            .expand = .horizontal,
+            .id_extra = 0xCB02,
+        });
+        te.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    if (style.button(@src(), "Sign in to F95Zone", .{}, .{ .style = .highlight, .expand = .horizontal })) {
+        actions.doLogin(frame, state.f95UserSlice(), state.f95PassSlice());
+    }
+}
+
+/// RPDL login sub-card inside the popup. Mirrors the F95 card —
+/// status line + form + Sign in button. Includes a brief recommend-
+/// to-create-an-account note since RPDL is community-run and many
+/// users won't have heard of it.
+fn renderRpdlLoginCard(frame: *Frame) void {
+    const state = frame.state;
+    var card = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .id_extra = 0xCC00,
+        .min_size_content = .{ .w = 240, .h = 200 },
+        .background = true,
+        .border = style.border_thin,
+        .corner_radius = style.corner_radius,
+        .color_fill = style.card_fill,
+        .color_border = style.border_color,
+        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+        .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+    });
+    defer card.deinit();
+
+    dvui.label(@src(), "RPDL (optional)", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    dvui.labelNoFmt(
+        @src(),
+        "Community-run torrent mirror. f69 falls back to RPDL when " ++
+            "an F95 download has no DDL — sign in if you have an account, " ++
+            "or create one at dl.rpdl.net.",
+        .{},
+        .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    const status_text = switch (state.rpdl_status) {
+        .unknown => "(unknown)",
+        .logged_out => "not signed in",
+        .logged_in => "signed in",
+        .logging_in => "signing in…",
+        .err => "error",
+    };
+    dvui.label(@src(), "status: {s}", .{status_text}, .{});
+    if (!state.rpdl_msg.isEmpty()) {
+        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    if (state.rpdl_status == .logged_in) {
+        if (style.button(@src(), "Sign out of RPDL", .{}, .{ .style = .err, .expand = .horizontal })) {
+            actions.doRpdlLogout(frame);
+        }
+        return;
+    }
+
+    {
+        dvui.label(@src(), "username", .{}, .{});
+        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.rpdl_user_buf } }, .{
+            .expand = .horizontal,
+            .id_extra = 0xCC11,
+        });
+        te.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    {
+        dvui.label(@src(), "password", .{}, .{});
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.rpdl_pass_buf },
+            .password_char = "•",
+        }, .{
+            .expand = .horizontal,
+            .id_extra = 0xCC12,
+        });
+        te.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    if (style.button(@src(), "Sign in to RPDL", .{}, .{ .style = .highlight, .expand = .horizontal })) {
+        actions.doRpdlLogin(frame, state.rpdlUserSlice(), state.rpdlPassSlice());
+    }
+}
+
+// ============================================================
 //  Global sync recap popup + toast overlay + sync banner — rendered
 //  by ui.zig on every screen.
 // ============================================================

@@ -1414,67 +1414,47 @@ fn renderDetailDownloadButton(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
     const rpdl_busy = state.pending_rpdl_download != null;
     const donor_busy = state.pending_donor_download != null;
-    const job_active = actions.hasActiveDownloadForGame(frame, game.f95_thread_id);
-
-    _ = job_active;
-
     const have_rpdl = state.rpdl_token != null and (state.rpdl_token.?.len > 0);
     const have_f95 = state.login_status == .logged_in;
     const busy = rpdl_busy or donor_busy;
+    // is_donor == false means the startup probe definitively saw the
+    // donor-DDL endpoint refuse this account. null means "not yet
+    // probed" — stay optimistic; the first real download attempt
+    // will surface the error if any. true means proven-donor.
+    const known_not_donor = (state.is_donor orelse true) == false;
 
-    const primary_label: []const u8 = blk: {
-        if (rpdl_busy) break :blk "Searching…";
-        if (donor_busy) break :blk "Requesting…";
-        break :blk "Download";
-    };
-    const primary_opts: dvui.Options = if (busy)
-        .{ .style = .control, .color_text = .{ .r = 0x80, .g = 0x80, .b = 0x80 } }
-    else
-        .{};
+    const gray_color: dvui.Color = .{ .r = 0x80, .g = 0x80, .b = 0x80 };
+    const dim_opts: dvui.Options = .{ .style = .control, .color_text = gray_color };
 
     var bar = dvui.menu(@src(), .horizontal, .{ .id_extra = game.f95_thread_id ^ 0xACCE });
     defer bar.deinit();
 
-    if (have_rpdl) {
-        const clicked = components.iconButton(@src(), primary_label, entypo.download, primary_opts);
-        if (clicked) {
-            std.log.info(
-                "download primary (RPDL): clicked tid={d} busy={any} (rpdl_busy={any} donor_busy={any}) job_active={any}",
-                .{ game.f95_thread_id, busy, rpdl_busy, donor_busy, actions.hasActiveDownloadForGame(frame, game.f95_thread_id) },
-            );
-            if (!busy) {
-                std.log.info("download primary (RPDL): dispatching startRpdlDownload tid={d}", .{game.f95_thread_id});
-                actions.startRpdlDownload(frame, game);
-            } else {
-                std.log.warn("download primary (RPDL): click gated — busy", .{});
-            }
-        }
-    } else if (have_f95) {
-        const clicked = components.iconButton(@src(), primary_label, entypo.download, primary_opts);
-        if (clicked) {
-            std.log.info(
-                "download primary (donor): clicked tid={d} busy={any} (rpdl_busy={any} donor_busy={any}) job_active={any}",
-                .{ game.f95_thread_id, busy, rpdl_busy, donor_busy, actions.hasActiveDownloadForGame(frame, game.f95_thread_id) },
-            );
-            if (!busy) {
-                std.log.info("download primary (donor): dispatching startDonorDownload tid={d}", .{game.f95_thread_id});
-                actions.startDonorDownload(frame, game);
-            } else {
-                std.log.warn("download primary (donor): click gated — busy", .{});
-            }
-        }
-    } else {
-        const dim_opts: dvui.Options = .{
-            .style = .control,
-            .color_text = .{ .r = 0x80, .g = 0x80, .b = 0x80 },
-        };
+    // --- Primary button ---
+    // Priority order (matches the spec):
+    //   - not signed into F95 → "Sign in" link to settings/accounts
+    //   - known non-donor → disabled "Not a donor"
+    //   - donor (or unknown) → "Download" via donor DDL as default
+    if (!have_f95) {
         if (components.iconButton(@src(), "Download (sign in first)", entypo.download, dim_opts)) {
-            std.log.info("download primary: clicked while signed out — jumping to Accounts", .{});
             state.screen = .settings;
             state.settings_tab = .accounts;
         }
+    } else if (known_not_donor) {
+        // Disabled — click does nothing. Tooltip explains via label.
+        _ = components.iconButton(@src(), "Donor required", entypo.download, dim_opts);
+    } else {
+        const primary_label: []const u8 = blk: {
+            if (donor_busy) break :blk "Requesting…";
+            if (rpdl_busy) break :blk "Searching…";
+            break :blk "Download";
+        };
+        const primary_opts: dvui.Options = if (busy) dim_opts else .{};
+        if (components.iconButton(@src(), primary_label, entypo.download, primary_opts)) {
+            if (!busy) actions.startDonorDownload(frame, game);
+        }
     }
 
+    // --- Source picker chevron ---
     if (dvui.menuItemIcon(@src(), "download-source", entypo.chevron_down, .{ .submenu = true }, .{
         .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
         .min_size_content = .{ .w = 16, .h = 16 },
@@ -1490,28 +1470,27 @@ fn renderDetailDownloadButton(frame: *Frame, game: *const library.Game) void {
             }
         }
 
-        if (have_rpdl) {
-            if (dvui.menuItemLabel(@src(), "Download via RPDL (torrent + seed)", .{}, .{ .expand = .horizontal }) != null) {
-                std.log.info("download chevron (RPDL): clicked tid={d} busy={any} rpdl_busy={any} donor_busy={any}", .{ game.f95_thread_id, busy, state.pending_rpdl_download != null, state.pending_donor_download != null });
+        // Donor DDL — only when signed in + not known to be a
+        // non-donor. Same gate as the primary button.
+        if (have_f95 and !known_not_donor) {
+            if (dvui.menuItemLabel(@src(), "Download via donor DDL (HTTP)", .{}, .{ .expand = .horizontal }) != null) {
                 bar.close();
-                if (!busy) {
-                    std.log.info("download chevron (RPDL): dispatching startRpdlDownload tid={d}", .{game.f95_thread_id});
-                    actions.startRpdlDownload(frame, game);
-                } else {
-                    std.log.warn("download chevron (RPDL): click gated — busy", .{});
-                }
+                if (!busy) actions.startDonorDownload(frame, game);
             }
         }
-        if (have_f95) {
-            if (dvui.menuItemLabel(@src(), "Download via donor DDL (HTTP)", .{}, .{ .expand = .horizontal }) != null) {
-                std.log.info("download chevron (donor): clicked tid={d} busy={any} rpdl_busy={any} donor_busy={any}", .{ game.f95_thread_id, busy, state.pending_rpdl_download != null, state.pending_donor_download != null });
+        // RPDL — only enabled when RPDL token loaded. Otherwise
+        // grayed out: shown so the user sees the option exists,
+        // but clicks bounce to Settings to sign in.
+        if (have_rpdl) {
+            if (dvui.menuItemLabel(@src(), "Download via RPDL (torrent + seed)", .{}, .{ .expand = .horizontal }) != null) {
                 bar.close();
-                if (!busy) {
-                    std.log.info("download chevron (donor): dispatching startDonorDownload tid={d}", .{game.f95_thread_id});
-                    actions.startDonorDownload(frame, game);
-                } else {
-                    std.log.warn("download chevron (donor): click gated — busy", .{});
-                }
+                if (!busy) actions.startRpdlDownload(frame, game);
+            }
+        } else {
+            if (dvui.menuItemLabel(@src(), "Download via RPDL (sign in first)", .{}, .{ .expand = .horizontal, .color_text = gray_color }) != null) {
+                bar.close();
+                state.screen = .settings;
+                state.settings_tab = .accounts;
             }
         }
         if (dvui.menuItemLabel(@src(), "Install from file\u{2026}", .{}, .{ .expand = .horizontal }) != null) {

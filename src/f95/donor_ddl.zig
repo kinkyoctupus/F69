@@ -66,6 +66,47 @@ pub fn freeDownload(alloc: std.mem.Allocator, d: Download) void {
     alloc.free(d.filename);
 }
 
+/// Step-1-only probe to learn whether the logged-in F95 account has
+/// donor eligibility for DDL. Useful at startup so the UI can gray
+/// out the Download button before the user clicks it. Returns
+/// `true` on a normal step-1 success (msg is an object with files
+/// or notes), `false` on `DonorNotEligible`, and propagates other
+/// errors (network, malformed response, etc.) — caller can treat
+/// those as "unknown" rather than as a firm "not a donor".
+///
+/// Picks an arbitrary thread id; the API doesn't care which thread
+/// is asked, only whether the caller has donor status. Any thread
+/// that exists works — we use the F95Zone announcement thread (id
+/// `1`) which is guaranteed-stable.
+pub fn checkDonorStatus(
+    alloc: std.mem.Allocator,
+    client: *Client,
+) errs.Error!bool {
+    const probe_tid: u64 = 1;
+    var step1_buf: [64]u8 = undefined;
+    const step1_body = std.fmt.bufPrint(&step1_buf, "thread_id={d}", .{probe_tid}) catch
+        return errs.Error.DonorInvalidResponse;
+    log.info("donor probe: POST file-list thread_id={d}", .{probe_tid});
+    const raw = client.postForm(ENDPOINT_URL, step1_body) catch |e| return e;
+    defer alloc.free(raw);
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, raw, .{
+        .ignore_unknown_fields = true,
+    }) catch return errs.Error.DonorInvalidResponse;
+    defer parsed.deinit();
+    _ = unwrapStatusMsg(parsed.value) catch |e| switch (e) {
+        errs.Error.DonorNotEligible => return false,
+        errs.Error.DonorNoDdl, errs.Error.NotFound => {
+            // The probe thread happens not to have DDLs, OR the
+            // thread id we picked is gone. Both mean the donor
+            // check didn't return DonorNotEligible, so the user IS
+            // a donor — they just can't download THIS thread.
+            return true;
+        },
+        else => return e,
+    };
+    return true;
+}
+
 /// Two-step happy path: list → auto-pick → link. Returns the URL +
 /// cookie ready for `dl_mgr.enqueueUrl`. Errors carry the same
 /// taxonomy as before (`AuthRequired` / `DonorNotEligible` / etc.).

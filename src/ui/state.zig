@@ -690,6 +690,29 @@ pub const State = struct {
     f95_pass_buf: [128]u8 = [_]u8{0} ** 128,
     login_status: LoginStatus = .unknown,
     login_msg: buf_mod.MessageBuf(128) = .{},
+    /// Donor-tier check result. `null` = not yet probed (either
+    /// logged out, or check hasn't completed); `true` = user can
+    /// reach the donor DDL endpoint; `false` = F95 says they aren't
+    /// a donor. The UI grays out the Download button when this is
+    /// `.no` since the donor DDL is f69's default download path.
+    is_donor: ?bool = null,
+    /// True while the startup donor-status probe is in flight.
+    /// Drives a "(checking…)" hint in the UI; the Download button
+    /// is enabled optimistically while this is true so first-time
+    /// users don't see a grayed button before the check finishes.
+    donor_check_in_flight: bool = false,
+    /// Set once per login cycle when `checkDonorStatus` has run to
+    /// completion (success OR transient failure). Without this flag
+    /// the `guiFrame` gate would re-fire the probe every frame
+    /// `is_donor` stayed null on a transient network error. Reset
+    /// to false in `doLogout`.
+    donor_check_attempted: bool = false,
+    /// Startup login popup. Opened by `runMainLoop` when
+    /// `login_status` resolves to `.logged_out`; the user dismisses
+    /// it via Skip or by completing a login. `login_popup_skipped`
+    /// prevents re-opening within the same session.
+    login_popup_open: bool = false,
+    login_popup_skipped: bool = false,
     /// In-flight bookmarks pull (worker thread). `actions/bookmarks.zig`
     /// defines the actual job struct.
     pending_bookmarks: ?*owned.BookmarksJob = null,
