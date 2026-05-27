@@ -26,25 +26,30 @@
     .severity = .blocker,
     .reversible = true,
     .platforms = .{ .linux },
+    // Detection: any Linux Ren'Py 7 install on a host whose standard
+    // loader path lacks `libX11.so.6`.
+    //
+    // We originally probed the *game* tree for `lib/.../libSDL2…` as a
+    // proxy for "this build will dlopen X11/Wayland by name." That was
+    // wrong twice over:
+    //   1. The Ren'Py 7.4.x Python-2 SDK statically links SDL2 into
+    //      `librenpython.so` and ships no `libSDL2*` file at all. The
+    //      games still dlopen X11/Wayland; the probe just missed them.
+    //   2. Even when a bundle ships SDL2, what actually fails is the
+    //      transitive dlopen of `libX11.so.6` / `libwayland-client.so.0`.
+    //      Checking the *host* for those is what tells us whether the
+    //      fix is needed.
+    //
+    // `host_lacks_soname` walks the standard FHS search dirs
+    // (`/usr/lib`, `/lib64`, the Debian multiarch dir, etc.). On
+    // Arch / Ubuntu / Fedora `/usr/lib/libX11.so.6` exists and the
+    // recipe stays off. On NixOS those dirs are empty (nix-ld lives in
+    // a non-FHS path and doesn't ship X11 by default), the predicate
+    // fires, and we prepend our X11/Wayland bundle.
     .detect = .{ .all = .{
         .{ .engine_fingerprint = .renpy },
-        // Cap the engine version at 7.99 so this recipe doesn't fire
-        // for Ren'Py 8 installs (which use the leaner `renpy8`
-        // recipe).
         .{ .engine_version_at_most = .{ .engine = .renpy, .version = "7.99" } },
-        .{ .file_exists_any = .{
-            "lib/linux-x86_64/libSDL2-2.0.so.0",
-            "lib/linux-i686/libSDL2-2.0.so.0",
-        } },
-        // Any of these missing is enough to break Ren'Py 7. Listing
-        // them all means a Debian container that has libX11 but
-        // lacks libXmu still trips the detector.
-        .{ .host_lacks_any_soname = .{
-            "libX11.so.6",
-            "libXmu.so.6",
-            "libGLU.so.1",
-            "libGLEW.so.1.7",
-        } },
+        .{ .host_lacks_soname = "libX11.so.6" },
     } },
     .apply = .{
         .{ .env_prepend = .{

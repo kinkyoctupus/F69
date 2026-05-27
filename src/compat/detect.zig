@@ -19,7 +19,7 @@ pub const Ctx = struct {
 /// Evaluate a detector. Errors surface as "no match" — the recipe
 /// shouldn't fire if we can't even examine the install.
 pub fn matches(ctx: *const Ctx, d: *const dom.Detect) bool {
-    return switch (d.*) {
+    const result = switch (d.*) {
         .file_exists => |p| fileExists(ctx, p),
         .file_exists_any => |list| blk: {
             for (list) |p| if (fileExists(ctx, p)) break :blk true;
@@ -46,6 +46,8 @@ pub fn matches(ctx: *const Ctx, d: *const dom.Detect) bool {
             break :blk false;
         },
     };
+    std.log.scoped(.compat).info("detect.matches: tag={s} -> {}", .{ @tagName(d.*), result });
+    return result;
 }
 
 const VersionMatchMode = enum { at_most, at_least };
@@ -56,19 +58,26 @@ const VersionMatchMode = enum { at_most, at_least };
 /// per-engine probe is delegated to the shared util module so the
 /// parsers stay in one place (also used by `convert/renpy.zig`).
 fn versionMatches(ctx: *const Ctx, bound: dom.EngineVersionBound, mode: VersionMatchMode) bool {
-    // FBA scratch — probe reads at most 256 KiB and frees before
-    // returning, so 4 KiB stack is plenty for the bufPrint paths.
-    var stack_buf: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    // page_allocator — Ren'Py's `__init__.py` fallback path can read
+    // up to 256 KiB, which blew a previous 4 KiB FBA and silently
+    // turned every version probe into "no match". Probe runs once
+    // per detector, so heap cost is fine. The returned version
+    // string is allocator-owned; free it before we return.
+    const alloc = std.heap.page_allocator;
     const detected_opt: ?[]const u8 = switch (bound.engine) {
-        .renpy => detectRenpyVersion(ctx, fba.allocator()),
+        .renpy => detectRenpyVersion(ctx, alloc),
         // Other engines: version probing not implemented yet. Returning
         // null here means engine_version_at_* never matches for them —
         // an upcoming patch can flesh out per-engine probes.
         else => null,
     };
-    const detected = detected_opt orelse return false;
+    const detected = detected_opt orelse {
+        std.log.scoped(.compat).info("versionMatches: engine={s} probe FAILED (no version file readable) — bound={s} mode={s}", .{ @tagName(bound.engine), bound.version, @tagName(mode) });
+        return false;
+    };
+    defer alloc.free(detected);
     const ord = util_version.compare(detected, bound.version);
+    std.log.scoped(.compat).info("versionMatches: engine={s} detected={s} bound={s} mode={s} ord={s}", .{ @tagName(bound.engine), detected, bound.version, @tagName(mode), @tagName(ord) });
     return switch (mode) {
         .at_most => ord != .gt,
         .at_least => ord != .lt,
@@ -86,7 +95,9 @@ fn detectRenpyVersion(ctx: *const Ctx, alloc: std.mem.Allocator) ?[]const u8 {
     var it = dir.iterate();
     var sub_buf: [1024]u8 = undefined;
     while (it.next(ctx.io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
+        // Accept `.unknown` — see comment in `fileExists` above for
+        // why (NTFS / FAT mounts surface every entry as DT_UNKNOWN).
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
         const sub_root = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ ctx.install_root, entry.name }) catch continue;
         if (util_renpy.detectVersion(alloc, ctx.io, sub_root) catch null) |v| return v;
     }
@@ -102,12 +113,28 @@ fn detectRenpyVersion(ctx: *const Ctx, alloc: std.mem.Allocator) ?[]const u8 {
 /// stay cheap.
 fn fileExists(ctx: *const Ctx, relpath: []const u8) bool {
     if (fileExistsAt(ctx.io, ctx.install_root, relpath)) return true;
-    var dir = std.Io.Dir.cwd().openDir(ctx.io, ctx.install_root, .{ .iterate = true }) catch return false;
+    var dir = std.Io.Dir.cwd().openDir(ctx.io, ctx.install_root, .{ .iterate = true }) catch |e| {
+        std.log.scoped(.compat).info("fileExists: openDir({s}) failed: {s}", .{ ctx.install_root, @errorName(e) });
+        return false;
+    };
     defer dir.close(ctx.io);
     var it = dir.iterate();
     var path_buf: [1024]u8 = undefined;
+    std.log.scoped(.compat).info("fileExists: scanning {s} for {s}", .{ ctx.install_root, relpath });
     while (it.next(ctx.io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
+        std.log.scoped(.compat).info("fileExists:   entry name={s} kind={s}", .{ entry.name, @tagName(entry.kind) });
+        // Accept `.unknown` alongside `.directory` — on filesystems
+        // that don't carry `d_type` in their readdir entries (FAT,
+        // NTFS / exFAT external mounts, some network filesystems),
+        // Linux returns `DT_UNKNOWN` and Zig maps that to
+        // `entry.kind = .unknown`. Skipping those silently misses
+        // every nested `<install>/<wrapper>/renpy/bootstrap.py` on
+        // those filesystems — which broke the entire compat scan
+        // for installs living on non-FHS-aware mounts (the F95
+        // games-on-external-HDD setup). The fileExistsAt call below
+        // does its own access() probe, so .file / .symlink entries
+        // that we'd try to descend into return false harmlessly.
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
         const sub_root = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ ctx.install_root, entry.name }) catch continue;
         if (fileExistsAt(ctx.io, sub_root, relpath)) return true;
     }
