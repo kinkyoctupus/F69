@@ -79,9 +79,16 @@ pub const Service = struct {
                     matched = true;
                     break;
                 };
-                if (!matched) continue;
+                if (!matched) {
+                    std.log.scoped(.compat).info("scan: {s} skipped — platform mismatch", .{r.id});
+                    continue;
+                }
             }
-            if (!detect_mod.matches(&ctx, &r.detect)) continue;
+            if (!detect_mod.matches(&ctx, &r.detect)) {
+                std.log.scoped(.compat).info("scan: {s} skipped — detect.matches false", .{r.id});
+                continue;
+            }
+            std.log.scoped(.compat).info("scan: {s} matched", .{r.id});
 
             const status: dom.IssueStatus = blk: {
                 for (already_applied) |id| if (std.mem.eql(u8, id, r.id)) break :blk .fixed;

@@ -23,17 +23,15 @@
     .severity = .blocker,
     .reversible = true,
     .platforms = .{ .linux },
+    // Detection: same shape as the Ren'Py 7 sibling. We don't probe
+    // the game's bundled SDL2 path (which Ren'Py 7.4.x's Python-2 SDK
+    // doesn't ship anyway); we probe the *host* for the X11 lib that
+    // SDL2 will dlopen at runtime. NixOS without nix-ld X11 libs →
+    // missing → fire. Arch / Ubuntu / Fedora → present → stay off.
     .detect = .{ .all = .{
         .{ .engine_fingerprint = .renpy },
         .{ .engine_version_at_least = .{ .engine = .renpy, .version = "8.0" } },
-        .{ .file_exists_any = .{
-            "lib/linux-x86_64/libSDL2-2.0.so.0",
-            "lib/py3-linux-x86_64/libSDL2-2.0.so.0",
-        } },
-        .{ .host_lacks_any_soname = .{
-            "libX11.so.6",
-            "libwayland-client.so.0",
-        } },
+        .{ .host_lacks_soname = "libX11.so.6" },
     } },
     .apply = .{
         .{ .env_prepend = .{
