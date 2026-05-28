@@ -232,6 +232,21 @@ pub const Game = struct {
     /// sidebar filter. The display text lives in `thread_info_md`
     /// (verbatim); this column lets us filter without re-parsing.
     censored: CensoredState = .unknown,
+    /// F95Indexer last-change timestamp from the `/fast` endpoint.
+    /// Null = never fetched via the indexer (or scraper-only history).
+    /// The indexer refresh path only calls `/full` when the server-side
+    /// `last_change` is greater than this — matches F95Checker's
+    /// optimization. Scraper path leaves this untouched.
+    last_indexer_change: ?i64 = null,
+    /// f95_indexer mapping version at the time of this row's last
+    /// successful /full. Mirrors F95Checker's `last_check_version`.
+    /// When `f95_indexer.PARSER_VERSION` is bumped (new fields parsed
+    /// out of the indexer response), the refresh path force-/full's
+    /// every row whose stored version is below the current value, so
+    /// existing rows pick up the new mapping without needing a manual
+    /// "force full refresh" click. Null = never indexer-synced (or
+    /// synced before this column existed) → also forces /full.
+    last_indexer_parser_version: ?u32 = null,
 
     pub fn weightedRating(self: *const Game, library_mean: f32, prior_weight: f32) ?f32 {
         const r = self.rating orelse return null;

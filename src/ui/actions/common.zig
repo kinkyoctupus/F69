@@ -48,7 +48,10 @@ const launch_mod = @import("launch.zig");
 /// MUST also flip its cancel flag here, otherwise the shutdown
 /// spin loop will time out on a worker that nobody asked to stop.
 pub fn cancelAllWorkers(state: *types.State) void {
-    if (state.pending_sync) |j| j.cancel.store(true, .release);
+    for (state.active_syncs) |maybe_slot| {
+        if (maybe_slot) |j| j.cancel.store(true, .release);
+    }
+    if (state.pending_fast_check) |j| j.cancel.store(true, .release);
     // Phase-2 image worker: shared cancel flag covers both the active
     // job and any tids still queued.
     state.image_cancel.store(true, .release);
@@ -57,6 +60,9 @@ pub fn cancelAllWorkers(state: *types.State) void {
     if (state.pending_rpdl_download) |j| j.cancel.store(true, .release);
     if (state.pending_donor_download) |j| j.cancel.store(true, .release);
     if (state.pending_tags_refresh) |j| j.cancel.store(true, .release);
+    if (state.donor_probe_job) |j| j.cancel.store(true, .release);
+    if (state.slide_load_job) |j| j.cancel.store(true, .release);
+    if (state.launch_watch_job) |j| j.cancel.store(true, .release);
     if (state.test_install_job) |j| j.cancel.store(true, .release);
     if (state.import_job) |j| j.cancel.store(true, .release);
 }
@@ -72,14 +78,18 @@ pub fn cancelAllWorkers(state: *types.State) void {
 /// races `f95_client.deinit` against the worker's next HTTP call →
 /// UAF. The companion `cancelAllWorkers` must cover every slot too.
 pub fn workersBusy(state: *const types.State) bool {
-    if (state.pending_sync != null) return true;
-    if (state.image_active != null) return true;
+    if (state.anyActiveSync()) return true;
+    if (state.pending_fast_check != null) return true;
+    if (state.anyActiveImage()) return true;
     if (state.image_queue != null and state.image_queue_head < state.image_queue_len) return true;
     if (state.pending_bookmarks != null) return true;
     if (state.pending_update_check != null) return true;
     if (state.pending_rpdl_download != null) return true;
     if (state.pending_donor_download != null) return true;
     if (state.pending_tags_refresh != null) return true;
+    if (state.donor_probe_job != null) return true;
+    if (state.slide_load_job != null) return true;
+    if (state.launch_watch_job != null) return true;
     if (state.test_install_job != null) return true;
     if (state.import_job != null) return true;
     if (state.post_install_jobs) |list_ptr| {
@@ -184,6 +194,178 @@ fn browserWorker(job: *BrowserJob) void {
     _ = child.wait(job.io) catch {};
 }
 
+// ============================================================
+//  Guides: walkthroughs / PDFs / EPUBs / HTML files the user
+//  drops onto a game. Stored under
+//  `<library_root>/<thread_id>/guides/<original-filename>`.
+//  No DB row — the directory IS the source of truth. CRUD:
+//    - add:    file picker → copy into the guides dir
+//    - list:   walked on demand by `listGuides`
+//    - open:   reuses `openExternalUrl` to invoke xdg-open
+//    - remove: delete the file from disk
+// ============================================================
+
+/// Absolute path to the guides directory for one game. Allocator-
+/// owned; caller frees.
+pub fn guidesDirFor(alloc: std.mem.Allocator, library_root: []const u8, thread_id: u64) ![]u8 {
+    return std.fmt.allocPrint(alloc, "{s}/{d}/guides", .{ library_root, thread_id });
+}
+
+/// Show a file picker, copy the chosen file into the game's guides
+/// dir. Idempotent on the source side (file is left intact on disk).
+/// On conflict (same filename already present), the new file is
+/// stored with a numeric suffix `name (2).pdf`.
+pub fn addGuideForGame(frame: *Frame, thread_id: u64) void {
+    const alloc = frame.lib.alloc;
+    const file_picker = @import("util_file_picker");
+    const picked = file_picker.open(alloc, &[_]file_picker.FilterItem{
+        .{ .name = "Documents", .spec = "pdf,epub,html,htm,txt,md,docx,odt" },
+        .{ .name = "All files", .spec = "" },
+    }, null) catch |e| {
+        var buf: [192]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Pick failed: {s}", .{@errorName(e)}) catch "Pick failed";
+        frame.state.pushToast(.err, m);
+        return;
+    };
+    const src_path = picked orelse return;
+    defer alloc.free(src_path);
+
+    const guides_dir = guidesDirFor(alloc, frame.info.library_root, thread_id) catch return;
+    defer alloc.free(guides_dir);
+    std.Io.Dir.cwd().createDirPath(frame.io, guides_dir) catch |e| {
+        var buf: [192]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Guides dir create failed: {s}", .{@errorName(e)}) catch "Guides dir create failed";
+        frame.state.pushToast(.err, m);
+        return;
+    };
+
+    // Find a unique destination filename.
+    const base = std.fs.path.basename(src_path);
+    const dst_path = uniqueGuidePath(alloc, frame.io, guides_dir, base) catch return;
+    defer alloc.free(dst_path);
+
+    copyFile(frame.io, src_path, dst_path) catch |e| {
+        var buf: [256]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Guide copy failed: {s}", .{@errorName(e)}) catch "Guide copy failed";
+        frame.state.pushToast(.err, m);
+        return;
+    };
+    var ok_buf: [128]u8 = undefined;
+    const ok = std.fmt.bufPrint(&ok_buf, "Added: {s}", .{base}) catch "Guide added";
+    frame.state.pushToast(.info, ok);
+}
+
+/// Open one guide via the user's external app (xdg-open by default).
+pub fn openGuide(frame: *Frame, thread_id: u64, filename: []const u8) void {
+    const alloc = frame.lib.alloc;
+    const guides_dir = guidesDirFor(alloc, frame.info.library_root, thread_id) catch return;
+    defer alloc.free(guides_dir);
+    const full = std.fmt.allocPrint(alloc, "{s}/{s}", .{ guides_dir, filename }) catch return;
+    defer alloc.free(full);
+    openExternalUrl(frame, full);
+}
+
+/// Remove one guide. Best-effort; logs a toast on failure.
+pub fn removeGuide(frame: *Frame, thread_id: u64, filename: []const u8) void {
+    const alloc = frame.lib.alloc;
+    const guides_dir = guidesDirFor(alloc, frame.info.library_root, thread_id) catch return;
+    defer alloc.free(guides_dir);
+    const full = std.fmt.allocPrint(alloc, "{s}/{s}", .{ guides_dir, filename }) catch return;
+    defer alloc.free(full);
+    std.Io.Dir.cwd().deleteFile(frame.io, full) catch |e| {
+        var buf: [192]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Guide delete failed: {s}", .{@errorName(e)}) catch "Guide delete failed";
+        frame.state.pushToast(.err, m);
+        return;
+    };
+}
+
+/// Pick a unique destination path inside `guides_dir`. If `<dir>/<base>`
+/// is free, returns it as-is; otherwise appends ` (2)`, ` (3)`, … to
+/// the stem until a free slot is found. Returns allocator-owned path.
+fn uniqueGuidePath(alloc: std.mem.Allocator, io: std.Io, guides_dir: []const u8, base: []const u8) ![]u8 {
+    const first = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ guides_dir, base });
+    if (std.Io.Dir.cwd().access(io, first, .{})) {
+        // Already exists; need a suffix.
+        alloc.free(first);
+        const dot = std.mem.lastIndexOfScalar(u8, base, '.');
+        const stem = if (dot) |d| base[0..d] else base;
+        const ext = if (dot) |d| base[d..] else "";
+        var n: u32 = 2;
+        while (n < 1000) : (n += 1) {
+            const candidate = try std.fmt.allocPrint(alloc, "{s}/{s} ({d}){s}", .{ guides_dir, stem, n, ext });
+            if (std.Io.Dir.cwd().access(io, candidate, .{})) {
+                alloc.free(candidate);
+                continue;
+            } else |_| {
+                return candidate;
+            }
+        }
+        return error.NoSuffixFound;
+    } else |_| {
+        return first;
+    }
+}
+
+/// Cheap stream-copy. We're typically dealing with small docs
+/// (KB to MB), not big binaries, so a single allocation buffer
+/// keeps the implementation simple.
+fn copyFile(io: std.Io, src: []const u8, dst: []const u8) !void {
+    var in = try std.Io.Dir.cwd().openFile(io, src, .{ .mode = .read_only });
+    defer in.close(io);
+    var out = try std.Io.Dir.cwd().createFile(io, dst, .{ .truncate = true });
+    defer out.close(io);
+
+    var chunk: [64 * 1024]u8 = undefined;
+    var fr_buf: [4096]u8 = undefined;
+    var fw_buf: [4096]u8 = undefined;
+    var fr = in.reader(io, &fr_buf);
+    var fw = out.writer(io, &fw_buf);
+    while (true) {
+        const got = fr.interface.readSliceShort(&chunk) catch |e| return e;
+        if (got == 0) break;
+        try fw.interface.writeAll(chunk[0..got]);
+    }
+    try fw.interface.flush();
+}
+
+/// One discovered guide file under a game's guides dir.
+pub const GuideEntry = struct {
+    /// Display name (filename without path). Allocator-owned.
+    name: []const u8,
+};
+
+/// Walk the guides dir for `thread_id` and collect every file
+/// found. Caller frees via `freeGuides`. Missing dir → empty list,
+/// not an error (guides are optional per game).
+pub fn listGuides(frame: *Frame, thread_id: u64) ![]GuideEntry {
+    const alloc = frame.lib.alloc;
+    const guides_dir = try guidesDirFor(alloc, frame.info.library_root, thread_id);
+    defer alloc.free(guides_dir);
+
+    var dir = std.Io.Dir.cwd().openDir(frame.io, guides_dir, .{ .iterate = true }) catch return &.{};
+    defer dir.close(frame.io);
+
+    var out: std.ArrayList(GuideEntry) = .empty;
+    errdefer {
+        for (out.items) |g| alloc.free(g.name);
+        out.deinit(alloc);
+    }
+
+    var it = dir.iterate();
+    while (it.next(frame.io) catch null) |entry| {
+        if (entry.kind != .file and entry.kind != .unknown) continue;
+        const dup = try alloc.dupe(u8, entry.name);
+        try out.append(alloc, .{ .name = dup });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+pub fn freeGuides(alloc: std.mem.Allocator, guides: []GuideEntry) void {
+    for (guides) |g| alloc.free(g.name);
+    alloc.free(guides);
+}
+
 /// Persist the browser executable path the user picked in Settings.
 /// Atomic tmp+rename. Empty input (after trimming) clears the file
 /// so the next launch falls back to xdg-open.
@@ -265,6 +447,18 @@ pub fn persistAutoConvertIfDirty(state: *State, path: []const u8, io: std.Io) vo
     state.auto_convert_persisted = state.auto_convert;
 }
 
+/// Mirror `state.auto_apply_compat` to disk. Same debounce as
+/// `persistAutoConvertIfDirty`.
+pub fn persistAutoApplyCompatIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.auto_apply_compat == state.auto_apply_compat_persisted) return;
+    const text: []const u8 = if (state.auto_apply_compat) "true" else "false";
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("auto_apply_compat persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.auto_apply_compat_persisted = state.auto_apply_compat;
+}
+
 /// Mirror `state.sandbox_default` to `<data_root>/sandbox_default`
 /// when the checkbox in Settings flips. Same debounce trick as
 /// `persistAutoConvertIfDirty` — no-op when nothing changed.
@@ -288,6 +482,44 @@ pub fn persistAutoUpdateDefaultIfDirty(state: *State, path: []const u8, io: std.
         return;
     };
     state.auto_update_default_persisted = state.auto_update_default;
+}
+
+/// Mirror `state.refresh_backend` to disk on toggle. Same shape as
+/// `persistAutoUpdateDefaultIfDirty`. Writes the enum tag name
+/// (`indexer` / `scraper`) so the file is human-readable.
+pub fn persistRefreshBackendIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.refresh_backend == state.refresh_backend_persisted) return;
+    persistTextFile(io, path, @tagName(state.refresh_backend)) catch |e| {
+        log.warn("refresh_backend persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.refresh_backend_persisted = state.refresh_backend;
+}
+
+/// Mirror `state.max_parallel_sync` to disk on change. Writes the
+/// integer as a single line. Caller has already clamped to the
+/// `[1, MAX_PARALLEL_SYNC]` range; we just persist.
+pub fn persistMaxParallelSyncIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.max_parallel_sync == state.max_parallel_sync_persisted) return;
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{state.max_parallel_sync}) catch return;
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("max_parallel_sync persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.max_parallel_sync_persisted = state.max_parallel_sync;
+}
+
+/// Mirror `state.max_parallel_image` to disk on change.
+pub fn persistMaxParallelImageIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.max_parallel_image == state.max_parallel_image_persisted) return;
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{state.max_parallel_image}) catch return;
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("max_parallel_image persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.max_parallel_image_persisted = state.max_parallel_image;
 }
 
 /// Parse the aria2-port textEntry buffer + Save it. Returns the new
@@ -337,12 +569,17 @@ pub fn saveAria2SeedRatio(state: *State, path: []const u8, io: std.Io) !f32 {
 /// piggy-back on top of an already-running check.
 pub fn maybeAutoUpdateCheck(frame: *Frame) void {
     const state = frame.state;
+    // Indexer mode owns the "what changed?" question — `/fast` returns
+    // a per-game last_change for free, so the latest-updates walker is
+    // redundant AND would be direct f95zone.to scraping the user has
+    // opted out of. Skip the entire auto-check pipeline here.
+    if (state.refresh_backend == .indexer) return;
     // Never fire while another worker is mid-flight. The startup
     // path waits for bookmarks to drain, the recurring path waits
     // for whichever previous check finishes.
     if (state.pending_update_check != null) return;
     if (state.pending_bookmarks != null) return;
-    if (state.pending_sync != null) return;
+    if (state.anyActiveSync()) return;
     if (state.sync_queue != null) return;
 
     const settings = state.auto_check;

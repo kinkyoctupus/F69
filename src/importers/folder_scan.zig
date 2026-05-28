@@ -1,8 +1,8 @@
 // Folder-scan importer — sweeps a directory of installed games and
-// pulls name + version out of each subfolder's filename. Output
-// shape is the same `ImportedGame` the F95Checker / xLibrary
-// importers produce, so the downstream migrate + upsert flow doesn't
-// care which source the bundle came from.
+// emits one `ImportedGame` per top-level subdir whose tree contains
+// a recognised engine fingerprint (`renpy/bootstrap.py`,
+// `UnityPlayer.so`, `www/js/rpg_managers.js`, etc.). The folder that
+// contains the fingerprint is the install root.
 //
 // **No F95 thread id is known up front.** The folder names don't
 // carry the thread id, and we don't hit F95Zone search at scan
@@ -10,27 +10,90 @@
 // synthetic id with the high bit set so it can't collide with a
 // real F95 thread id (those are < 2^32 in practice) — the UI's
 // "Sync this game" flow later resolves the synthetic against the
-// real thread.
+// real thread, OR the user explicitly links the row to an existing
+// library game from the preview screen.
 //
-// Filename heuristics — extraction strategy in priority order:
-//   1. Skip non-directories AND directories that look like
-//      companion files (`*_walkthrough.*`, `*Cheats*.pdf`, `*.sh`,
-//      `*.zip.part01`, `*.exe`, etc.). The folder list contains
-//      both real game dirs and helper files dropped alongside.
-//   2. Tokenize the name on `-`, `_`, and space. Bracketed bits
-//      `[v1.2]` or `(PC)` are unwrapped first.
-//   3. Find the first token that matches `looksLikeVersion`. The
-//      tokens before it form the name; tokens after are the tail
-//      (drop platform/final/steam/etc. tags from the tail).
-//   4. If no version token is found, accept the name verbatim and
-//      leave `version = null`. The library will show it as
-//      version-unknown.
+// Walk strategy:
+//   1. List the scanned dir's immediate children.
+//   2. For each child that is a directory, run `detectEngineDeep`
+//      — fingerprint check at that level, then one level deeper,
+//      bounded at `MAX_FINGERPRINT_DEPTH` to keep the cost bounded
+//      for users whose collection lives on an external HDD with
+//      thousands of folders.
+//   3. On a hit: parse the top-level folder name for a best-effort
+//      `(name, version)` and record:
+//        - `name` / `version` — the editable defaults the preview
+//          row shows. The UI can override before commit.
+//        - `engine` — what we found, the trust anchor.
+//        - `install_executable_rel = "<top>/<rel-to-fingerprint>"` —
+//          the migrator copies the first path segment (the top-
+//          level wrapper), so this preserves the nested layout on
+//          import.
+//   4. On no hit: skip silently. Companion files (PDFs, archive
+//      parts) are filtered by `looksLikeCompanionFile` for logging
+//      but they wouldn't fingerprint anyway, so the engine probe
+//      is the source of truth here.
 
 const std = @import("std");
-const f95 = @import("f95");
 const importers = @import("importers.zig");
+const Engine = importers.Engine;
 
 const log = std.log.scoped(.importers_folder);
+
+/// Max nesting under each top-level child the scanner descends into
+/// when looking for an engine fingerprint. Real-world layouts:
+///   - top/                                     → depth 0
+///   - top/EngineGame-1.2/                      → depth 1 (common)
+///   - top/Linux/EngineGame-1.2/                → depth 2 (rare, multi-platform bundles)
+///   - top/Linux/EngineGame-1.2/inner/          → depth 3 (very rare)
+/// Cap at 3 — anything deeper is almost certainly noise (extracted
+/// archives, leftover renpy SDKs, etc).
+const MAX_FINGERPRINT_DEPTH: u8 = 3;
+
+/// One `(engine, relpath)` pair. Reused at every dir we probe.
+const Fingerprint = struct { engine: Engine, relpath: []const u8 };
+
+/// Fingerprint table. Order = priority — earlier entries win on a tie
+/// (currently only matters if a host carries both a `.so` and a `.dll`
+/// for Unity, which would just yield two rows otherwise).
+///
+/// Notes on the less-obvious ones:
+///   - GameMaker Studio: `data.win` is the runtime data archive on
+///     Windows builds (e.g. `Dating Amy`).
+///   - RPGM VX Ace: `Game.rgss3a` is the RGSS3 archive (e.g.
+///     `Milfs_Control`, `The Artifact`).
+///   - RPGM VX (older): `Game.rgssad` is the RGSS2 archive.
+///   - HTML/Electron games: `index.html` at root catches things like
+///     `Just one more chance` (a raw HTML5 build). Slightly broad —
+///     a folder whose entry point is `index.html` is almost always a
+///     game in this directory layout.
+const ENGINE_FINGERPRINTS = [_]Fingerprint{
+    .{ .engine = .renpy,   .relpath = "renpy/bootstrap.py" },
+    .{ .engine = .rpgm_mv, .relpath = "www/js/rpg_managers.js" },
+    .{ .engine = .rpgm_mz, .relpath = "js/rmmz_managers.js" },
+    .{ .engine = .unity,   .relpath = "UnityPlayer.so" },
+    .{ .engine = .unity,   .relpath = "UnityPlayer.dll" },
+    // RPG Maker VX Ace / VX — the archive is the trust anchor; we
+    // could also probe `Game.exe` but that's too generic.
+    .{ .engine = .rpgm_vx, .relpath = "Game.rgss3a" },
+    .{ .engine = .rpgm_vx, .relpath = "Game.rgssad" },
+    // GameMaker Studio runtime archive.
+    .{ .engine = .other,   .relpath = "data.win" },
+    // Unreal Engine packaged build — the `Engine/Binaries` directory
+    // is the canonical marker (every shipped Unreal game has it).
+    // `access()` succeeds for directories too, so we can use the
+    // file-probe machinery for this.
+    .{ .engine = .unreal,  .relpath = "Engine/Binaries" },
+    // Electron-wrapped game (e.g. Long Story Short uses
+    // `resources/app/package.json` for its bundled JS app). NW.js
+    // games also have a top-level `package.json` but with `www/`
+    // alongside — they're caught by the rpgm_mv probe earlier.
+    .{ .engine = .html,    .relpath = "resources/app/package.json" },
+    // HTML5 / Electron entry point. Last so renpy/rpgm/unity win
+    // when they're also present (rare but possible — e.g. a renpy
+    // game packaged with an `index.html` redirect).
+    .{ .engine = .html,    .relpath = "index.html" },
+};
 
 /// Parser output. Doesn't borrow from the input slice — caller can
 /// drop the original buffer once this is filled.
@@ -236,15 +299,20 @@ fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 // ---- directory walker ----------------------------------------
 
-/// Scan `dir_path` and return one `ImportedGame` per subdirectory
-/// whose name parses cleanly. Skipped entries (companion files,
-/// unparseable names) are logged but don't fail the scan.
+/// Scan `dir_path` and return one `ImportedGame` per top-level
+/// subdirectory that contains a recognised engine fingerprint
+/// anywhere up to `MAX_FINGERPRINT_DEPTH` levels deep. The folder
+/// name (parsed for a best-effort `name` + `version` via
+/// `parseFolderName`) decorates the row but is not the trust anchor
+/// — the engine fingerprint is. Folders without any fingerprint are
+/// skipped silently.
 ///
 /// Each game's synthetic `thread_id` is the low 63 bits of
 /// Wyhash(folder_name) plus the high bit set — guarantees no
-/// collision with real F95 thread ids in any realistic future.
-/// The user's "Sync this game" flow later resolves the synthetic
-/// id to a real one via F95Zone search and merges the row.
+/// collision with real F95 thread ids in any realistic future. The
+/// preview screen's "Link" field lets the user attach the row to an
+/// existing library game (real thread id) before commit; on commit
+/// only the linked thread id is recorded.
 pub fn scan(
     alloc: std.mem.Allocator,
     io: std.Io,
@@ -264,44 +332,195 @@ pub fn scan(
     defer dir.close(io);
 
     var it = dir.iterate();
-    var skipped: usize = 0;
+    var skipped_companion: usize = 0;
+    var skipped_no_engine: usize = 0;
     while (it.next(io) catch null) |entry| {
-        if (entry.kind != .directory) {
-            skipped += 1;
+        // FUSE / NTFS mounts surface every entry as `.unknown` (no
+        // d_type in their readdir). Accept that alongside
+        // `.directory`; the engine probe below short-circuits if the
+        // entry isn't actually walkable.
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
+
+        // Drop obvious companion files BEFORE the fingerprint walk.
+        // `parseFolderName` already does this for naming, but doing
+        // it here too avoids one openDir attempt per `*.pdf`.
+        if (looksLikeCompanionFile(entry.name)) {
+            skipped_companion += 1;
+            log.debug("skip (companion): {s}", .{entry.name});
             continue;
         }
-        // Parse the folder name. `parse_buf` is plenty for any
-        // reasonable folder name; bigger names are rejected so we
-        // don't truncate.
-        var parse_buf: [1024]u8 = undefined;
-        const parsed = parseFolderName(&parse_buf, entry.name) orelse {
-            skipped += 1;
-            log.debug("skip (unparseable): {s}", .{entry.name});
+
+        // Build "<scan_dir>/<top_level>" once, reuse for the walk.
+        var top_path_buf: [1024]u8 = undefined;
+        const top_path = std.fmt.bufPrint(&top_path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch {
+            skipped_no_engine += 1;
             continue;
         };
 
-        const name_dup = a.dupe(u8, parsed.name) catch return importers.Error.OutOfMemory;
-        const version_dup: ?[]const u8 = if (parsed.version) |v|
+        // Engine fingerprint walk. Returns the relative path FROM
+        // `<scan_dir>/<top_level>` to the fingerprint file. Null
+        // when no engine matched anywhere within the depth budget.
+        var rel_buf: [1024]u8 = undefined;
+        const hit = detectEngineDeep(io, top_path, &rel_buf) orelse {
+            skipped_no_engine += 1;
+            log.debug("skip (no engine fingerprint): {s}", .{entry.name});
+            continue;
+        };
+
+        // Parse the *top-level* folder name for name/version. The
+        // engine fingerprint guarantees this isn't a companion file,
+        // so we don't gate the row on `parseFolderName` returning
+        // non-null — even an unparseable name still produces a row
+        // (the user can edit name + version in the preview).
+        var parse_buf: [1024]u8 = undefined;
+        const parsed = parseFolderName(&parse_buf, entry.name);
+        const parsed_name: []const u8 = if (parsed) |p| p.name else entry.name;
+        const parsed_version: ?[]const u8 = if (parsed) |p| p.version else null;
+
+        const name_dup = a.dupe(u8, parsed_name) catch return importers.Error.OutOfMemory;
+        const version_dup: ?[]const u8 = if (parsed_version) |v|
             (a.dupe(u8, v) catch return importers.Error.OutOfMemory)
         else
             null;
-        // install_executable_rel: the importer downstream uses
-        // `installDirRel` to pick the directory name. Give it
-        // `<folder>/`; downstream will trim the trailing slash.
-        const install_path = std.fmt.allocPrint(a, "{s}/", .{entry.name}) catch
+
+        // install_executable_rel:
+        //   "<top_level>/<rel-from-top-to-fingerprint>"
+        // The migrator uses `installDirRel` (first path segment) to
+        // decide what to copy — always `<top_level>`. The remainder
+        // is informational (preserves the nested layout on disk).
+        const install_path = std.fmt.allocPrint(a, "{s}/{s}", .{ entry.name, hit.fingerprint_rel }) catch
             return importers.Error.OutOfMemory;
 
         games.append(a, .{
             .thread_id = syntheticThreadId(name_dup),
             .name = name_dup,
             .version = version_dup,
+            .engine = hit.engine,
             .install_executable_rel = install_path,
         }) catch return importers.Error.OutOfMemory;
     }
 
     const out = games.toOwnedSlice(a) catch return importers.Error.OutOfMemory;
-    log.info("folder scan: parsed {d}, skipped {d}", .{ out.len, skipped });
+    log.info("folder scan: found {d} game(s) ({d} companion, {d} non-engine skipped)", .{ out.len, skipped_companion, skipped_no_engine });
     return .{ .arena = arena_ptr, .games = out };
+}
+
+// ---- engine fingerprint walker -------------------------------
+
+/// Result of a successful fingerprint probe.
+pub const FingerprintHit = struct {
+    engine: Engine,
+    /// Relative path from the searched base down to the fingerprint
+    /// file (e.g. `"renpy/bootstrap.py"` for a top-level Ren'Py
+    /// install, or `"AboveTheClouds-0.8/renpy/bootstrap.py"` for a
+    /// wrapper-folder layout).
+    fingerprint_rel: []const u8,
+};
+
+/// Check whether `<base>/<fp.relpath>` exists for any fingerprint in
+/// the table; on hit, write the matching `relpath` into `out_buf` and
+/// return the `(engine, slice)` pair. The slice points into `out_buf`.
+fn detectEngineAt(io: std.Io, base: []const u8, out_buf: []u8) ?FingerprintHit {
+    for (ENGINE_FINGERPRINTS) |fp| {
+        var probe_buf: [1024]u8 = undefined;
+        const full = std.fmt.bufPrint(&probe_buf, "{s}/{s}", .{ base, fp.relpath }) catch continue;
+        std.Io.Dir.cwd().access(io, full, .{}) catch |e| {
+            std.log.scoped(.importers_folder).debug("  probe miss {s} ({s})", .{ full, @errorName(e) });
+            continue;
+        };
+        std.log.scoped(.importers_folder).info("  probe HIT  {s}", .{full});
+        if (fp.relpath.len > out_buf.len) continue;
+        @memcpy(out_buf[0..fp.relpath.len], fp.relpath);
+        return .{ .engine = fp.engine, .fingerprint_rel = out_buf[0..fp.relpath.len] };
+    }
+    // Fallback: any `*.exe` in this directory. The vast majority of
+    // F95 "single .exe in a folder" distributions are older RPG
+    // Maker games (2000 / 2003 / VX / VX Ace) whose runtime archive
+    // got missed by the named probes. Default-assume RPGM VX —
+    // it's the most common older-RPGM engine and the user can fix
+    // it on the preview row if it's actually something else
+    // (Wolf RPG, custom engine, etc.).
+    return findExeFingerprint(io, base, out_buf);
+}
+
+fn findExeFingerprint(io: std.Io, base: []const u8, out_buf: []u8) ?FingerprintHit {
+    var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        // FUSE NTFS returns `.unknown` for everything — accept it
+        // alongside `.file` so the fallback still fires there.
+        if (entry.kind != .file and entry.kind != .unknown) continue;
+        if (entry.name.len < 5) continue; // need ".exe" + 1 char
+        const tail = entry.name[entry.name.len - 4 ..];
+        if (!std.ascii.eqlIgnoreCase(tail, ".exe")) continue;
+        if (entry.name.len > out_buf.len) continue;
+        @memcpy(out_buf[0..entry.name.len], entry.name);
+        std.log.scoped(.importers_folder).info("  probe HIT (exe fallback) {s}/{s}", .{ base, entry.name });
+        return .{ .engine = .rpgm_vx, .fingerprint_rel = out_buf[0..entry.name.len] };
+    }
+    return null;
+}
+
+/// Engine probe at `base`, then up to `MAX_FINGERPRINT_DEPTH-1` levels
+/// deeper. Returns the FIRST hit (depth-first, alphabetical iteration
+/// order). The `fingerprint_rel` field on the result is rooted at
+/// `base` — e.g. for a hit at `<base>/Wrapper/renpy/bootstrap.py` the
+/// returned `fingerprint_rel` is `"Wrapper/renpy/bootstrap.py"`.
+pub fn detectEngineDeep(io: std.Io, base: []const u8, out_buf: []u8) ?FingerprintHit {
+    return detectEngineDeepImpl(io, base, "", out_buf, 0);
+}
+
+fn detectEngineDeepImpl(
+    io: std.Io,
+    base: []const u8,
+    rel_prefix: []const u8,
+    out_buf: []u8,
+    depth: u8,
+) ?FingerprintHit {
+    // 1. Probe at this level. On hit, prepend the running prefix and
+    //    return.
+    {
+        var hit_buf: [1024]u8 = undefined;
+        if (detectEngineAt(io, base, &hit_buf)) |hit| {
+            if (rel_prefix.len + hit.fingerprint_rel.len > out_buf.len) return null;
+            if (rel_prefix.len == 0) {
+                @memcpy(out_buf[0..hit.fingerprint_rel.len], hit.fingerprint_rel);
+                return .{ .engine = hit.engine, .fingerprint_rel = out_buf[0..hit.fingerprint_rel.len] };
+            }
+            // "<rel_prefix>/<hit.fingerprint_rel>"
+            const total = rel_prefix.len + 1 + hit.fingerprint_rel.len;
+            if (total > out_buf.len) return null;
+            @memcpy(out_buf[0..rel_prefix.len], rel_prefix);
+            out_buf[rel_prefix.len] = '/';
+            @memcpy(out_buf[rel_prefix.len + 1 .. total], hit.fingerprint_rel);
+            return .{ .engine = hit.engine, .fingerprint_rel = out_buf[0..total] };
+        }
+    }
+
+    // 2. Descend one level if we still have budget.
+    if (depth + 1 >= MAX_FINGERPRINT_DEPTH) return null;
+
+    var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
+
+        // child base = "<base>/<entry.name>"
+        var child_base_buf: [1024]u8 = undefined;
+        const child_base = std.fmt.bufPrint(&child_base_buf, "{s}/{s}", .{ base, entry.name }) catch continue;
+
+        // running rel prefix = "<rel_prefix>/<entry.name>" or "<entry.name>"
+        var child_prefix_buf: [1024]u8 = undefined;
+        const child_prefix = if (rel_prefix.len == 0)
+            (std.fmt.bufPrint(&child_prefix_buf, "{s}", .{entry.name}) catch continue)
+        else
+            (std.fmt.bufPrint(&child_prefix_buf, "{s}/{s}", .{ rel_prefix, entry.name }) catch continue);
+
+        if (detectEngineDeepImpl(io, child_base, child_prefix, out_buf, depth + 1)) |hit| return hit;
+    }
+    return null;
 }
 
 /// Synthetic thread-id strategy: hash the cleaned folder name and
@@ -408,4 +627,92 @@ test "syntheticThreadId: high bit always set" {
     try std.testing.expect(isSyntheticThreadId(a));
     try std.testing.expect(isSyntheticThreadId(b));
     try std.testing.expect(a != b);
+}
+
+// ---- engine fingerprint walker tests -----------------------
+
+const test_env = @import("util_test_env");
+
+test "detectEngineDeep: Ren'Py at top level" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-renpy-top");
+    defer env.deinit();
+    try env.touchFile("renpy/bootstrap.py");
+
+    var buf: [256]u8 = undefined;
+    const hit = detectEngineDeep(env.io, env.root, &buf).?;
+    try std.testing.expectEqual(Engine.renpy, hit.engine);
+    try std.testing.expectEqualStrings("renpy/bootstrap.py", hit.fingerprint_rel);
+}
+
+test "detectEngineDeep: Ren'Py one wrapper deep" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-renpy-wrap");
+    defer env.deinit();
+    try env.touchFile("AboveTheClouds-0.8/renpy/bootstrap.py");
+
+    var buf: [256]u8 = undefined;
+    const hit = detectEngineDeep(env.io, env.root, &buf).?;
+    try std.testing.expectEqual(Engine.renpy, hit.engine);
+    try std.testing.expectEqualStrings("AboveTheClouds-0.8/renpy/bootstrap.py", hit.fingerprint_rel);
+}
+
+test "detectEngineDeep: Unity .so wins over RPGM in sibling" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-unity");
+    defer env.deinit();
+    try env.touchFile("inner/UnityPlayer.so");
+
+    var buf: [256]u8 = undefined;
+    const hit = detectEngineDeep(env.io, env.root, &buf).?;
+    try std.testing.expectEqual(Engine.unity, hit.engine);
+    try std.testing.expectEqualStrings("inner/UnityPlayer.so", hit.fingerprint_rel);
+}
+
+test "detectEngineDeep: RPGM MZ recognised" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-rpgm-mz");
+    defer env.deinit();
+    try env.touchFile("game/js/rmmz_managers.js");
+
+    var buf: [256]u8 = undefined;
+    const hit = detectEngineDeep(env.io, env.root, &buf).?;
+    try std.testing.expectEqual(Engine.rpgm_mz, hit.engine);
+}
+
+test "detectEngineDeep: depth budget respected" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-too-deep");
+    defer env.deinit();
+    // 4 levels deep — beyond MAX_FINGERPRINT_DEPTH = 3 from env.root.
+    try env.touchFile("a/b/c/d/renpy/bootstrap.py");
+
+    var buf: [256]u8 = undefined;
+    try std.testing.expect(detectEngineDeep(env.io, env.root, &buf) == null);
+}
+
+test "scan: emits one game per top-level engine hit" {
+    const ta = std.testing.allocator;
+    var env = try test_env.TestEnv.init(ta, "scan-mixed");
+    defer env.deinit();
+
+    try env.touchFile("AboveTheClouds-0.8/renpy/bootstrap.py");
+    try env.touchFile("KarrynsPrison-v1.3/UnityPlayer.so"); // wrong, just need a fingerprint
+    try env.touchFile("Notes.pdf"); // companion — ignored
+    try env.mkdirP("EmptyFolder"); // no engine — ignored
+
+    var bundle = try scan(ta, env.io, env.root);
+    defer bundle.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), bundle.games.len);
+    // Engines should be populated. Order isn't guaranteed across
+    // filesystems so check by name.
+    var saw_renpy = false;
+    var saw_unity = false;
+    for (bundle.games) |g| {
+        if (g.engine == .renpy and std.mem.eql(u8, g.name, "AboveTheClouds")) saw_renpy = true;
+        if (g.engine == .unity and std.mem.eql(u8, g.name, "KarrynsPrison")) saw_unity = true;
+    }
+    try std.testing.expect(saw_renpy);
+    try std.testing.expect(saw_unity);
 }

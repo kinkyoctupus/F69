@@ -17,4 +17,7 @@ pub const Error = error{
     ParseFailed,
     /// Failed to write a user preset file.
     WriteFailed,
+    /// mkxp-z binary missing — non-Linux build or vendored
+    /// `third_party/mkxp-z/` was not copied into the install tree.
+    MkxpZNotBundled,
 };

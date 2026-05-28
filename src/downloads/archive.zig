@@ -28,9 +28,12 @@ pub fn detectFormat(path: []const u8) Format {
 }
 
 pub const ExtractOpts = struct {
-    /// Strip N leading path components from each archive entry. Only
-    /// honored by the tar paths today; zip flattens via its own
-    /// `ExtractOptions`.
+    /// Strip N leading path components from each archive entry.
+    /// tar.gz: passed through to the tar reader.
+    /// 7z / tar.bz2 / tar.xz / rar: passed through to libarchive.
+    /// zip: applied as a post-extraction step (`std.zip.extract`
+    ///      has no native strip), promoting the single top-level
+    ///      directory's contents up one level per `strip` count.
     strip: u8 = 0,
 };
 
@@ -50,9 +53,12 @@ pub fn extract(
 
     switch (fmt) {
         .zip => {
-            var dest = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return errs.Error.ExtractionFailed;
+            // Need `.iterate = true` so the post-extract strip pass
+            // below can walk the top-level entries to find the
+            // wrapper folder to promote.
+            var dest = std.Io.Dir.cwd().openDir(io, dest_dir, .{ .iterate = true }) catch return errs.Error.ExtractionFailed;
             defer dest.close(io);
-            extractZip(io, archive_path, dest) catch |e| {
+            extractZip(alloc, io, archive_path, dest, opts.strip) catch |e| {
                 log.warn("zip extract failed for {s}: {s}", .{ archive_path, @errorName(e) });
                 return errs.Error.ExtractionFailed;
             };
@@ -83,12 +89,91 @@ pub fn extract(
     log.info("extracted {s} → {s}", .{ archive_path, dest_dir });
 }
 
-fn extractZip(io: Io, path: []const u8, dest: std.Io.Dir) !void {
-    var f = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
-    defer f.close(io);
-    var buf: [64 * 1024]u8 = undefined;
-    var fr = f.reader(io, &buf);
-    try std.zip.extract(dest, &fr, .{ .allow_backslashes = true });
+fn extractZip(
+    alloc: std.mem.Allocator,
+    io: Io,
+    path: []const u8,
+    dest: std.Io.Dir,
+    strip: u8,
+) !void {
+    {
+        var f = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+        defer f.close(io);
+        var buf: [64 * 1024]u8 = undefined;
+        var fr = f.reader(io, &buf);
+        try std.zip.extract(dest, &fr, .{ .allow_backslashes = true });
+    }
+
+    // `std.zip.ExtractOptions` has no `strip` field, so we emulate it
+    // by promoting the single top-level directory's contents up one
+    // level — repeated `strip` times. If the archive has multiple
+    // top-level entries (or zero), we leave it untouched; that's the
+    // same semantics tar's `--strip-components` uses when it can't
+    // strip cleanly. Without this every mod packaged as a .zip with
+    // a wrapper folder ignored the user's "Skip wrapper folder"
+    // toggle and ended up double-nested under the install dir.
+    var remaining: u8 = strip;
+    while (remaining > 0) : (remaining -= 1) {
+        if (!try promoteSingleTopDir(alloc, io, dest)) break;
+    }
+}
+
+/// One-level strip: find the single top-level directory in `dest`,
+/// rename its children up to `dest`, then delete the now-empty
+/// wrapper. Returns false (and leaves `dest` untouched) when there's
+/// more than one top-level entry or no directory — caller stops the
+/// strip loop.
+fn promoteSingleTopDir(
+    alloc: std.mem.Allocator,
+    io: Io,
+    dest: std.Io.Dir,
+) !bool {
+    var top_name_buf: [512]u8 = undefined;
+    var top_len: usize = 0;
+    var entry_count: usize = 0;
+    var saw_non_dir = false;
+    {
+        var it = dest.iterate();
+        while (try it.next(io)) |entry| {
+            entry_count += 1;
+            if (entry.kind != .directory) {
+                saw_non_dir = true;
+                continue;
+            }
+            if (top_len > 0) return false; // multiple dirs — can't strip
+            if (entry.name.len > top_name_buf.len) return false;
+            @memcpy(top_name_buf[0..entry.name.len], entry.name);
+            top_len = entry.name.len;
+        }
+    }
+    if (top_len == 0 or saw_non_dir or entry_count != 1) return false;
+    const top_name = top_name_buf[0..top_len];
+
+    // Collect child names first — renaming while iterating the same
+    // dir's stream is undefined.
+    var top_dir = try dest.openDir(io, top_name, .{ .iterate = true });
+    var names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (names.items) |n| alloc.free(n);
+        names.deinit(alloc);
+    }
+    {
+        var it = top_dir.iterate();
+        while (try it.next(io)) |entry| {
+            const dup = try alloc.dupe(u8, entry.name);
+            try names.append(alloc, dup);
+        }
+    }
+    top_dir.close(io);
+
+    // Promote each child up to `dest`, then drop the now-empty wrapper.
+    for (names.items) |name| {
+        var src_buf: [1024]u8 = undefined;
+        const src_path = try std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ top_name, name });
+        try dest.rename(src_path, dest, name, io);
+    }
+    try dest.deleteDir(io, top_name);
+    return true;
 }
 
 fn extractTarGz(

@@ -580,8 +580,11 @@ pub const Daemon = struct {
             port_arg,
             secret_arg,
             dir_arg,
-            "--console-log-level=error",
-            "--quiet=true",
+            // notice = per-download start/finish/error + Range-request
+            // outcomes on stderr. Enough signal to diagnose "stuck at
+            // 0 bytes" without flooding the console with every TCP
+            // event. `--quiet=true` would gag all of it, so it's gone.
+            "--console-log-level=notice",
             // Foreground so we hold the child handle. (`--daemon=true`
             // would fork to the background and detach.)
             "--daemon=false",

@@ -17,6 +17,18 @@ const components = @import("../components.zig");
 const Frame = types.Frame;
 const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
 
+/// Width of the wizard's left (controls) pane. Right pane takes the
+/// remainder. Hard-clamped via `max_size_content.w` so the scrollArea
+/// inside doesn't push horizontally.
+const LEFT_PANE_W: f32 = 560;
+
+/// Visual styling for the block card containers (step 1) — bordered
+/// box with a darker fill than the page background so the cards stand
+/// out as discrete units rather than a wall of text.
+const CARD_FILL: dvui.Color = .{ .r = 0x1F, .g = 0x12, .b = 0x18 };
+const CARD_BORDER: dvui.Color = .{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
+const CARD_FILL_HIGHLIGHT: dvui.Color = .{ .r = 0x2A, .g = 0x16, .b = 0x20 };
+
 // ============================================================
 //  Recipe wizard modal
 // ============================================================
@@ -46,80 +58,281 @@ pub fn recipeEditorScreen(frame: *Frame) !bool {
         return true;
     };
 
-    // ---- header bar: back link + title ----
+    // Linear wizard with 2 user-visible steps. Internally we reuse the
+    // existing WizardStep enum but only ever resolve to .install or
+    // .meta — the old .review / .relations pages were redundant with
+    // the right-pane preview, so they're collapsed into step 2.
+    //
+    //   step display | state.step
+    //   ─────────────┼───────────
+    //   1 of 2       | .install   — wrapper-folder + destination
+    //   2 of 2       | .meta      — name / version / source URL +
+    //                              Save & Install button
+    //
+    // Older wizard state with .relations / .review gets redirected
+    // to .meta so the user always lands on a real page.
+    if (w_ptr.step == .relations or w_ptr.step == .review) w_ptr.step = .meta;
+
+    const step_num: u8 = switch (w_ptr.step) {
+        .install => 1,
+        .meta => 2,
+        .review, .relations => 2,
+    };
+    const step_title: []const u8 = switch (w_ptr.step) {
+        .install => "Install plan",
+        .meta, .review, .relations => "Mod info",
+    };
+
+    // ---- header bar ----
     {
         var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 },
         });
         defer hdr.deinit();
-        if (style.button(@src(), "< Back", .{}, .{})) {
+        if (style.button(@src(), "< Back to mods", .{}, .{})) {
             actions.closeWizard(frame);
             return true;
         }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
         var title_buf: [256]u8 = undefined;
-        const title = std.fmt.bufPrint(&title_buf, "Set up install plan — {s}", .{game.name}) catch "Set up install plan";
+        const title = std.fmt.bufPrint(
+            &title_buf,
+            "Set up plan · step {d} of 2 · {s}",
+            .{ step_num, step_title },
+        ) catch "Set up plan";
         dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
-    var page_scroll = dvui.scrollArea(@src(), .{}, .{
-        .expand = .both,
-        .padding = .{ .x = 24, .y = 12, .w = 24, .h = 12 },
-    });
-    defer page_scroll.deinit();
-
-    // ---- section: metadata ----
+    // ---- two-pane body ----
+    // Hard-clamp left to LEFT_PANE_W (horizontal) AND clamp the body's
+    // height (vertical) so the trailing footer row below always has
+    // room to render. dvui's box layout is greedy — without an
+    // explicit `max_size_content.h`, a child with `expand = both`
+    // claims every pixel of vertical space the parent has and the
+    // footer's Save/Cancel/Back row gets pushed off the bottom of
+    // the OS window.
+    const win_h = dvui.windowRect().h;
+    // ~50 px header + ~60 px footer + 4 px of separators + a margin.
+    const body_max_h: f32 = @max(200.0, win_h - 140.0);
     {
-        editorSectionHeader("1. Metadata");
-        renderWizardMeta(w_ptr);
-    }
+        var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .both,
+            .max_size_content = .{ .w = std.math.floatMax(f32), .h = body_max_h },
+        });
+        defer body.deinit();
 
-    editorSectionDivider("after-metadata");
-
-    // ---- section: install steps + live preview pane underneath ----
-    {
-        editorSectionHeader("2. Install steps");
-        renderWizardInstallBlocks(frame, game, w_ptr);
-    }
-
-    editorSectionDivider("after-install");
-
-    // ---- section: relations ----
-    {
-        editorSectionHeader("3. Relations (optional)");
-        renderWizardRelations(frame, game, w_ptr);
-    }
-
-    editorSectionDivider("after-relations");
-
-    // ---- section: test + save ----
-    {
-        editorSectionHeader("4. Test & save");
-        renderWizardReview(frame, game, w_ptr);
-
-        if (w_ptr.err_msg_len > 0) {
-            const err_txt = w_ptr.err_msg_buf[0..w_ptr.err_msg_len];
-            dvui.label(@src(), "Error: {s}", .{err_txt}, .{ .style = .err });
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-        }
-
+        // Left: step controls.
         {
-            var btn_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 8, .h = 4 } });
-            defer btn_row.deinit();
-            if (style.button(@src(), "Cancel", .{}, .{ .style = .err })) {
-                actions.closeWizard(frame);
-                return true;
+            var left = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .min_size_content = .{ .w = LEFT_PANE_W, .h = 1 },
+                .max_size_content = .{ .w = LEFT_PANE_W, .h = std.math.floatMax(f32) },
+                .expand = .vertical,
+                .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
+            });
+            defer left.deinit();
+            var left_scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+            defer left_scroll.deinit();
+            renderWizardStep(frame, game, w_ptr);
+        }
+        _ = dvui.separator(@src(), .{ .expand = .vertical });
+
+        // Right: live preview pane. Archive tree on top so the user
+        // sees the source structure, then impact diff below.
+        {
+            var right = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .expand = .both,
+                .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
+            });
+            defer right.deinit();
+            renderWizardPreviewPane(frame, game, w_ptr);
+        }
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+    // ---- error line + footer (Cancel / Back / Next or Save) ----
+    if (w_ptr.err_msg_len > 0) {
+        const err_txt = w_ptr.err_msg_buf[0..w_ptr.err_msg_len];
+        dvui.label(@src(), "Error: {s}", .{err_txt}, .{ .style = .err });
+    }
+    {
+        var btn_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
+        });
+        defer btn_row.deinit();
+        if (components.iconButton(@src(), "Cancel", entypo.cross, .{ .style = .err })) {
+            actions.closeWizard(frame);
+            return true;
+        }
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (step_num > 1) {
+            if (components.iconButton(@src(), "Back", entypo.chevron_left, .{})) {
+                w_ptr.step = .install;
             }
-            _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-            if (style.button(@src(), "Save install plan", .{}, .{ .style = .highlight })) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        }
+        if (step_num < 2) {
+            if (components.iconButton(@src(), "Next", entypo.chevron_right, .{ .style = .highlight })) {
+                w_ptr.step = .meta;
+            }
+        } else {
+            if (components.iconButton(@src(), "Save & Install", entypo.check, .{ .style = .highlight })) {
                 actions.wizardSave(frame, game);
             }
         }
     }
 
     return true;
+}
+
+/// Render the controls for the currently active step in the left pane.
+/// `state.step` is the source of truth; relations content is folded
+/// into the review step behind a "Show advanced" toggle (not yet
+/// implemented; relations renders inline for now).
+fn renderWizardStep(frame: *Frame, game: *const library.Game, w_ptr: *state_mod.WizardState) void {
+    switch (w_ptr.step) {
+        .install => {
+            renderStepIntro(
+                "Install plan",
+                "Each card moves files from the archive into the game folder. Flip the wrapper-folder toggle if the preview on the right doesn't look right yet.",
+            );
+            renderWizardInstallBlocks(frame, game, w_ptr);
+        },
+        .meta, .review, .relations => {
+            renderStepIntro(
+                "Mod info",
+                "Names this mod in your library and on disk. Defaults to the archive's filename and version 1.0.",
+            );
+            renderMetaStepFresh(w_ptr);
+        },
+    }
+}
+
+/// Fresh step 2 — mod info card. Drops the previous renderWizardMeta
+/// (which had random labels, a manual for_game preview line, and no
+/// connection to the install-plan card's visual language). One card,
+/// four labeled rows, the same border + fill + corner radius as the
+/// step-1 blocks so the wizard feels like one app instead of two
+/// glued together.
+fn renderMetaStepFresh(w: *state_mod.WizardState) void {
+    var card = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 14, .y = 12, .w = 14, .h = 12 },
+        .background = true,
+        .color_fill = CARD_FILL,
+        .border = style.border_thin,
+        .color_border = CARD_BORDER,
+        .corner_radius = style.corner_radius,
+    });
+    defer card.deinit();
+
+    metaFormRow("Mod name", &w.name_buf, 0);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    metaFormRow("Version", &w.version_buf, 1);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    metaTargetVersionRow(w);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    metaFormRow("Source URL (optional)", &w.post_url_buf, 2);
+}
+
+const META_LABEL_COL_W: f32 = 200;
+
+fn metaFormRow(label: []const u8, buf: []u8, id_extra: usize) void {
+    var row = dvui.box(@src(), .{
+        .dir = .horizontal,
+    }, .{
+        .id_extra = id_extra,
+        .expand = .horizontal,
+    });
+    defer row.deinit();
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .id_extra = id_extra,
+        .min_size_content = .{ .w = META_LABEL_COL_W, .h = 26 },
+        .max_size_content = .{ .w = META_LABEL_COL_W, .h = std.math.floatMax(f32) },
+        .gravity_y = 0.5,
+        .color_text = HELP_TEXT_COLOR,
+    });
+    const te = style.textEntry(@src(), .{ .text = .{ .buffer = buf } }, .{
+        .id_extra = id_extra,
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = 28 },
+        .gravity_y = 0.5,
+    });
+    te.deinit();
+}
+
+/// Target-game-version row — dropdown over the game's installed
+/// versions, since the resolver matches mod-recipes to installs via
+/// this field. Mirrors the picked label into `for_game_version_buf`
+/// so wizardSave picks it up.
+fn metaTargetVersionRow(w: *state_mod.WizardState) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = 3,
+        .expand = .horizontal,
+    });
+    defer row.deinit();
+    dvui.labelNoFmt(@src(), "Targets game version", .{}, .{
+        .id_extra = 3,
+        .min_size_content = .{ .w = META_LABEL_COL_W, .h = 26 },
+        .max_size_content = .{ .w = META_LABEL_COL_W, .h = std.math.floatMax(f32) },
+        .gravity_y = 0.5,
+        .color_text = HELP_TEXT_COLOR,
+    });
+
+    var labels_buf: [state_mod.WIZARD_MAX_INSTALL_VERSIONS][]const u8 = undefined;
+    var labels_n: usize = 0;
+    while (labels_n < w.install_versions_count) : (labels_n += 1) {
+        const v = w.install_versions_buf[labels_n];
+        const end = std.mem.indexOfScalar(u8, &v, 0) orelse v.len;
+        labels_buf[labels_n] = w.install_versions_buf[labels_n][0..end];
+    }
+    if (labels_n == 0) {
+        dvui.label(@src(), "(no installs)", .{}, .{
+            .id_extra = 3,
+            .gravity_y = 0.5,
+            .color_text = HELP_TEXT_COLOR,
+        });
+        return;
+    }
+    const labels = labels_buf[0..labels_n];
+    var pick: usize = w.install_versions_pick;
+    if (style.dropdown(@src(), labels, .{ .choice = &pick }, .{}, .{
+        .id_extra = 3,
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = 28 },
+        .gravity_y = 0.5,
+    })) {
+        w.install_versions_pick = pick;
+        @memset(&w.for_game_version_buf, 0);
+        const picked_label = labels[pick];
+        const n = @min(picked_label.len, w.for_game_version_buf.len);
+        @memcpy(w.for_game_version_buf[0..n], picked_label[0..n]);
+    }
+}
+
+/// Consistent header + one-line help for every step. Centralises the
+/// spacing so the three steps look related instead of each cooking up
+/// their own intro layout.
+fn renderStepIntro(title: []const u8, help: []const u8) void {
+    const title_key = std.hash.Wyhash.hash(0, title);
+    dvui.labelNoFmt(@src(), title, .{}, .{
+        .id_extra = title_key,
+        .style = .highlight,
+    });
+    _ = dvui.spacer(@src(), .{
+        .id_extra = title_key,
+        .min_size_content = .{ .w = 1, .h = 4 },
+    });
+    dvui.labelNoFmt(@src(), help, .{}, .{
+        .id_extra = title_key ^ 1,
+        .color_text = HELP_TEXT_COLOR,
+    });
+    _ = dvui.spacer(@src(), .{
+        .id_extra = title_key ^ 2,
+        .min_size_content = .{ .w = 1, .h = 12 },
+    });
 }
 
 fn editorSectionHeader(title: []const u8) void {
@@ -278,19 +491,13 @@ fn wizardBrowseMenu(
 }
 
 fn renderWizardInstallBlocks(frame: *Frame, game: *const library.Game, w: *state_mod.WizardState) void {
-    // Simulate the current plan once per paint. The result threads
-    // through the block-rows (for per-block counts + inline diagnostics)
-    // and the bottom summary panel (aggregate + detail list).
+    // Simulate the current plan once per paint. Block cards pull
+    // per-step impact lines from the result.
     var sim_opt = actions.simulateCurrentPlan(frame, game);
     defer if (sim_opt) |*s| s.deinit();
     const sim_ptr: ?*const installer_mod.SimulationResult = if (sim_opt) |*s| s else null;
 
     // Suggestion sources for the Browse… menus on each path field.
-    // Computed once per paint; freed at end. Two independent lists:
-    //   - archive top-level dirs (source-side suggestions)
-    //   - install dir top-level dirs (destination-side suggestions)
-    // Either can be empty (e.g. archive missing, install dir not on
-    // disk yet) — wizardPathRow hides the corresponding browse menu.
     const modfile_id = w.modfile_id_buf[0..w.modfile_id_len];
     const archive_path_opt = actions.modfileArchivePath(frame, game, modfile_id);
     defer if (archive_path_opt) |p| frame.lib.alloc.free(p);
@@ -302,51 +509,41 @@ fn renderWizardInstallBlocks(frame: *Frame, game: *const library.Game, w: *state
     defer if (install_dirs_opt) |d| actions.freeTopDirs(frame.lib.alloc, d);
     const install_dirs: []const []const u8 = if (install_dirs_opt) |d| @as([]const []const u8, d) else &.{};
 
-    dvui.label(@src(), "What this mod will do — steps applied in order at install time.", .{}, .{ .color_text = HELP_TEXT_COLOR });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-
+    // Block stack. Each block renders as a self-contained card with
+    // its own border / background so the user can see them as
+    // discrete units (the previous flat-list rendering blurred them
+    // into one wall of text).
     var i: usize = 0;
     while (i < w.block_count) : (i += 1) {
         renderWizardBlockRow(frame, w, i, sim_ptr, archive_dirs, install_dirs);
-    }
-
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-
-    {
-        var col = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
-        defer col.deinit();
-        dvui.label(@src(), "Add step:", .{}, .{ .color_text = HELP_TEXT_COLOR });
-        // Split into two rows so labels fit at typical wizard widths.
-        // Shortened to one-two words; the help text under the added
-        // block explains the full action.
-        {
-            var r1 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 2 } });
-            defer r1.deinit();
-            if (style.button(@src(), "Drop in...", .{}, .{})) actions.wizardAddBlock(frame, .extract);
-            if (style.button(@src(), "Unpack inner...", .{}, .{})) actions.wizardAddBlock(frame, .extract_inner);
-            if (style.button(@src(), "Copy...", .{}, .{})) actions.wizardAddBlock(frame, .copy);
-        }
-        {
-            var r2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 2 } });
-            defer r2.deinit();
-            if (style.button(@src(), "Rename...", .{}, .{})) actions.wizardAddBlock(frame, .move);
-            if (style.button(@src(), "Remove...", .{}, .{})) actions.wizardAddBlock(frame, .delete);
-            if (style.button(@src(), "Runnable...", .{}, .{})) actions.wizardAddBlock(frame, .chmod_x);
-        }
-    }
-
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    {
-        // Distinct parent so this preview pane's widget ids don't
-        // collide with the second instance under the Review section.
-        var wrap = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-            .id_extra = std.hash.Wyhash.hash(0, "sim-panel-blocks"),
+        _ = dvui.spacer(@src(), .{
+            .id_extra = i,
+            .min_size_content = .{ .w = 1, .h = 8 },
         });
-        defer wrap.deinit();
-        renderSimulationPanel(frame, w, sim_ptr);
+    }
+
+    // Single "+ Add step" dropdown replaces the six bare buttons. The
+    // first entry is a placeholder that picks nothing — same trick the
+    // install-version dropdown uses elsewhere.
+    {
+        const labels = [_][]const u8{
+            "+ Add another step\u{2026}",
+            "Drop more files in (extract)",
+            "Unpack a nested archive",
+            "Copy a file",
+            "Rename or move a file",
+            "Remove a file from the install",
+            "Mark a file as executable",
+        };
+        const kinds = [_]state_mod.WizardBlockKind{ .extract, .extract_inner, .copy, .move, .delete, .chmod_x };
+        var pick: usize = 0;
+        if (style.dropdown(@src(), &labels, .{ .choice = &pick }, .{}, .{
+            .min_size_content = .{ .w = 260, .h = style.button_h },
+        })) {
+            if (pick > 0 and pick <= kinds.len) {
+                actions.wizardAddBlock(frame, kinds[pick - 1]);
+            }
+        }
     }
 }
 
@@ -364,28 +561,13 @@ fn renderSimulationPanel(
     }
     const sim = sim_opt.?;
 
-    {
-        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-        defer hdr.deinit();
-        dvui.label(@src(), "Preview", .{}, .{ .style = .highlight, .gravity_y = 0.5 });
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-
-        const has_rows = sim.writes.len > 0 or sim.mode_changes.len > 0 or sim.deletions.len > 0;
-        if (has_rows) {
-            const lbl: []const u8 = if (w.sim_details_expanded) "Hide details" else "Show details";
-            if (style.button(@src(), lbl, .{}, .{ .gravity_y = 0.5 })) {
-                w.sim_details_expanded = !w.sim_details_expanded;
-            }
-        }
-    }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-
+    // Aggregate summary first (one-line per category), then the
+    // detailed file tree underneath. The previous Show/Hide-details
+    // toggle is gone — the preview should always be visible without
+    // the user having to expand it.
     renderSimulationAggregate(sim);
-
-    if (w.sim_details_expanded) {
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-        renderSimulationDetail(frame, w, sim);
-    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    renderSimulationDetail(frame, w, sim);
 }
 
 /// Plain-English aggregate (one labeled line per category). Hidden
@@ -417,7 +599,7 @@ fn renderSimulationAggregate(sim: *const installer_mod.SimulationResult) void {
     }
     if (ow_mod > 0) {
         var buf: [160]u8 = undefined;
-        const txt = std.fmt.bufPrint(&buf, "\u{26A0} Conflicts: {d} file(s) already owned by another mod", .{ow_mod}) catch "Conflicts with another mod";
+        const txt = std.fmt.bufPrint(&buf, "[!] Conflicts: {d} file(s) already owned by another mod", .{ow_mod}) catch "Conflicts with another mod";
         dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = .{ .r = 0xFF, .g = 0x80, .b = 0x80 } });
     }
     if (mode_n > 0) {
@@ -470,6 +652,14 @@ fn renderSimulationDetail(frame: *Frame, w: *state_mod.WizardState, sim: *const 
     rollupAggregates(root);
     sortTree(root);
 
+    // Apply the preview pane's live search filter. Empty needle is a
+    // no-op (everything stays visible). Non-empty filters out subtrees
+    // that don't contain a matching name — directories stay visible
+    // when any descendant matches so the path to a hit is preserved.
+    const needle_raw = w.preview_search_buf[0..(std.mem.indexOfScalar(u8, &w.preview_search_buf, 0) orelse w.preview_search_buf.len)];
+    const needle = std.mem.trim(u8, needle_raw, " \t");
+    _ = markVisibleByQuery(root, needle);
+
     // Outer pane — same look as before but the inner column lives in
     // a scrollArea so long trees scroll inside a bounded height.
     // `expand = .both` lets the pane consume any vertical room the
@@ -499,7 +689,13 @@ fn renderSimulationDetail(frame: *Frame, w: *state_mod.WizardState, sim: *const 
             root.sub_files,
             humanBytesLocal(root.sub_bytes),
         }) catch "";
-        const hdr = std.fmt.bufPrint(&hdr_buf, "Game root: {s}/{s}", .{ sim.install_dir, counts_txt }) catch sim.install_dir;
+        // Show just "Game folder/" instead of the absolute on-disk path
+        // (`/media/shared/backup/.../library/79758/0.8/...`). The user
+        // doesn't care where the game lives — they care about what the
+        // mod drops *into* it. Sub-row paths below are already
+        // relative to this root.
+        _ = sim.install_dir;
+        const hdr = std.fmt.bufPrint(&hdr_buf, "Game folder/{s}", .{counts_txt}) catch "Game folder/";
         dvui.labelNoFmt(@src(), hdr, .{}, .{ .style = .highlight, .font = .theme(.mono) });
     }
 
@@ -536,6 +732,10 @@ const TreeNode = struct {
     children: std.ArrayList(*TreeNode) = .empty,
     sub_files: usize = 0,
     sub_bytes: u64 = 0,
+    /// Driven by `markVisibleByQuery` — false hides this node (and its
+    /// subtree) from `renderTreeNode`. Defaults to true so a fresh
+    /// build with an empty search query shows everything.
+    visible: bool = true,
 
     pub fn init(a: std.mem.Allocator, name: []const u8, rel_path: []const u8, is_file: bool) !*TreeNode {
         const n = try a.create(TreeNode);
@@ -614,6 +814,25 @@ fn rollupAggregates(node: *TreeNode) void {
     node.sub_bytes = bytes;
 }
 
+/// Recursive: a node is visible if its own name contains `needle`
+/// (case-insensitive) OR any descendant is visible. With an empty
+/// needle everything stays visible. Returns the resolved visibility
+/// so the caller doesn't have to re-check `node.visible`.
+fn markVisibleByQuery(node: *TreeNode, needle: []const u8) bool {
+    if (needle.len == 0) {
+        node.visible = true;
+        for (node.children.items) |c| _ = markVisibleByQuery(c, needle);
+        return true;
+    }
+    var any_child_match = false;
+    for (node.children.items) |c| {
+        if (markVisibleByQuery(c, needle)) any_child_match = true;
+    }
+    const self_match = types.asciiContainsIgnoreCase(node.name, needle);
+    node.visible = self_match or any_child_match;
+    return node.visible;
+}
+
 fn sortTree(node: *TreeNode) void {
     std.mem.sort(*TreeNode, node.children.items, {}, struct {
         fn lessThan(_: void, a: *TreeNode, b: *TreeNode) bool {
@@ -636,6 +855,7 @@ fn renderTreeNode(
 ) void {
     for (node.children.items) |c| {
         if (rendered.* >= cap) return;
+        if (!c.visible) continue;
         renderOneRow(w, c, depth, rendered);
         if (!c.is_file) {
             renderTreeNode(w, c, depth + 1, rendered, cap);
@@ -770,9 +990,122 @@ fn truncMiddle(out_buf: []u8, s: []const u8, max_len: usize) []const u8 {
     return out_buf[0 .. head_len + ellipsis.len + tail_len];
 }
 
-/// Back-compat helper — Review step calls this. Re-runs the simulator
-/// independently so the Review tab doesn't have to share state with
-/// the install-blocks tab.
+/// Right pane content for every wizard step. Top section shows the
+/// archive's top-level layout (so the user can decide what the
+/// "wrapper folder" question is actually referring to). Bottom section
+/// is the existing simulation panel — what the install dir will look
+/// like after the plan runs.
+fn renderWizardPreviewPane(frame: *Frame, game: *const library.Game, w: *state_mod.WizardState) void {
+    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+    defer scroll.deinit();
+
+    // -- Archive tree (top-level entries only) --
+    dvui.labelNoFmt(@src(), "Archive contents", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+
+    const modfile_id = w.modfile_id_buf[0..w.modfile_id_len];
+    const archive_path_opt = actions.modfileArchivePath(frame, game, modfile_id);
+    defer if (archive_path_opt) |p| frame.lib.alloc.free(p);
+
+    if (archive_path_opt) |archive_path| {
+        if (actions.archiveTopDirs(frame, archive_path)) |dirs| {
+            defer actions.freeTopDirs(frame.lib.alloc, dirs);
+            if (dirs.len == 0) {
+                dvui.label(@src(), "  (archive has no top-level folders — files sit at the root)", .{}, .{
+                    .color_text = HELP_TEXT_COLOR,
+                });
+            } else if (dirs.len == 1) {
+                // Single top-level dir → almost always the "wrapper"
+                // the user wants to skip. Surface that interpretation
+                // here so step 1's checkbox label makes sense. Plain
+                // ASCII so we don't depend on emoji font fallback.
+                var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .expand = .horizontal,
+                    .id_extra = std.hash.Wyhash.hash(0, dirs[0]),
+                });
+                defer row.deinit();
+                dvui.icon(@src(), "wrapper-dir", entypo.folder, .{}, .{ .gravity_y = 0.5 });
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+                var buf: [320]u8 = undefined;
+                const txt = std.fmt.bufPrint(&buf, "{s}/  — likely wrapper folder", .{dirs[0]}) catch dirs[0];
+                dvui.labelNoFmt(@src(), txt, .{}, .{ .gravity_y = 0.5 });
+            } else {
+                for (dirs) |d| {
+                    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                        .expand = .horizontal,
+                        .id_extra = std.hash.Wyhash.hash(0, d),
+                    });
+                    defer row.deinit();
+                    dvui.icon(@src(), "dir", entypo.folder, .{}, .{
+                        .gravity_y = 0.5,
+                        .id_extra = std.hash.Wyhash.hash(1, d),
+                    });
+                    _ = dvui.spacer(@src(), .{
+                        .id_extra = std.hash.Wyhash.hash(2, d),
+                        .min_size_content = .{ .w = 6, .h = 1 },
+                    });
+                    var buf: [256]u8 = undefined;
+                    const txt = std.fmt.bufPrint(&buf, "{s}/", .{d}) catch d;
+                    dvui.labelNoFmt(@src(), txt, .{}, .{
+                        .gravity_y = 0.5,
+                        .id_extra = std.hash.Wyhash.hash(3, d),
+                    });
+                }
+            }
+        } else {
+            dvui.label(@src(), "  (archive not readable from disk)", .{}, .{ .style = .err });
+        }
+    } else {
+        dvui.label(@src(), "  (no archive linked to this recipe yet)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+
+    // -- Impact diff (existing simulation panel) --
+    dvui.labelNoFmt(@src(), "After install", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+
+    // Search bar — filters the tree below by file/dir name (case-
+    // insensitive substring). Empty query passes everything through.
+    {
+        var search_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .y = 0, .h = 6 },
+        });
+        defer search_row.deinit();
+        dvui.icon(@src(), "search", entypo.magnifying_glass, .{}, .{
+            .gravity_y = 0.5,
+        });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &w.preview_search_buf },
+            .placeholder = "Filter files (e.g. `.rpy`, `game/`)",
+        }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 1, .h = 26 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    var sim_opt = actions.simulateCurrentPlan(frame, game);
+    defer if (sim_opt) |*s| s.deinit();
+    const sim_ptr: ?*const installer_mod.SimulationResult = if (sim_opt) |*s| s else null;
+    {
+        var wrap = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .id_extra = std.hash.Wyhash.hash(0, "sim-panel-rightpane"),
+        });
+        defer wrap.deinit();
+        renderSimulationPanel(frame, w, sim_ptr);
+    }
+}
+
+/// Back-compat helper — used by other call sites that still want the
+/// embedded simulation panel without the archive-tree header.
 fn renderSimulationSummary(frame: *Frame, game: *const library.Game) void {
     var sim_opt = actions.simulateCurrentPlan(frame, game);
     defer if (sim_opt) |*s| s.deinit();
@@ -797,12 +1130,12 @@ fn renderSimulationSummary(frame: *Frame, game: *const library.Game) void {
 /// Plain-language label for a wizard block kind. Used in row titles.
 fn blockKindLabel(k: state_mod.WizardBlockKind) []const u8 {
     return switch (k) {
-        .extract => "Drop files in",
-        .extract_inner => "Unpack nested archive",
-        .copy => "Copy a file",
-        .move => "Rename or move",
-        .delete => "Remove a file",
-        .chmod_x => "Mark a file as runnable",
+        .extract => "Extract",
+        .extract_inner => "Unpack inner archive",
+        .copy => "Copy",
+        .move => "Move",
+        .delete => "Delete",
+        .chmod_x => "Make runnable",
     };
 }
 
@@ -830,84 +1163,119 @@ fn renderWizardBlockRow(
     const b = &w.blocks[idx];
     const is_highlight = w.sim_highlight_step != null and w.sim_highlight_step.? == idx;
 
-    var row = dvui.box(@src(), .{ .dir = .vertical }, .{
+    // Card container — bordered box with darker fill, makes each step
+    // a discrete unit instead of blending into the page background.
+    var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .horizontal,
-        .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
+        .padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 },
         .id_extra = idx,
-        .background = is_highlight,
-        .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
+        .background = true,
+        .color_fill = if (is_highlight) CARD_FILL_HIGHLIGHT else CARD_FILL,
+        .border = style.border_thin,
+        .color_border = CARD_BORDER,
         .corner_radius = style.corner_radius,
     });
-    defer row.deinit();
+    defer card.deinit();
 
-    // ---- header: index + name + click-to-highlight + remove ----
+    // ---- title bar: "Step N" (muted) · KIND (bold) · spacer · trash
+    // Layout is intentionally identical across every block kind so a
+    // user scanning multiple cards lands on the same fields in the
+    // same screen position. No button-shaped affordances on labels —
+    // the only clickable thing on this row is the trash icon.
     {
-        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .id_extra = idx,
+        });
         defer hdr.deinit();
 
-        const title_color: ?dvui.Color = if (is_highlight) .{ .r = 0xE9, .g = 0x4B, .b = 0x7A } else null;
-        // Clickable title — toggles highlight on the simulation panel.
-        if (style.button(@src(), blockKindLabel(b.kind), .{}, .{
-            .style = if (is_highlight) .highlight else .control,
+        var step_buf: [16]u8 = undefined;
+        const step_txt = std.fmt.bufPrint(&step_buf, "Step {d}", .{idx + 1}) catch "Step";
+        dvui.labelNoFmt(@src(), step_txt, .{}, .{
+            .color_text = HELP_TEXT_COLOR,
             .gravity_y = 0.5,
-            .color_text = title_color,
+            .id_extra = idx,
+        });
+        _ = dvui.spacer(@src(), .{
+            .id_extra = idx,
+            .min_size_content = .{ .w = 8, .h = 1 },
+        });
+        dvui.labelNoFmt(@src(), blockKindLabel(b.kind), .{}, .{
+            .style = .highlight,
+            .gravity_y = 0.5,
+            .id_extra = idx,
+        });
+        _ = dvui.spacer(@src(), .{
+            .id_extra = idx,
+            .expand = .horizontal,
+        });
+        if (components.iconOnly(@src(), "remove-step", entypo.trash, .{
+            .style = .err,
+            .gravity_y = 0.5,
+            .id_extra = idx,
         })) {
-            w.sim_highlight_step = if (is_highlight) null else idx;
-        }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        var idx_buf: [16]u8 = undefined;
-        const idx_txt = std.fmt.bufPrint(&idx_buf, "step #{d}", .{idx + 1}) catch "step";
-        dvui.labelNoFmt(@src(), idx_txt, .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
-
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (style.button(@src(), "Remove", .{}, .{ .style = .err })) {
             actions.wizardRemoveBlock(frame, idx);
             return;
         }
     }
 
-    // ---- one-line help text ----
-    dvui.labelNoFmt(@src(), blockKindHelp(b.kind), .{}, .{ .color_text = HELP_TEXT_COLOR });
-
-    // ---- per-block live-count summary, when sim is available ----
-    if (sim) |s| {
-        if (idx < s.impacts.len) {
-            const imp = s.impacts[idx];
-            renderBlockImpactLine(b.kind, imp);
-        }
-    }
+    // Thin divider under the title — visually anchors the card and
+    // makes the field block below feel grouped.
+    _ = dvui.spacer(@src(), .{
+        .id_extra = idx,
+        .min_size_content = .{ .w = 1, .h = 6 },
+    });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .id_extra = idx });
+    _ = dvui.spacer(@src(), .{
+        .id_extra = idx,
+        .min_size_content = .{ .w = 1, .h = 8 },
+    });
 
     // ---- block-specific inputs ----
-    // Per-field suggestion routing:
-    //   source-shaped fields (archive contents) → archive_dirs only
-    //   destination-shaped fields (install paths) → install_dirs only
-    //   For each field, the unused slice is `&.{}` and the picker
-    //   button hides automatically.
+    // Labels are deliberately short (one word where possible) so the
+    // 160 px label column reads cleanly across every card kind. The
+    // longer help text lives once at the top of the step intro, not
+    // duplicated per field.
     const empty_dirs: []const []const u8 = &.{};
     switch (b.kind) {
         .extract => {
-            wizardPathRow(@src(), "Drop into (folder under install)", &b.a_buf, empty_dirs, install_dirs, idx, 0);
+            wizardPathRow(@src(), "Destination", &b.a_buf, empty_dirs, install_dirs, idx, 0);
+            _ = dvui.spacer(@src(), .{
+                .id_extra = idx,
+                .min_size_content = .{ .w = 1, .h = 6 },
+            });
             wizardStripCheckbox(b);
         },
         .extract_inner => {
-            wizardPathRow(@src(), "Inner archive (relative to staged tree)", &b.a_buf, archive_dirs, empty_dirs, idx, 1);
-            wizardPathRow(@src(), "Drop into (folder under install)", &b.b_buf, empty_dirs, install_dirs, idx, 2);
+            wizardPathRow(@src(), "Inner archive", &b.a_buf, archive_dirs, empty_dirs, idx, 1);
+            _ = dvui.spacer(@src(), .{ .id_extra = idx, .min_size_content = .{ .w = 1, .h = 6 } });
+            wizardPathRow(@src(), "Destination", &b.b_buf, empty_dirs, install_dirs, idx, 2);
+            _ = dvui.spacer(@src(), .{ .id_extra = idx, .min_size_content = .{ .w = 1, .h = 6 } });
             wizardStripCheckbox(b);
         },
         .copy, .move => {
-            wizardPathRow(@src(), "Source (path in archive or earlier-step output)", &b.a_buf, archive_dirs, empty_dirs, idx, 3);
-            wizardPathRow(@src(), "Destination (path under install)", &b.b_buf, empty_dirs, install_dirs, idx, 4);
+            wizardPathRow(@src(), "From", &b.a_buf, archive_dirs, empty_dirs, idx, 3);
+            _ = dvui.spacer(@src(), .{ .id_extra = idx, .min_size_content = .{ .w = 1, .h = 6 } });
+            wizardPathRow(@src(), "To", &b.b_buf, empty_dirs, install_dirs, idx, 4);
         },
         .delete => {
-            wizardPathRow(@src(), "Path under install", &b.a_buf, empty_dirs, install_dirs, idx, 5);
+            wizardPathRow(@src(), "Path", &b.a_buf, empty_dirs, install_dirs, idx, 5);
         },
         .chmod_x => {
-            wizardPathRow(@src(), "Path under install", &b.a_buf, empty_dirs, install_dirs, idx, 6);
+            wizardPathRow(@src(), "Path", &b.a_buf, empty_dirs, install_dirs, idx, 6);
         },
     }
 
-    // ---- inline diagnostics for THIS block ----
+    // ---- per-block impact line at bottom of card ----
     if (sim) |s| {
+        if (idx < s.impacts.len) {
+            _ = dvui.spacer(@src(), .{ .id_extra = idx, .min_size_content = .{ .w = 1, .h = 8 } });
+            _ = dvui.separator(@src(), .{ .expand = .horizontal, .id_extra = idx });
+            _ = dvui.spacer(@src(), .{ .id_extra = idx, .min_size_content = .{ .w = 1, .h = 4 } });
+            const imp = s.impacts[idx];
+            renderBlockImpactLine(b.kind, imp);
+        }
+        // Inline diagnostics for THIS block under the impact line.
         for (s.diagnostics) |d| {
             if (d.source_step_index == null or d.source_step_index.? != idx) continue;
             const color: dvui.Color = switch (d.severity) {
@@ -971,17 +1339,25 @@ fn renderBlockImpactLine(kind: state_mod.WizardBlockKind, imp: installer_mod.sim
 /// 0 (off) vs 1 (on). Covers the 99% case without forcing the user
 /// to parse "strip components."
 fn wizardStripCheckbox(b: *state_mod.WizardBlock) void {
-    var on: bool = b.strip > 0;
-    var row = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .padding = .{ .y = 2, .h = 2 } });
+    // dvui.checkbox uses the label as its click target — an empty
+    // label means clicking the box itself does nothing on some
+    // backends (previously caused this toggle to read as ignored).
+    // The label IS the click affordance; rendering a separate label
+    // widget on the left wouldn't be clickable. Keep this row
+    // visually distinct from the path rows above; users still get
+    // that "Skip wrapper folder" is its own decision.
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .y = 2, .h = 2 },
+    });
     defer row.deinit();
-    if (dvui.checkbox(@src(), &on, "Skip the top-level folder", .{})) {
+    // Spacer for the same 160 px indent the path-row labels use, so
+    // the checkbox sits aligned with the textEntry's start column.
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 160, .h = 1 } });
+    var on: bool = b.strip > 0;
+    if (dvui.checkbox(@src(), &on, "Skip wrapper folder", .{ .gravity_y = 0.5 })) {
         b.strip = if (on) 1 else 0;
     }
-    const help: []const u8 = if (on)
-        "Archive's top dir will be flattened — e.g. `MyMod-1.2/game/...` → `<install>/game/...`"
-    else
-        "Archive is extracted as-is — top dir, if any, becomes a subfolder of the destination.";
-    dvui.labelNoFmt(@src(), help, .{}, .{ .color_text = HELP_TEXT_COLOR });
 }
 
 fn renderWizardRelations(frame: *Frame, game: *const library.Game, w: *state_mod.WizardState) void {

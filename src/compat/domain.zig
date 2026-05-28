@@ -87,6 +87,14 @@ pub const Action = union(enum) {
     /// used when the fix requires a system config change the app
     /// cannot perform itself (e.g., enabling `programs.nix-ld`).
     system_hint: SystemHint,
+    /// Create a symlink at `link_path` (relative to install root)
+    /// pointing at `target` (relative to the link's parent directory,
+    /// OR absolute). Primary use case: per-game case-fix recipes that
+    /// patch the in-game asset references RPGM scripts hard-coded with
+    /// Windows-flavored casing — e.g. game asks for `VNButtons.png`
+    /// but the on-disk file is `VNbuttons.png`. Idempotent — apply
+    /// silently skips when the link already exists.
+    symlink_create: SymlinkCreate,
 };
 
 pub const EnvPrepend = struct {
@@ -114,6 +122,20 @@ pub const SystemHint = struct {
     /// snippets go in the recipe's top-level `hints` field; this is
     /// the cross-distro narrative.
     message: []const u8,
+};
+
+pub const SymlinkCreate = struct {
+    /// Path of the symlink to create, relative to install root. The
+    /// parent directory must already exist; apply doesn't `mkdir -p`
+    /// because every per-game case-fix recipe targets an existing
+    /// `www/img/system/` etc. (the source file already lives there;
+    /// only the case-variant symlink is missing).
+    link_path: []const u8,
+    /// What the link points at. Relative paths are resolved against
+    /// the link's PARENT directory (so a same-directory case variant
+    /// is just `target = "VNbuttons.png"`). Absolute paths are honored
+    /// as-is but not the typical case-fix shape — usually relative.
+    target: []const u8,
 };
 
 /// Per-package-manager copy-paste install snippet. Picked by the UI
@@ -209,6 +231,12 @@ pub const BackupRecord = struct {
     /// Original target when `was_symlink`. Restore re-creates the
     /// symlink without reading the snapshot file.
     symlink_target: ?[]const u8 = null,
+    /// True when the touched path DID NOT EXIST before apply (the
+    /// recipe is creating a new file/symlink). Restore deletes the
+    /// path instead of writing back content. Lets actions like
+    /// `symlink_create` participate in the backup→apply→undo
+    /// machinery without needing a real prior file to snapshot.
+    was_absent: bool = false,
 };
 
 pub const FixRecord = struct {

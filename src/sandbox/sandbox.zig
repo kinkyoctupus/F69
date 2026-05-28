@@ -132,9 +132,52 @@ pub const NoSandbox = struct {
         if (cfg.sandbox_home.len > 0) {
             map.put("HOME", cfg.sandbox_home) catch return errs.Error.OutOfMemory;
         }
+        // Suppress games' "open log in your editor" behaviour.
+        // Ren'Py on crash invokes `xdg-open <traceback.txt>` which
+        // on the user's system opens the .txt in nvim. Three layers
+        // of defense — none alone is enough, all three together
+        // catch every codepath we've seen:
+        //
+        //   1. `BROWSER=/bin/true` — Python's `webbrowser` module
+        //      tries `$BROWSER` first. Ren'Py 8 uses webbrowser.open.
+        //   2. `EDITOR=/bin/true` + `VISUAL=/bin/true` — some games
+        //      use Python's `os.environ["EDITOR"]` directly.
+        //   3. PATH shim — prepend a tmp dir with a no-op `xdg-open`
+        //      script. Ren'Py 7 + many other engines call xdg-open
+        //      directly via subprocess; bypassing webbrowser. The
+        //      shim wins the PATH lookup so xdg-open is silently a
+        //      no-op for the whole game session.
+        //
+        // f69's own launch-diag dialog shows the same traceback,
+        // so the user loses nothing by suppressing the second
+        // window that would otherwise pop up behind f69.
+        map.put("BROWSER", "/bin/true") catch return errs.Error.OutOfMemory;
+        map.put("EDITOR", "/bin/true") catch return errs.Error.OutOfMemory;
+        map.put("VISUAL", "/bin/true") catch return errs.Error.OutOfMemory;
+
+        // Build the shim dir on demand. `/tmp/f69-game-shim/` is a
+        // process-wide singleton — writing it on every launch is a
+        // no-op after the first call. The shim file just `exit 0`s
+        // so xdg-open returns success without doing anything.
+        const shim_dir = "/tmp/f69-game-shim";
+        ensureShimDir(self.io, shim_dir);
+
+        // Prepend shim_dir to PATH. Falls through to host PATH so
+        // every other tool the game might call (sh, awk, etc.) still
+        // resolves normally.
+        const host_path: ?[]const u8 = self.environ.getAlloc(alloc, "PATH") catch null;
+        defer if (host_path) |p| alloc.free(p);
+        var path_buf: std.ArrayList(u8) = .empty;
+        defer path_buf.deinit(alloc);
+        path_buf.appendSlice(alloc, shim_dir) catch return errs.Error.OutOfMemory;
+        if (host_path) |hp| if (hp.len > 0) {
+            path_buf.append(alloc, ':') catch return errs.Error.OutOfMemory;
+            path_buf.appendSlice(alloc, hp) catch return errs.Error.OutOfMemory;
+        };
+        map.put("PATH", path_buf.items) catch return errs.Error.OutOfMemory;
         // Compat-recipe / caller-supplied env overrides. Applied after
-        // HOME so a recipe can override HOME explicitly if it really
-        // needs to.
+        // HOME + BROWSER so a recipe can override either explicitly
+        // if it really needs to.
         for (cfg.env_extra) |kv| {
             map.put(kv.name, kv.value) catch return errs.Error.OutOfMemory;
         }
@@ -231,6 +274,42 @@ pub const NoSandbox = struct {
 /// `/bin/chmod` so we don't need to touch syscall-level chmod
 /// plumbing across libcs. Silent on failure — the upcoming exec
 /// will surface a clearer error if it actually mattered.
+/// Create `<dir>/xdg-open` as a no-op `#!/bin/sh\nexit 0` script so
+/// games (Ren'Py / Unity / godot) that invoke `xdg-open <log_path>`
+/// on crash get a silent return instead of f69's window losing focus
+/// to a text editor opening the traceback. Idempotent — the file is
+/// only written when missing. Best-effort: any error along the path
+/// is logged and the shim is simply absent, leaving the host's real
+/// xdg-open in charge (the upstream user experience).
+fn ensureShimDir(io: std.Io, dir: []const u8) void {
+    std.Io.Dir.cwd().createDirPath(io, dir) catch |e| {
+        std.log.scoped(.sandbox).warn("xdg-open shim: createDirPath({s}) failed: {s}", .{ dir, @errorName(e) });
+        return;
+    };
+    var path_buf: [256]u8 = undefined;
+    const shim_path = std.fmt.bufPrint(&path_buf, "{s}/xdg-open", .{dir}) catch return;
+    // Skip the write when the shim already exists — we don't expect
+    // it to drift and re-writing wastes a syscall on every launch.
+    std.Io.Dir.cwd().access(io, shim_path, .{}) catch {
+        std.Io.Dir.cwd().writeFile(io, .{
+            .sub_path = shim_path,
+            .data = "#!/bin/sh\nexit 0\n",
+        }) catch |e| {
+            std.log.scoped(.sandbox).warn("xdg-open shim: writeFile failed: {s}", .{@errorName(e)});
+            return;
+        };
+        // Mark executable so `xdg-open` resolves to a runnable file.
+        // `runChmod` shells out — `chmod` is universally available
+        // and we don't want to plumb libc chmod across the codebase
+        // for this one-shot setup.
+        // We fake an alloc here — `runChmod` only uses it for argv
+        // assembly which is small. Use the heap page allocator since
+        // we don't have the lib allocator in this scope.
+        runChmod(std.heap.page_allocator, io, &.{ "chmod", "+x", shim_path });
+        std.log.scoped(.sandbox).info("xdg-open shim: installed at {s}", .{shim_path});
+    };
+}
+
 fn ensureExecutable(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
     runChmod(alloc, io, &.{ "chmod", "+x", path });
 }

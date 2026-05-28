@@ -15,6 +15,7 @@ const dvui = @import("dvui");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 const mods_act = @import("mods.zig");
 
 const Frame = types.Frame;
@@ -173,6 +174,40 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         break :blk &.{};
     };
     defer freeCompatEnv(frame.lib.alloc, compat_envs);
+
+    // Pre-launch diagnostics. Run cheap static checks (ldd unresolved
+    // libs, etc.) on the picked launcher. If anything actionable is
+    // detected AND the user hasn't already opted into a fix / "Try
+    // anyway", open the launch diagnostic dialog and bail before
+    // spawn. The dialog buttons re-invoke `doLaunchGame` either with
+    // a fix flag set or with `launch_diag_acked = true` so we don't
+    // loop on it.
+    if (!state.launch_force_host_gpu and !state.launch_diag_acked) {
+        if (runPreLaunchDiagnostics(alloc, frame.io, exe_storage)) |diag| {
+            defer alloc.free(diag.summary);
+            defer alloc.free(diag.log);
+            stashLaunchDiag(state, game.f95_thread_id, diag);
+            return;
+        }
+    }
+    // Reset the acked flag once a launch attempt actually proceeds —
+    // a future stale diagnosis on the next launch should re-open the
+    // popup, not silently skip it.
+    state.launch_diag_acked = false;
+
+    // If the user opted into the host-GPU fix, fold the host GPU dirs
+    // into LD_LIBRARY_PATH on top of any compat overrides.
+    var launch_envs: []sandbox_mod.EnvOverride = compat_envs;
+    var owns_launch_envs = false;
+    defer if (owns_launch_envs) freeCompatEnv(alloc, launch_envs);
+    if (state.launch_force_host_gpu) {
+        if (composeHostGpuEnv(frame, compat_envs)) |merged| {
+            launch_envs = merged;
+            owns_launch_envs = true;
+        } else |e| {
+            log.warn("composeHostGpuEnv failed: {s}", .{@errorName(e)});
+        }
+    }
     const bind_extra: []const []const u8 = compatBindExtra(frame, compat_envs) catch &.{};
     defer freeCompatBindExtra(frame.lib.alloc, bind_extra);
 
@@ -189,7 +224,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         .install_path = install_path,
         .executable = exe_storage,
         .host = frame.info.host,
-        .env_extra = compat_envs,
+        .env_extra = launch_envs,
     };
     const backend_name: []const u8 = if (want_sandbox) frame.sandbox.backendName() else "host";
     const result = (if (want_sandbox)
@@ -216,6 +251,11 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     if (result.pid > 0) {
         if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, result.pid) catch {};
     }
+    // Early-failure detection now flows through `drainRunningGames` →
+    // `notifyOnAbnormalExit` which opens the launch diag dialog on a
+    // non-zero exit. The dedicated `LaunchWatchJob` was redundant —
+    // drainRunningGames runs every frame and almost always reaps the
+    // child before a 150ms-poll worker thread could.
     var ok_buf: [128]u8 = undefined;
     const ok_msg = std.fmt.bufPrint(&ok_buf, "Launched (pid {d}, {s})", .{
         result.pid,
@@ -232,6 +272,356 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
 /// `env_prepend`/`env_set` actions, pre-merge prepend values with the
 /// host environ, and return a freshly allocated []EnvOverride for the
 /// sandbox. Caller frees via `freeCompatEnv`.
+// ============================================================
+//  pre-launch dependency check + host-GPU env fallback
+// ============================================================
+
+pub const MissingLibsResult = struct {
+    /// `, `-separated list of missing lib names (e.g.
+    /// `"libGL.so.1, libGLEW.so.2.1"`). Empty when nothing is missing.
+    /// Owned by the same allocator that was passed to `findMissingLibs`.
+    combined: []u8,
+};
+
+/// Run `ldd <exe>` against the resolved launcher and report any
+/// `=> not found` lines. NixOS hosts of Ren'Py / Unity / godot games
+/// commonly hit this for `libGL.so.1` because the bundled binary
+/// links against libglvnd but no `LD_LIBRARY_PATH` points at
+/// `/run/opengl-driver/lib`.
+///
+/// `ldd` failures are non-fatal — we return an empty result so the
+/// launch proceeds. Worst case the user sees the upstream
+/// `error while loading shared libraries` in the toast bar and we
+/// fall back to the existing failure path.
+pub fn findMissingLibs(alloc: std.mem.Allocator, io: std.Io, exe_path: []const u8) MissingLibsResult {
+    const result = std.process.run(alloc, io, .{
+        .argv = &.{ "ldd", exe_path },
+    }) catch {
+        return .{ .combined = alloc.dupe(u8, "") catch &.{} };
+    };
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+
+    // Each `ldd` line that includes "=> not found" indicates an
+    // unresolved dep. The lib name is the first whitespace-separated
+    // token. Dedupe + comma-join.
+    var out: std.ArrayList(u8) = .empty;
+    var seen_any = false;
+    var line_it = std.mem.tokenizeAny(u8, result.stdout, "\n");
+    while (line_it.next()) |line| {
+        if (std.mem.indexOf(u8, line, "=> not found") == null) continue;
+        const trimmed = std.mem.trim(u8, line, " \t");
+        const space = std.mem.indexOfAny(u8, trimmed, " \t") orelse continue;
+        const lib_name = trimmed[0..space];
+        if (lib_name.len == 0) continue;
+        if (seen_any) out.appendSlice(alloc, ", ") catch break;
+        out.appendSlice(alloc, lib_name) catch break;
+        seen_any = true;
+    }
+    return .{ .combined = out.toOwnedSlice(alloc) catch alloc.dupe(u8, "") catch &.{} };
+}
+
+/// Build a fresh `[]EnvOverride` that includes everything from
+/// `existing` plus an LD_LIBRARY_PATH entry prepended with the host
+/// GPU dir (NixOS: `/run/opengl-driver/lib`) and standard distro
+/// lib dirs. If `existing` already has an LD_LIBRARY_PATH entry it's
+/// merged with the GPU paths so neither override clobbers the other.
+fn composeHostGpuEnv(
+    frame: *Frame,
+    existing: []sandbox_mod.EnvOverride,
+) ![]sandbox_mod.EnvOverride {
+    const alloc = frame.lib.alloc;
+
+    // Build the GPU-prepended LD_LIBRARY_PATH value.
+    //   1. `<exe_dir>/lib`        — f69's own bundled libglvnd
+    //                              (libGL / libGLX / libEGL). The
+    //                              system NixOS path `/run/opengl-
+    //                              driver/lib` has only vendor
+    //                              backends (libGLX_nvidia etc.) —
+    //                              the glvnd dispatchers come from
+    //                              the bundle.
+    //   2. `/run/opengl-driver/lib` — NixOS GPU vendor libs
+    //                                (nvidia / mesa GLX / EGL
+    //                                vendor implementations).
+    //   3. Standard distro lib dirs — for non-NixOS hosts.
+    var exe_lib_buf: [768]u8 = undefined;
+    const exe_lib_path = std.fmt.bufPrint(&exe_lib_buf, "{s}/lib", .{frame.info.exe_dir}) catch null;
+    var gpu_parts_buf: [5][]const u8 = undefined;
+    var gpu_parts_len: usize = 0;
+    if (exe_lib_path) |p| {
+        gpu_parts_buf[gpu_parts_len] = p;
+        gpu_parts_len += 1;
+    }
+    gpu_parts_buf[gpu_parts_len] = "/run/opengl-driver/lib";
+    gpu_parts_len += 1;
+    gpu_parts_buf[gpu_parts_len] = "/usr/lib/x86_64-linux-gnu";
+    gpu_parts_len += 1;
+    gpu_parts_buf[gpu_parts_len] = "/usr/lib64";
+    gpu_parts_len += 1;
+    gpu_parts_buf[gpu_parts_len] = "/usr/lib";
+    gpu_parts_len += 1;
+    const gpu_parts = gpu_parts_buf[0..gpu_parts_len];
+    // Find existing LD_LIBRARY_PATH override (if any) to merge with.
+    var existing_ld: ?[]const u8 = null;
+    for (existing) |e| {
+        if (std.mem.eql(u8, e.name, "LD_LIBRARY_PATH")) {
+            existing_ld = e.value;
+            break;
+        }
+    }
+    const host_ld = frame.host_launcher.environ.getAlloc(alloc, "LD_LIBRARY_PATH") catch null;
+    defer if (host_ld) |s| alloc.free(s);
+
+    var ld_buf: std.ArrayList(u8) = .empty;
+    defer ld_buf.deinit(alloc);
+    var wrote_any = false;
+    for (gpu_parts) |p| {
+        if (wrote_any) try ld_buf.appendSlice(alloc, ":");
+        try ld_buf.appendSlice(alloc, p);
+        wrote_any = true;
+    }
+    if (existing_ld) |s| if (s.len > 0) {
+        try ld_buf.appendSlice(alloc, ":");
+        try ld_buf.appendSlice(alloc, s);
+    };
+    if (host_ld) |s| if (s.len > 0) {
+        try ld_buf.appendSlice(alloc, ":");
+        try ld_buf.appendSlice(alloc, s);
+    };
+    const ld_value = try ld_buf.toOwnedSlice(alloc);
+    errdefer alloc.free(ld_value);
+
+    // Build the combined override list: existing entries except any
+    // LD_LIBRARY_PATH (replaced by ours), plus our new one.
+    var out: std.ArrayList(sandbox_mod.EnvOverride) = .empty;
+    errdefer {
+        for (out.items) |e| {
+            alloc.free(e.name);
+            alloc.free(e.value);
+        }
+        out.deinit(alloc);
+    }
+    for (existing) |e| {
+        if (std.mem.eql(u8, e.name, "LD_LIBRARY_PATH")) continue;
+        try out.append(alloc, .{
+            .name = try alloc.dupe(u8, e.name),
+            .value = try alloc.dupe(u8, e.value),
+        });
+    }
+    try out.append(alloc, .{
+        .name = try alloc.dupe(u8, "LD_LIBRARY_PATH"),
+        .value = ld_value,
+    });
+    return out.toOwnedSlice(alloc) catch error.OutOfMemory;
+}
+
+/// Pre-launch diagnostic result. `summary` is a single-line headline
+/// shown in the popup title; `log` is the supporting evidence (raw
+/// `ldd` output etc.) the user can read or copy to clipboard.
+/// `fix_id` chooses which "Fix issue" affordance — if any — appears.
+pub const LaunchDiagnosis = struct {
+    summary: []const u8,
+    log: []const u8,
+    fix_id: ?state_mod.LaunchFixId,
+};
+
+/// Run the static-only checks we have today. Returns `null` when
+/// the launcher looks fine. The caller owns nothing — the returned
+/// struct's strings are stashed verbatim into `State` (which has
+/// fixed-size buffers) by `stashLaunchDiag` and dropped after.
+pub fn runPreLaunchDiagnostics(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    exe_path: []const u8,
+) ?LaunchDiagnosis {
+    // Check 1: ldd unresolved libs.
+    var ldd_out_buf: std.ArrayList(u8) = .empty;
+    defer ldd_out_buf.deinit(alloc);
+    const missing = findMissingLibs(alloc, io, exe_path);
+    defer alloc.free(missing.combined);
+    if (missing.combined.len > 0) {
+        // Re-run ldd and stash full output as the diagnostic log so
+        // the user gets the complete picture, not just the lib list.
+        const full_ldd = captureLddOutput(alloc, io, exe_path) catch alloc.dupe(u8, "") catch &.{};
+
+        var summary_buf: [256]u8 = undefined;
+        const summary_txt = std.fmt.bufPrint(
+            &summary_buf,
+            "Missing shared libraries: {s}",
+            .{missing.combined},
+        ) catch missing.combined;
+
+        // Heuristic: any GL-related lib → host_gpu_paths fix.
+        const looks_like_gl =
+            std.mem.indexOf(u8, missing.combined, "libGL.") != null or
+            std.mem.indexOf(u8, missing.combined, "libGLX") != null or
+            std.mem.indexOf(u8, missing.combined, "libEGL") != null or
+            std.mem.indexOf(u8, missing.combined, "libGLEW") != null;
+
+        return .{
+            .summary = alloc.dupe(u8, summary_txt) catch alloc.dupe(u8, "") catch &.{},
+            .log = full_ldd,
+            .fix_id = if (looks_like_gl) .host_gpu_paths else null,
+        };
+    }
+    return null;
+}
+
+/// Best-effort capture of full `ldd` stdout — used as the log body in
+/// the diagnostic popup. Identical spawn pattern to `findMissingLibs`,
+/// but returns the whole output instead of just the unresolved
+/// lib names. Caller frees.
+fn captureLddOutput(alloc: std.mem.Allocator, io: std.Io, exe_path: []const u8) ![]u8 {
+    const result = try std.process.run(alloc, io, .{
+        .argv = &.{ "ldd", exe_path },
+    });
+    defer alloc.free(result.stderr);
+    return result.stdout; // caller owns
+}
+
+pub const stashLaunchDiagPub = stashLaunchDiag;
+
+/// Copy a diagnosis into State (fixed-size buffers) and open the
+/// popup. Frees the input strings.
+fn stashLaunchDiag(state: *State, thread_id: u64, diag: LaunchDiagnosis) void {
+    {
+        const n = @min(diag.summary.len, state.launch_diag_summary_buf.len);
+        @memcpy(state.launch_diag_summary_buf[0..n], diag.summary[0..n]);
+        state.launch_diag_summary_len = n;
+    }
+    {
+        const n = @min(diag.log.len, state.launch_diag_log_buf.len);
+        @memcpy(state.launch_diag_log_buf[0..n], diag.log[0..n]);
+        state.launch_diag_log_len = n;
+    }
+    state.launch_diag_fix_id = diag.fix_id;
+    state.launch_diag_thread_id = thread_id;
+    state.launch_diag_open = true;
+    state.launch_diag_acked = false;
+    state.launch_diag_fix_applied = false;
+}
+
+pub fn clearLaunchDiag(state: *State) void {
+    state.launch_diag_open = false;
+    state.launch_diag_summary_len = 0;
+    state.launch_diag_log_len = 0;
+    state.launch_diag_fix_id = null;
+}
+
+// ============================================================
+//  Post-launch watcher
+// ============================================================
+
+/// Detached thread spawned after a successful host launch. Polls
+/// `waitpid(pid, WNOHANG)` in `poll_ms` increments for up to `watch_ms`.
+/// If the child exits with a non-zero code inside the window we mark
+/// `early_fail = true` and let `drainLaunchWatcher` surface the
+/// diagnostic dialog. Past the window we assume the launch is fine
+/// and the watcher exits silently.
+fn launchWatchWorker(job: *owned_types.LaunchWatchJob) void {
+    const p = &job.payload;
+    const linux = std.os.linux;
+    const tick = std.Io.Duration.fromMilliseconds(p.poll_ms);
+    var elapsed: u32 = 0;
+    while (elapsed < p.watch_ms) : (elapsed += p.poll_ms) {
+        if (job.cancelRequested()) break;
+        var status: u32 = 0;
+        const ret = linux.waitpid(p.pid, &status, linux.W.NOHANG);
+        if (ret > 0) {
+            // Decode the waitpid status: WIFEXITED gives the actual
+            // exit code; otherwise a signal terminated the child and
+            // we surface the signal number as a high-order code.
+            const exited = (status & 0x7F) == 0;
+            const code: i32 = if (exited)
+                @as(i32, @intCast((status >> 8) & 0xFF))
+            else
+                -@as(i32, @intCast(status & 0x7F));
+            p.exit_code = code;
+            if (code != 0) {
+                p.early_fail = true;
+                const txt = std.fmt.bufPrint(
+                    &p.summary_buf,
+                    "Game exited with code {d} after {d} ms — likely a launch failure",
+                    .{ code, elapsed },
+                ) catch "Game exited shortly after launch.";
+                p.summary_len = txt.len;
+            }
+            job.markDone();
+            return;
+        }
+        std.Io.sleep(p.io, tick, .awake) catch break;
+    }
+    job.markDone();
+}
+
+fn onLaunchWatchDone(state: *State, job: *owned_types.LaunchWatchJob) void {
+    const p = &job.payload;
+    if (p.early_fail) {
+        // Build a synthetic LaunchDiagnosis from the watcher payload
+        // and stash via the same path the pre-launch dialog uses.
+        // No stderr capture in v1 — the log body explains what we
+        // know, and OK / Copy lets the user paste it elsewhere.
+        const summary = p.summary_buf[0..p.summary_len];
+        var log_buf: [512]u8 = undefined;
+        const log_txt = std.fmt.bufPrint(
+            &log_buf,
+            "Launch attempt exited with code {d}.\n" ++
+                "f69 isn't capturing the game's stderr yet, so the actual error message went to the terminal you launched f69 from.\n\n" ++
+                "Common causes:\n" ++
+                "  • Missing shared library (libGL / libGLEW / libdecor / …) — try the host GPU paths fix below\n" ++
+                "  • Missing executable permissions on inner binaries\n" ++
+                "  • Wrong launcher picked (try a different install in the dropdown)",
+            .{p.exit_code},
+        ) catch "Launch attempt exited early.";
+
+        // We don't have an ldd-detected fix here, but offering the
+        // host-GPU retry is a reasonable default first guess given
+        // how common that failure mode is on NixOS.
+        const diag: LaunchDiagnosis = .{
+            .summary = summary,
+            .log = log_txt,
+            .fix_id = .host_gpu_paths,
+        };
+        stashLaunchDiag(state, p.thread_id, diag);
+    }
+}
+
+fn onLaunchWatchFailed(state: *State, job: *owned_types.LaunchWatchJob) void {
+    _ = state;
+    _ = job;
+}
+
+pub fn drainLaunchWatcher(frame: *Frame) void {
+    job_mod.drainBackgroundJob(
+        owned_types.LaunchWatchPayload,
+        onLaunchWatchDone,
+        onLaunchWatchFailed,
+        frame.state,
+        &frame.state.launch_watch_job,
+    );
+}
+
+/// Fire off the watcher after a successful spawn. No-op if a watcher
+/// is already in flight for a previous launch — they're independent.
+fn spawnLaunchWatcher(frame: *Frame, pid: i32, thread_id: u64) void {
+    if (frame.state.launch_watch_job != null) return;
+    if (pid <= 0) return;
+    _ = job_mod.spawnJob(
+        owned_types.LaunchWatchPayload,
+        launchWatchWorker,
+        frame.lib.alloc,
+        frame.win,
+        .{
+            .pid = pid,
+            .thread_id = thread_id,
+            .io = frame.io,
+        },
+        &frame.state.launch_watch_job,
+    ) catch |e| {
+        log.warn("spawnLaunchWatcher: spawn failed: {s}", .{@errorName(e)});
+    };
+}
+
 fn composeCompatEnv(frame: *Frame, install_id_ptr: *const [36]u8) ![]sandbox_mod.EnvOverride {
     const alloc = frame.lib.alloc;
     const install_id: []const u8 = install_id_ptr[0..];
@@ -437,6 +827,110 @@ pub fn freeCompatIssues(frame: *Frame, issues: []compat_mod.Issue) void {
 /// Apply one fix and persist the FixRecord. Errors propagate from
 /// the service (resource missing, snapshot failure, etc.). Caller is
 /// responsible for surfacing the error message in the UI.
+/// Convenience wrapper for the launch-diag Fix button. Looks up the
+/// install row for `thread_id` to recover `install_path`, then calls
+/// `applyCompatFix`. Returns `error.InstallNotFound` when the game
+/// has no installs (rare — the diag wouldn't have been raised in
+/// that case).
+pub fn applyCompatFixForGame(
+    frame: *Frame,
+    thread_id: u64,
+    install_id: *const [36]u8,
+    recipe_id: []const u8,
+) !void {
+    const inst = (frame.lib.latestInstallForGame(thread_id) catch null) orelse return error.InstallNotFound;
+    defer frame.lib.freeInstall(inst);
+    try applyCompatFix(frame, install_id, inst.install_path, recipe_id);
+}
+
+/// Result of `autoApplyCompatAfterConvert`. `applied` counts both
+/// fresh applications and sha-mismatch re-applications. `failed` is
+/// best-effort — individual recipe failures are logged but never
+/// surface as a hard error to the Convert path; we'd rather complete
+/// the Convert with partial compat than abort.
+pub const AutoApplyCompatResult = struct {
+    applied: u32 = 0,
+    reapplied: u32 = 0,
+    failed: u32 = 0,
+};
+
+/// After a successful Convert, scan the install against every compat
+/// recipe and apply each that is .unfixed. Also re-apply any .fixed
+/// recipe whose bundled sha has changed since the original apply —
+/// this covers the case where f69 ships a recipe upgrade and the
+/// user's install still has the old fix recorded.
+///
+/// Gated by `state.auto_apply_compat`. Caller should consult that
+/// before invoking. Returns counts for status reporting.
+pub fn autoApplyCompatAfterConvert(
+    frame: *Frame,
+    install_id: *const [36]u8,
+    install_root: []const u8,
+) AutoApplyCompatResult {
+    var res = AutoApplyCompatResult{};
+
+    const id_slice: []const u8 = install_id[0..];
+    const applied = frame.lib.listAppliedCompat(id_slice) catch |e| {
+        log.warn("auto-apply-compat: list applied failed: {s}", .{@errorName(e)});
+        return res;
+    };
+    defer frame.lib.freeAppliedCompatList(applied);
+
+    var applied_ids: std.ArrayList([]const u8) = .empty;
+    defer applied_ids.deinit(frame.lib.alloc);
+    for (applied) |row| {
+        applied_ids.append(frame.lib.alloc, row.recipe_id) catch return res;
+    }
+
+    const issues = frame.compat_svc.scan(install_root, applied_ids.items) catch |e| {
+        log.warn("auto-apply-compat: scan failed: {s}", .{@errorName(e)});
+        return res;
+    };
+    defer frame.compat_svc.freeIssues(issues);
+
+    for (issues) |is| {
+        // Decide whether to apply: .unfixed → yes. .fixed → only when
+        // the bundled recipe's sha has moved on (recipe was upgraded
+        // since the install was originally fixed).
+        var needs_reapply = false;
+        if (is.status == .fixed) {
+            const entry = frame.compat_svc.repo.byId(is.recipe_id) orelse continue;
+            for (applied) |row| {
+                if (!std.mem.eql(u8, row.recipe_id, is.recipe_id)) continue;
+                if (!std.mem.eql(u8, row.recipe_sha256, entry.source_sha256)) {
+                    needs_reapply = true;
+                    log.info("auto-apply-compat: {s} sha drifted ({s} → {s}) — re-applying", .{
+                        is.recipe_id, row.recipe_sha256[0..@min(8, row.recipe_sha256.len)], entry.source_sha256[0..@min(8, entry.source_sha256.len)],
+                    });
+                }
+                break;
+            }
+        }
+        if (is.status != .unfixed and !needs_reapply) continue;
+
+        // If we're re-applying due to sha drift, undo the old fix
+        // first so its backups get restored and the row's slate is
+        // clean before the new apply writes a fresh row.
+        if (needs_reapply) {
+            undoCompatFix(frame, install_id, install_root, is.recipe_id) catch |e| {
+                log.warn("auto-apply-compat: stale-sha undo of {s} failed: {s}", .{ is.recipe_id, @errorName(e) });
+                res.failed += 1;
+                continue;
+            };
+        }
+
+        applyCompatFix(frame, install_id, install_root, is.recipe_id) catch |e| {
+            log.warn("auto-apply-compat: {s} failed: {s}", .{ is.recipe_id, @errorName(e) });
+            res.failed += 1;
+            continue;
+        };
+        if (needs_reapply) res.reapplied += 1 else res.applied += 1;
+        log.info("auto-apply-compat: applied {s}", .{is.recipe_id});
+    }
+
+    return res;
+}
+
 pub fn applyCompatFix(
     frame: *Frame,
     install_id: *const [36]u8,
@@ -651,7 +1145,7 @@ pub fn openManualInstallForUpdate(state: *State, latest_version: []const u8) voi
 ///   3. Any `.AppImage` file.
 /// Returns the path *relative to install_path* in `buf`. Null when
 /// nothing matches.
-fn findLinuxLauncher(io: std.Io, alloc: std.mem.Allocator, install_path: []const u8, buf: []u8) ?[]const u8 {
+pub fn findLinuxLauncher(io: std.Io, alloc: std.mem.Allocator, install_path: []const u8, buf: []u8) ?[]const u8 {
     _ = alloc;
     // Pass 1: shallow root scan first — that's where Ren'Py / native
     // Linux ports put their `.sh`. Cheap.
@@ -660,7 +1154,13 @@ fn findLinuxLauncher(io: std.Io, alloc: std.mem.Allocator, install_path: []const
 
     var it = root.iterate();
     while (it.next(io) catch null) |entry| {
-        if (entry.kind != .file) continue;
+        // Accept `.unknown` alongside `.file` — FUSE NTFS / exFAT
+        // mounts surface every readdir entry as `.unknown` (no
+        // d_type). Without this, a converted `Game.sh` sitting on a
+        // FUSE mount would be invisible and the user would get the
+        // "Found Windows binary — click Convert first" message even
+        // after convert ran successfully.
+        if (entry.kind != .file and entry.kind != .unknown) continue;
         if (std.mem.endsWith(u8, entry.name, ".sh") or
             std.mem.endsWith(u8, entry.name, ".AppImage"))
         {
@@ -672,14 +1172,14 @@ fn findLinuxLauncher(io: std.Io, alloc: std.mem.Allocator, install_path: []const
     // game in a single subdir.
     var it2 = root.iterate();
     while (it2.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
         var sub_path_buf: [320]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&sub_path_buf, "{s}/{s}", .{ install_path, entry.name }) catch continue;
         var sub = std.Io.Dir.cwd().openDir(io, sub_path, .{ .iterate = true }) catch continue;
         defer sub.close(io);
         var sub_it = sub.iterate();
         while (sub_it.next(io) catch null) |sub_entry| {
-            if (sub_entry.kind != .file) continue;
+            if (sub_entry.kind != .file and sub_entry.kind != .unknown) continue;
             if (std.mem.endsWith(u8, sub_entry.name, ".sh") or
                 std.mem.endsWith(u8, sub_entry.name, ".AppImage"))
             {
@@ -699,21 +1199,21 @@ fn findWindowsExe(io: std.Io, alloc: std.mem.Allocator, install_path: []const u8
     defer root.close(io);
     var it = root.iterate();
     while (it.next(io) catch null) |entry| {
-        if (entry.kind != .file) continue;
+        if (entry.kind != .file and entry.kind != .unknown) continue;
         if (std.mem.endsWith(u8, entry.name, ".exe")) {
             return std.fmt.bufPrint(buf, "{s}", .{entry.name}) catch null;
         }
     }
     var it2 = root.iterate();
     while (it2.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
+        if (entry.kind != .directory and entry.kind != .unknown) continue;
         var sub_path_buf: [320]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&sub_path_buf, "{s}/{s}", .{ install_path, entry.name }) catch continue;
         var sub = std.Io.Dir.cwd().openDir(io, sub_path, .{ .iterate = true }) catch continue;
         defer sub.close(io);
         var sub_it = sub.iterate();
         while (sub_it.next(io) catch null) |sub_entry| {
-            if (sub_entry.kind != .file) continue;
+            if (sub_entry.kind != .file and sub_entry.kind != .unknown) continue;
             if (std.mem.endsWith(u8, sub_entry.name, ".exe")) {
                 return std.fmt.bufPrint(buf, "{s}/{s}", .{ entry.name, sub_entry.name }) catch null;
             }
@@ -731,6 +1231,40 @@ fn findWindowsExe(io: std.Io, alloc: std.mem.Allocator, install_path: []const u8
 /// `<library_root>/<thread_id>/` (the same placeholder install dir
 /// the Launch action uses). Idempotent — re-clicking after a
 /// successful convert reports "already converted".
+/// True when any of `names` exists under `install_path`. Used to
+/// pick engine-specific "can't convert" messages so the user knows
+/// WHICH Windows-only engine they're looking at rather than just
+/// "needs WINE." Stat-only, no directory walk.
+fn installHasAny(io: std.Io, install_path: []const u8, names: []const []const u8) bool {
+    for (names) |n| {
+        var buf: [512]u8 = undefined;
+        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ install_path, n }) catch continue;
+        if (std.Io.Dir.cwd().access(io, full, .{})) return true else |_| {}
+    }
+    return false;
+}
+
+/// Resolve `<exe_dir>/data/mkxp-z` and confirm the binary inside it
+/// exists. Returns the dir path (slice into `buf`) when the bundle
+/// is present, null otherwise. The bundle is checked into
+/// `third_party/mkxp-z/` and copied here by build.zig; this probe is
+/// the runtime confirmation that the install tree picked it up.
+fn mkxpZBundled(frame: *Frame, exe_dir: []const u8, buf: []u8) ?[]const u8 {
+    const mkxp_dir = std.fmt.bufPrint(buf, "{s}/data/mkxp-z", .{exe_dir}) catch return null;
+    var bin_buf: [640]u8 = undefined;
+    const bin = std.fmt.bufPrint(&bin_buf, "{s}/mkxp-z.x86_64", .{mkxp_dir}) catch return null;
+    std.Io.Dir.cwd().access(frame.io, bin, .{}) catch return null;
+    return mkxp_dir;
+}
+
+/// Probe `<exe_dir>/data/compat-resources/mkxp-z-fhs-libs/lib/`. Empty
+/// (returns null) on non-NixOS builds where the bundle wasn't materialised.
+fn mkxpZExtraLibsDir(frame: *Frame, exe_dir: []const u8, buf: []u8) ?[]const u8 {
+    const dir = std.fmt.bufPrint(buf, "{s}/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir}) catch return null;
+    std.Io.Dir.cwd().access(frame.io, dir, .{}) catch return null;
+    return dir;
+}
+
 pub fn doConvertGame(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
 
@@ -739,7 +1273,7 @@ pub fn doConvertGame(frame: *Frame, game: *const library.Game) void {
     var fallback_buf: [640]u8 = undefined;
     const install_opt = frame.lib.latestInstallForGame(game.f95_thread_id) catch null;
     defer if (install_opt) |i| frame.lib.freeInstall(i);
-    const install_path: []const u8 = if (install_opt) |i|
+    const raw_install_path: []const u8 = if (install_opt) |i|
         i.install_path
     else
         std.fmt.bufPrint(&fallback_buf, "{s}/{d}", .{ frame.info.library_root, game.f95_thread_id }) catch {
@@ -747,22 +1281,140 @@ pub fn doConvertGame(frame: *Frame, game: *const library.Game) void {
             return;
         };
 
+    // Peel a wrapper folder if present. F95 archives commonly ship
+    // their content one level deep (`<install>/Game v1.0d/www/...`);
+    // without this peel `detectEngine` looks at the shallow path,
+    // finds no markers, and Convert spuriously bails as "engine not
+    // supported." `resolveGameRoot` no-ops when the install dir is
+    // already the real game root.
+    const install_path = mods_act.resolveGameRoot(frame.io, raw_install_path, frame.lib.alloc) catch {
+        state.setConvertMsg("Convert: failed to resolve game root.");
+        return;
+    };
+    defer frame.lib.alloc.free(install_path);
+    if (!std.mem.eql(u8, install_path, raw_install_path)) {
+        log.info("Convert: peeled wrapper {s} → {s}", .{ raw_install_path, install_path });
+    }
+
     // Convert spec from the preset matcher — engine-keyed dispatch
     // over the merged built-in + `<data_root>/convert-presets/` pool.
     const spec = mods_act.resolveConvertSpec(frame, install_path);
     if (spec == .none) {
-        state.setConvertMsg("No convert needed (engine not detected, or already Linux-native).");
+        // Disambiguate "already Linux" from "Windows-only, no
+        // converter exists." Look for tell-tale files to figure
+        // out which side of the line the install sits on.
+        var probe_buf: [512]u8 = undefined;
+        const has_lin_launcher = (findLinuxLauncher(frame.io, frame.lib.alloc, install_path, &probe_buf) != null);
+        const has_win_exe = (findWindowsExe(frame.io, frame.lib.alloc, install_path, &probe_buf) != null);
+        // Use the convert/rpgm marker table directly so both the engine
+        // detection AND the Convert dispatch share one source of truth.
+        // The flat probes that used to live here missed VX Ace installs
+        // whose RGSS300.dll sits in `System/` (the canonical layout when
+        // a game ships unencrypted with `Game.rvproj2`).
+        const rgss_variant = convert_mod.rpgm.detectRgssVariant(frame.io, install_path);
+        const looks_like_vx_ace = rgss_variant == .vx_ace;
+        const looks_like_vx = rgss_variant == .vx;
+        const looks_like_xp = rgss_variant == .xp;
+
+        // Vendored mkxp-z covers RGSS1/2/3 — try it for any RGSS variant.
+        // On success the launcher lands in the game dir and we report
+        // converted; on missing-bundle (e.g. non-Linux build of f69) we
+        // fall through to the WINE message below.
+        if (looks_like_vx_ace or looks_like_vx or looks_like_xp) {
+            var bin_buf: [640]u8 = undefined;
+            var libs_buf: [640]u8 = undefined;
+            if (mkxpZBundled(frame, frame.info.exe_dir, &bin_buf)) |mkxp_dir| {
+                const extra_libs = mkxpZExtraLibsDir(frame, frame.info.exe_dir, &libs_buf);
+                // Per-install zoom override (file at `<install>/.mkxp-zoom`);
+                // falls back to the global default the UI dropdown ships with.
+                const zoom = convert_mod.rpgm.readMkxpZoom(frame.io, install_path) orelse convert_mod.rpgm.MKXP_ZOOM_DEFAULT;
+                const mkxp_spec: convert_mod.ConvertSpec = .{ .mkxp_z = .{
+                    .mkxp_z_dir = mkxp_dir,
+                    .extra_libs_dir = extra_libs,
+                    .zoom = zoom,
+                } };
+                // force=true: manual Convert clicks always re-write the
+                // launcher even if `alreadyConverted` would otherwise
+                // skip — iterating on launcher templates (FONTCONFIG_FILE
+                // injection, env tweaks) is the main reason to click
+                // Convert on an already-converted install.
+                if (frame.convert_svc.convert(install_path, mkxp_spec, true)) |_| {
+                    const compat_msg = maybeAutoApplyCompatPostConvert(frame, install_opt, install_path);
+                    setConvertOk(state, "Converted via bundled mkxp-z.", compat_msg);
+                    return;
+                } else |e| {
+                    log.warn("mkxp-z convert failed: {s}", .{@errorName(e)});
+                    var ebuf: [256]u8 = undefined;
+                    const m = std.fmt.bufPrint(&ebuf, "mkxp-z convert failed: {s}", .{@errorName(e)}) catch "mkxp-z convert failed";
+                    state.setConvertMsg(m);
+                    return;
+                }
+            }
+        }
+
+        const msg = if (has_lin_launcher)
+            "No convert needed — a Linux launcher (.sh / .AppImage) is already in the install."
+        else if (looks_like_vx_ace)
+            "RPG Maker VX Ace: bundled mkxp-z is missing from this build of f69. Rebuild with the third_party/mkxp-z/ tree in place, or use WINE/Proton."
+        else if (looks_like_vx)
+            "RPG Maker VX: bundled mkxp-z is missing from this build of f69. Rebuild with the third_party/mkxp-z/ tree in place, or use WINE/Proton."
+        else if (looks_like_xp)
+            "RPG Maker XP: bundled mkxp-z is missing from this build of f69. Rebuild with the third_party/mkxp-z/ tree in place, or use WINE/Proton."
+        else if (has_win_exe)
+            "Can't convert: only Ren'Py and RPG Maker MV/MZ have Linux runtimes f69 can install. Other Windows-only engines need WINE or Proton."
+        else
+            "No convert needed: no engine detected at this install path. Check the install folder contents.";
+        state.setConvertMsg(msg);
         return;
     }
 
-    frame.convert_svc.convert(install_path, spec, false) catch |e| {
+    // force=true on manual Convert clicks; see comment above for the
+    // mkxp-z dispatch on the same rationale (re-write launcher + any
+    // sidecar configs every time, the user explicitly asked for it).
+    frame.convert_svc.convert(install_path, spec, true) catch |e| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Convert failed: {s}", .{@errorName(e)}) catch "Convert failed";
         state.setConvertMsg(msg);
         return;
     };
 
-    state.setConvertMsg("Converted. Try Launch.");
+    const compat_msg = maybeAutoApplyCompatPostConvert(frame, install_opt, install_path);
+    setConvertOk(state, "Converted.", compat_msg);
+}
+
+/// Run `autoApplyCompatAfterConvert` if the install has a DB id and
+/// the user hasn't disabled the toggle. Returns a slice into a
+/// thread-local-ish buffer suitable for embedding in a toast string.
+/// Empty string when nothing fired (toggle off or no install).
+const COMPAT_SUFFIX_LEN = 96;
+var compat_suffix_buf: [COMPAT_SUFFIX_LEN]u8 = undefined;
+
+fn maybeAutoApplyCompatPostConvert(
+    frame: *Frame,
+    install_opt: ?library.Install,
+    install_path: []const u8,
+) []const u8 {
+    if (!frame.state.auto_apply_compat) return "";
+    const install = install_opt orelse return "";
+
+    const res = autoApplyCompatAfterConvert(frame, &install.id, install_path);
+    if (res.applied == 0 and res.reapplied == 0 and res.failed == 0) return "";
+
+    const written = std.fmt.bufPrint(
+        &compat_suffix_buf,
+        " Compat: {d} applied, {d} re-applied, {d} failed.",
+        .{ res.applied, res.reapplied, res.failed },
+    ) catch return "";
+    return written;
+}
+
+fn setConvertOk(state: *State, head: []const u8, compat_tail: []const u8) void {
+    var buf: [320]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "{s}{s} Try Launch.", .{ head, compat_tail }) catch {
+        state.setConvertMsg("Converted. Try Launch.");
+        return;
+    };
+    state.setConvertMsg(msg);
 }
 
 // `RunningGamesMap` aliased from `owned.zig` at the top of the file.
@@ -861,14 +1513,20 @@ pub fn drainRunningGames(frame: *Frame) void {
 /// exit, push a toast pointing the user at the game and (when a
 /// compat scan finds anything) at the Fix Compat button.
 fn notifyOnAbnormalExit(frame: *Frame, thread_id: u64, status: u32) void {
+    log.info("launch-diag: notifyOnAbnormalExit fired for tid={d} status=0x{x}", .{ thread_id, status });
     const W = std.posix.W;
     const exited = W.IFEXITED(status);
     const signaled = W.IFSIGNALED(status);
-    if (exited and W.EXITSTATUS(status) == 0) return; // clean exit
-    if (!exited and !signaled) return; // stopped / continued — not interesting here
+    if (exited and W.EXITSTATUS(status) == 0) {
+        log.info("launch-diag: clean exit (code 0) — no diag", .{});
+        return;
+    }
+    if (!exited and !signaled) {
+        log.info("launch-diag: stopped/continued — no diag", .{});
+        return;
+    }
 
-    // Find the game name so the toast is intelligible. Fall back to
-    // the thread id when the library hasn't been re-queried yet.
+    // Find the game name so the dialog summary is intelligible.
     const name = blk: {
         if (frame.games_by_thread) |map| {
             if (map.get(thread_id)) |g| break :blk g.name;
@@ -878,29 +1536,160 @@ fn notifyOnAbnormalExit(frame: *Frame, thread_id: u64, status: u32) void {
         break :blk "(unknown game)";
     };
 
-    // Run a compat scan against the game's newest install — if it
-    // matches a recipe with `.unfixed` status we mention it inline
-    // so the user knows there's something to click.
-    var issue_count: usize = 0;
+    // Build the diagnostic summary + log. The log explains where the
+    // upstream error message actually went (game's own stderr, which
+    // f69 isn't capturing yet — see Phase 3 follow-up) and lists the
+    // common causes the user should rule out. Offering the host-GPU
+    // retry as the default fix because that's the dominant failure
+    // mode on NixOS / sandboxed distros.
+    var summary_buf: [256]u8 = undefined;
+    const summary = if (exited)
+        std.fmt.bufPrint(&summary_buf, "{s} exited with code {d}", .{ name, W.EXITSTATUS(status) }) catch "Game exited with error"
+    else
+        std.fmt.bufPrint(&summary_buf, "{s} was killed by signal {d}", .{ name, W.TERMSIG(status) }) catch "Game killed by signal";
+
+    // Scan for any matching compat recipe AND grab the install dir
+    // so we can read Ren'Py's own log files. Both are best-effort.
+    var compat_recipe_id: ?[]const u8 = null;
+    var compat_recipe_id_owned: ?[]u8 = null;
+    defer if (compat_recipe_id_owned) |s| frame.lib.alloc.free(s);
+    var install_id_set: bool = false;
+    var install_id_buf: [36]u8 = undefined;
+    var install_path_buf: [640]u8 = undefined;
+    var install_path: []const u8 = "";
     if (frame.lib.latestInstallForGame(thread_id) catch null) |inst| {
         defer frame.lib.freeInstall(inst);
+        @memcpy(&install_id_buf, &inst.id);
+        install_id_set = true;
+        const n = @min(inst.install_path.len, install_path_buf.len);
+        @memcpy(install_path_buf[0..n], inst.install_path[0..n]);
+        install_path = install_path_buf[0..n];
+        log.info("launch-diag: scanning compat for tid={d} install_root='{s}'", .{ thread_id, install_path });
         if (scanCompatForInstall(frame, &inst.id, inst.install_path)) |issues| {
             defer freeCompatIssues(frame, issues);
-            for (issues) |is| if (is.status == .unfixed) {
-                issue_count += 1;
-            };
-        } else |_| {}
+            log.info("launch-diag: compat scan returned {d} issue(s)", .{issues.len});
+            for (issues) |is| {
+                log.info("launch-diag:   issue recipe='{s}' status={s} severity={s}", .{
+                    is.recipe_id, @tagName(is.status), @tagName(is.severity),
+                });
+                if (is.status != .unfixed) continue;
+                compat_recipe_id_owned = frame.lib.alloc.dupe(u8, is.recipe_id) catch null;
+                compat_recipe_id = compat_recipe_id_owned;
+                break;
+            }
+        } else |e| {
+            log.warn("launch-diag: compat scan failed: {s}", .{@errorName(e)});
+        }
+    } else {
+        log.warn("launch-diag: latestInstallForGame returned null for tid={d}", .{thread_id});
     }
 
-    var buf: [320]u8 = undefined;
-    const msg = if (exited)
-        if (issue_count > 0)
-            std.fmt.bufPrint(&buf, "{s}: crashed (exit {d}). {d} compat fix(es) available — click Fix Compat.", .{ name, W.EXITSTATUS(status), issue_count }) catch "Game crashed."
-        else
-            std.fmt.bufPrint(&buf, "{s}: exited with error (code {d}).", .{ name, W.EXITSTATUS(status) }) catch "Game exited with error."
-    else
-        std.fmt.bufPrint(&buf, "{s}: killed by signal.", .{name}) catch "Game killed by signal.";
-    frame.state.notifyErr(msg);
+    // Build the log body. Preference order:
+    //   1. Ren'Py's `traceback.txt` (full Python traceback — gold).
+    //   2. Ren'Py's `log.txt` (less detail, but covers non-Python crashes).
+    //   3. Our generic "we don't capture stderr yet" boilerplate.
+    //
+    // Ren'Py writes these into the *game* root (one level below the
+    // install root for the typical `<install>/GameName-X.Y/` wrapper
+    // layout), so check both the install root and every immediate
+    // subdir before giving up.
+    var log_storage_buf: [8 * 1024]u8 = undefined;
+    var log_txt: []const u8 = "";
+    var used_log_file = false;
+    if (install_path.len > 0) {
+        const candidates = [_][]const u8{ "traceback.txt", "log.txt" };
+        used_log_file = readFirstExistingLog(frame.io, install_path, &candidates, &log_storage_buf, &log_txt);
+        if (!used_log_file) {
+            // Wrapper-folder fallback: look one subdir deep.
+            var dir = std.Io.Dir.cwd().openDir(frame.io, install_path, .{ .iterate = true }) catch null;
+            if (dir) |*d| {
+                defer d.close(frame.io);
+                var it = d.iterate();
+                var sub_path_buf: [768]u8 = undefined;
+                while (it.next(frame.io) catch null) |entry| {
+                    if (entry.kind != .directory and entry.kind != .unknown) continue;
+                    const sub = std.fmt.bufPrint(&sub_path_buf, "{s}/{s}", .{ install_path, entry.name }) catch continue;
+                    if (readFirstExistingLog(frame.io, sub, &candidates, &log_storage_buf, &log_txt)) {
+                        used_log_file = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!used_log_file) {
+        const generic = std.fmt.bufPrint(
+            &log_storage_buf,
+            "Game exited unexpectedly. f69 doesn't capture the game's own stderr yet.\n\n" ++
+                "Common causes for an immediate exit:\n" ++
+                "  - Missing shared library (libGL / libwayland / libxkbcommon)\n" ++
+                "  - Wrong launcher picked (try a different install in the dropdown)\n" ++
+                "  - Inner binary not marked executable\n",
+            .{},
+        ) catch "Game exited unexpectedly.";
+        log_txt = generic;
+    }
+
+    // Only offer the Fix button when we have a SPECIFIC, known fix.
+    // No fallback to host_gpu_paths "best guess" — when we don't know
+    // what's wrong, leave fix_id null so the dialog shows just OK +
+    // Copy and the user can decide.
+    var fix_id: ?state_mod.LaunchFixId = null;
+    if (compat_recipe_id) |rid| {
+        if (install_id_set) {
+            fix_id = .compat_recipe;
+            const n = @min(rid.len, frame.state.launch_diag_compat_recipe_buf.len);
+            @memcpy(frame.state.launch_diag_compat_recipe_buf[0..n], rid[0..n]);
+            frame.state.launch_diag_compat_recipe_len = n;
+            @memcpy(&frame.state.launch_diag_install_id_buf, &install_id_buf);
+            frame.state.launch_diag_install_id_set = true;
+        }
+    } else {
+        frame.state.launch_diag_compat_recipe_len = 0;
+        frame.state.launch_diag_install_id_set = false;
+    }
+
+    const diag: LaunchDiagnosis = .{
+        .summary = summary,
+        .log = log_txt,
+        .fix_id = fix_id,
+    };
+    stashLaunchDiag(frame.state, thread_id, diag);
+}
+
+/// Try each `candidate` filename under `base_dir`. On the first hit
+/// that reads cleanly, fills `out_slice` with the slice into
+/// `out_buf` and returns true. Used to locate Ren'Py's crash logs,
+/// which may live either at the install root or inside a wrapper
+/// subfolder.
+fn readFirstExistingLog(
+    io: std.Io,
+    base_dir: []const u8,
+    candidates: []const []const u8,
+    out_buf: []u8,
+    out_slice: *[]const u8,
+) bool {
+    var path_buf: [768]u8 = undefined;
+    for (candidates) |fname| {
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ base_dir, fname }) catch continue;
+        if (readFilePrefix(io, path, out_buf)) |bytes| {
+            out_slice.* = bytes;
+            return true;
+        } else |_| {}
+    }
+    return false;
+}
+
+/// Read up to `out.len` bytes from `path` into `out`. Returns a slice
+/// of the actual bytes read. Used to pull Ren'Py's `log.txt` /
+/// `traceback.txt` into the diag dialog without round-tripping the
+/// heap.
+fn readFilePrefix(io: std.Io, path: []const u8, out: []u8) ![]const u8 {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .limited(@intCast(out.len)));
+    defer std.heap.page_allocator.free(bytes);
+    const n = @min(bytes.len, out.len);
+    @memcpy(out[0..n], bytes[0..n]);
+    return out[0..n];
 }
 
 pub fn freeRunningGames(state: *State, alloc: std.mem.Allocator) void {
@@ -1106,6 +1895,29 @@ pub fn doOpenSaves(frame: *Frame, game: *const library.Game) void {
     var ok_buf: [256]u8 = undefined;
     const ok_msg = std.fmt.bufPrint(&ok_buf, "Opened {s}", .{target}) catch "Opened saves";
     state.setConvertMsg(ok_msg);
+}
+
+/// Open the install directory for the currently-selected mods-page
+/// install in the user's file manager. Falls back to the game's most
+/// recent install when nothing is explicitly picked. Non-blocking
+/// (xdg-open is reaped on a detached thread). Logs + toasts on
+/// failure; never blocks the UI thread.
+pub fn doOpenInstallFolder(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    const alloc = frame.lib.alloc;
+
+    const install_opt = mods_act.resolveModsPageInstall(frame, game.f95_thread_id);
+    defer if (install_opt) |i| frame.lib.freeInstall(i);
+    const install = install_opt orelse {
+        state.pushToast(.warn, "No install for this game yet.");
+        return;
+    };
+    spawnXdgOpen(alloc, frame.io, install.install_path) catch |e| {
+        var buf: [192]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Open folder failed: {s}", .{@errorName(e)}) catch "Open folder failed";
+        state.pushToast(.err, msg);
+        return;
+    };
 }
 
 /// Pure. Expand `$HOME` and `$XDG_DATA_HOME` in the recipe's saves

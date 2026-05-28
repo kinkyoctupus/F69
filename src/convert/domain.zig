@@ -29,4 +29,26 @@ pub const ConvertSpec = union(enum) {
         ffmpeg_codecs: bool = true,
         bundle_syslibs: bool = true,
     },
+    /// RPG Maker XP / VX / VX Ace via vendored mkxp-z (RGSS reimpl).
+    /// The mkxp-z bundle ships in `<exe_dir>/data/mkxp-z/` — see
+    /// `third_party/mkxp-z/`. Caller (launch.zig) resolves the
+    /// absolute path before dispatch; convert/service.zig just
+    /// hands it to rpgm.convertVxAce verbatim.
+    mkxp_z: struct {
+        /// Absolute path to the bundled mkxp-z install (the dir that
+        /// contains `mkxp-z.x86_64`). Required.
+        mkxp_z_dir: []const u8,
+        /// Optional dir prepended to LD_LIBRARY_PATH in the launcher.
+        /// NixOS hosts: `<exe_dir>/data/compat-resources/mkxp-z-fhs-libs/lib`
+        /// supplies the libstdc++.so.6 the mkxp-z binary
+        /// dynamic-links. `null` on distros that already ship a
+        /// compatible system libstdc++.
+        extra_libs_dir: ?[]const u8 = null,
+        /// Window-size multiplier vs. the RGSS native resolution.
+        /// 2.0 = default (e.g. VX Ace's 544×416 → 1088×832 window).
+        /// Range clamped to [0.5, 4.0] by the convert step. Persisted
+        /// per-install at `<install>/.mkxp-zoom` so the UI dropdown
+        /// can survive across re-Converts.
+        zoom: f32 = 2.0,
+    },
 };

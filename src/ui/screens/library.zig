@@ -185,7 +185,7 @@ fn renderSyncSplitButton(frame: *Frame) void {
 
     const checking = state.pending_update_check != null;
     const importing = state.pending_bookmarks != null;
-    const syncing = state.pending_sync != null or state.sync_queue != null;
+    const syncing = state.anyActiveSync() or state.sync_queue != null;
     const busy = checking or importing or syncing;
 
     var bar = dvui.menu(@src(), .horizontal, .{});
@@ -270,13 +270,6 @@ fn renderAddSplitButton(frame: *Frame) void {
             .expand = .horizontal,
         }) != null) {
             state.screen = .import_urls;
-            bar.close();
-        }
-
-        if (dvui.menuItemLabel(@src(), "Import from F95Checker / xLibrary…", .{}, .{
-            .expand = .horizontal,
-        }) != null) {
-            state.screen = .import_f95checker;
             bar.close();
         }
 
@@ -422,26 +415,27 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     else
         LIST_ROW_PITCH;
 
-    // Snapshot which game indices pass the current filter once per
-    // frame. Without this, `cardVisible` (which does N case-insensitive
-    // substring scans + an installed_set lookup) ran three times over
-    // every game per frame — once for the row count, once for the
-    // grid window, once for the list window. For a 1500-game library
-    // with a non-trivial search query that's ~4500 cardVisible calls
-    // per frame, each doing up to 3 `asciiContainsIgnoreCase` walks.
-    //
-    // Storage is the dvui per-frame arena, so it's reclaimed at end
-    // of frame. On alloc failure we fall back to a zero-length slice
-    // — render windows then show an empty library this frame; next
-    // frame retries from a fresh arena.
-    var filtered_buf: std.ArrayList(u32) = .empty;
-    filtered_buf.ensureTotalCapacity(dvui.currentWindow().arena(), games.len) catch {};
-    for (games, 0..) |*g, i| {
-        if (cardVisible(state, g, query)) {
-            filtered_buf.append(dvui.currentWindow().arena(), @intCast(i)) catch break;
+    // Snapshot which game indices pass the current filter. Mouse-
+    // motion events wake dvui at ≥60 Hz, so doing substring scans
+    // over every game's name/dev/description per frame turned every
+    // mouse hover into a sustained >16ms render. We hash the filter
+    // inputs and reuse the cached result when nothing changed —
+    // mouse motion no longer triggers a refilter, only typing in the
+    // search box / toggling a filter checkbox / adding a game does.
+    const sig = filterSignature(state, query, games);
+    if (sig != state.lib_filter_cache_sig) {
+        var fresh: std.ArrayList(u32) = .empty;
+        fresh.ensureTotalCapacity(frame.lib.alloc, games.len) catch {};
+        for (games, 0..) |*g, i| {
+            if (cardVisible(state, g, query)) {
+                fresh.append(frame.lib.alloc, @intCast(i)) catch break;
+            }
         }
+        if (state.lib_filter_cache_indices) |old| frame.lib.alloc.free(old);
+        state.lib_filter_cache_indices = fresh.toOwnedSlice(frame.lib.alloc) catch null;
+        state.lib_filter_cache_sig = sig;
     }
-    const filtered: []const u32 = filtered_buf.items;
+    const filtered: []const u32 = state.lib_filter_cache_indices orelse &.{};
     const total_visible: usize = filtered.len;
 
     const total_rows: usize = (total_visible + cols - 1) / cols;
@@ -1074,7 +1068,15 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
     const h: f32 = 40;
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = "list-thumb" } },
+            .source = .{ .imageFile = .{
+                .bytes = bytes,
+                .name = "list-thumb",
+                // cover_cache slots get evicted+repopulated on
+                // re-sync. Allocator may hand back the same ptr,
+                // dvui's default `.ptr` invalidation would serve the
+                // stale GPU texture. Hash bytes instead.
+                .invalidation = .bytes,
+            } },
             .shrink = .ratio,
         }, .{
             .id_extra = thread_id,
@@ -1097,6 +1099,41 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
         .color_border = style.border_color,
     });
     defer slot.deinit();
+}
+
+/// Hash every input `cardVisible` reads so the renderer can detect
+/// "did anything that affects the filter change?" in O(1). When the
+/// signature matches last frame, we reuse the cached filtered slice
+/// instead of running substring searches over every game.
+///
+/// Inputs that affect visibility:
+///   - `state.filters` (whole struct including text buffers)
+///   - `query` (current search string)
+///   - `games` slice identity (ptr + len; a sync that adds a row
+///      hands us a new slice so this catches that)
+///   - `state.installed_set` ptr (used by `cardVisible` for
+///      installed / not_installed filtering)
+fn filterSignature(state: *const State, query: []const u8, games: []const library.Game) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(std.mem.asBytes(&state.filters));
+    hasher.update(query);
+    hasher.update(std.mem.asBytes(&games.ptr));
+    hasher.update(std.mem.asBytes(&games.len));
+    // Sort state too — `sortGames` mutates `games[]` in place when
+    // the column/direction changes. The filter cache stores INDICES
+    // into `games[]`, so a re-sort silently invalidates them. Without
+    // these two bytes in the signature, the user saw filter changes
+    // and sort changes appear to "fight" each other.
+    hasher.update(std.mem.asBytes(&state.sort_applied_column));
+    hasher.update(std.mem.asBytes(&state.sort_applied_dir));
+    const set_ptr: usize = if (state.installed_set) |s| @intFromPtr(s) else 0;
+    hasher.update(std.mem.asBytes(&set_ptr));
+    // Cheap proxy for "set membership changed" — adds/removes flip
+    // count(). A swap (one removed, one added) is rare and only
+    // causes one stale frame; acceptable.
+    const set_count: usize = if (state.installed_set) |s| s.count() else 0;
+    hasher.update(std.mem.asBytes(&set_count));
+    return hasher.final();
 }
 
 fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) bool {
@@ -1288,7 +1325,11 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
     defer ov.deinit();
 
     if (bytes_opt) |bytes| {
-        const source: dvui.ImageSource = .{ .imageFile = .{ .bytes = bytes, .name = "card-cover" } };
+        const source: dvui.ImageSource = .{ .imageFile = .{
+            .bytes = bytes,
+            .name = "card-cover",
+            .invalidation = .bytes,
+        } };
         const natural = dvui.imageSize(source) catch dvui.Size{ .w = 16, .h = 9 };
         const target_aspect = (layout.card_w - 12) / cover_h;
         const source_aspect = if (natural.h > 0) natural.w / natural.h else 16.0 / 9.0;

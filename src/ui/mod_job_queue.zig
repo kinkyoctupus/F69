@@ -26,6 +26,7 @@ const library = @import("library");
 const recipe = @import("recipe");
 const dvui = @import("dvui");
 const atomic_io = @import("util_atomic_io");
+const job_mod = @import("job.zig");
 
 const log = std.log.scoped(.mod_job_queue);
 
@@ -244,7 +245,7 @@ pub const Queue = struct {
 
         self.persistLocked() catch |e| log.warn("persist after enqueue failed: {s}", .{@errorName(e)});
 
-        if (self.win) |w| dvui.refresh(w, @src(), null);
+        if (self.win) |w| job_mod.refreshDebounced(w, @src());
         return id;
     }
 
@@ -310,6 +311,7 @@ pub const Queue = struct {
     }
 
     fn workerLoop(self: *Queue) void {
+        job_mod.lowerWorkerPriority();
         while (true) {
             self.mutex.lockUncancelable(self.io);
             while (self.jobs.items.len == 0 and !self.shutdown.load(.acquire)) {
@@ -338,7 +340,7 @@ pub const Queue = struct {
                 self.mutex.lockUncancelable(self.io);
                 self.persistLocked() catch {};
                 self.mutex.unlock(self.io);
-                if (self.win) |w| dvui.refresh(w, @src(), null);
+                if (self.win) |w| job_mod.refreshDebounced(w, @src());
             } else {
                 // All jobs are finished — wait for either a new
                 // enqueue or shutdown.

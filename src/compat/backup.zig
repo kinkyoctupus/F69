@@ -76,9 +76,27 @@ pub const Store = struct {
             self.alloc,
             .limited(SNAPSHOT_READ_LIMIT),
         ) catch |e| {
+            // Path doesn't exist yet — the recipe is creating it
+            // (e.g. `symlink_create` for a per-game case-fix). Emit
+            // an "was_absent" record so undo knows to delete the
+            // path instead of writing content back.
+            if (e == error.FileNotFound) {
+                const relpath_owned = self.alloc.dupe(u8, touched.relpath) catch return errs.Error.OutOfMemory;
+                errdefer self.alloc.free(relpath_owned);
+                const empty_sha = self.alloc.dupe(u8, "") catch return errs.Error.OutOfMemory;
+                errdefer self.alloc.free(empty_sha);
+                return .{
+                    .sha256 = empty_sha,
+                    .relpath = relpath_owned,
+                    .size = 0,
+                    .mode = 0,
+                    .was_symlink = false,
+                    .symlink_target = null,
+                    .was_absent = true,
+                };
+            }
             return switch (e) {
                 error.OutOfMemory => errs.Error.OutOfMemory,
-                error.FileNotFound => errs.Error.FileNotFound,
                 error.AccessDenied, error.PermissionDenied => errs.Error.PermissionDenied,
                 else => errs.Error.IoError,
             };
@@ -122,6 +140,10 @@ pub const Store = struct {
 
         // Clear existing entry — works for both symlink and regular file.
         std.Io.Dir.cwd().deleteFile(self.io, dest) catch {};
+
+        // Path was created by apply (no prior content to restore).
+        // The deleteFile above already removed it; we're done.
+        if (rec.was_absent) return;
 
         if (rec.was_symlink) {
             const target = rec.symlink_target orelse return errs.Error.BackupMismatch;

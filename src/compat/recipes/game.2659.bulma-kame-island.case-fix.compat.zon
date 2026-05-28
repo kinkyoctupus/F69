@@ -1,0 +1,49 @@
+// Bulma Adventure: The Kame Island (F95 thread 2659) — case-mismatch
+// asset references. RPG Maker MV script asks for `VNButtons.png`
+// (capital 'B') but the file on disk is `VNbuttons.png` (lowercase
+// 'b'). On Windows or case-insensitive filesystems both resolve to
+// the same inode; on Linux ext4 / case-sensitive FUSE-NTFS the
+// lookup fails and the in-game UI logs "failed to load
+// img/system/VNButtons.png" with broken sprites.
+//
+// Per-game case-fix recipes are the chosen pattern for these — a
+// global case-insensitive overlay (ciopfs) is heavier than the
+// problem warrants. Each recipe declares the specific
+// symlink_create actions needed for one game.
+//
+// Detection is by `file_exists` on the lowercase variant — that's
+// unique enough to identify this install vs. unrelated games that
+// happen to be RPGM MV. The recipe itself is idempotent: apply
+// silently skips when the link already exists, so re-running Fix
+// on a host where the FS happens to be case-insensitive is a no-op.
+.{
+    .id = "game.2659.case-fix",
+    .title = "Bulma Adventure (Kame Island): case-mismatched assets",
+    .explain =
+        \\This RPGM MV game's scripts reference files with capitalization
+        \\that doesn't match what's on disk (Windows is case-insensitive
+        \\so the mismatch is invisible there; Linux is case-sensitive
+        \\and the asset load fails).
+        \\
+        \\The fix creates symlinks alongside the original files using
+        \\the case the game asks for. No files are modified — only
+        \\new symlinks added — and Undo removes the symlinks cleanly.
+    ,
+    .severity = .warn,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .all = .{
+        .{ .engine_fingerprint = .rpgm_mv },
+        .{ .file_exists = "www/img/system/VNbuttons.png" },
+    } },
+    .apply = .{
+        .{ .symlink_create = .{
+            .link_path = "www/img/system/VNButtons.png",
+            .target = "VNbuttons.png",
+        } },
+    },
+    .required_resources = .{},
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Not applicable — this is a per-game asset case fix, not a system library issue." },
+    },
+}

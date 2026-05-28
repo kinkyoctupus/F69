@@ -36,6 +36,16 @@ pub const errors = errs;
 pub const Library = struct {
     alloc: std.mem.Allocator,
     conn: dbu.Conn,
+    /// Monotonic counter bumped on every install-table mutation
+    /// (`upsertInstall` / `deleteInstall` / `updateInstallName`). The
+    /// UI uses this as the cache key for its per-frame
+    /// `install_versions` snapshot — when it doesn't change, the
+    /// snapshot is reused across frames instead of running a fresh
+    /// SELECT over the installs table. Game-table mutations don't
+    /// bump this; the UI detects those by comparing the frame's
+    /// `games`-slice ptr+len. Wraps on overflow (`+%=`) — the cache
+    /// only needs inequality, not ordering.
+    install_generation: u64 = 0,
 
     pub fn open(alloc: std.mem.Allocator, db_path: []const u8) errs.Error!Library {
         var conn = dbu.Conn.open(db_path, alloc, .{ .create = true }) catch return errs.Error.DatabaseError;
@@ -104,8 +114,9 @@ pub const Library = struct {
             \\  sandbox, last_played_at, total_playtime_s,
             \\  last_scraped_at, created_at, notes, screenshots_json,
             \\  changelog_md, reviews_md, download_links_json, dev_status,
-            \\  downloads_md, last_updated_at, thread_info_md, censored
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  downloads_md, last_updated_at, thread_info_md, censored,
+            \\  last_indexer_change, last_indexer_parser_version
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -141,6 +152,8 @@ pub const Library = struct {
             g.last_updated_at,
             g.thread_info_md,
             @tagName(g.censored),
+            g.last_indexer_change,
+            if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
         }) catch return errs.Error.DatabaseError;
         return self.conn.inner.changes() > 0;
     }
@@ -156,8 +169,9 @@ pub const Library = struct {
             \\  last_scraped_at, created_at, notes, screenshots_json,
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
-            \\  auto_update, mod_backup_mode
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  auto_update, mod_backup_mode, last_indexer_change,
+            \\  last_indexer_parser_version
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -196,6 +210,8 @@ pub const Library = struct {
             @tagName(g.censored),
             @tagName(g.auto_update),
             @tagName(g.mod_backup_mode),
+            g.last_indexer_change,
+            if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
         }) catch return errs.Error.DatabaseError;
     }
 
@@ -217,7 +233,8 @@ pub const Library = struct {
             \\       notes, tags_json, last_scraped_at, screenshots_json,
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
-            \\       censored, auto_update, mod_backup_mode
+            \\       censored, auto_update, mod_backup_mode, last_indexer_change,
+            \\       last_indexer_parser_version
             \\FROM games WHERE f95_thread_id = ?
         , .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -240,7 +257,8 @@ pub const Library = struct {
             \\       notes, tags_json, last_scraped_at, screenshots_json,
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
-            \\       censored, auto_update, mod_backup_mode
+            \\       censored, auto_update, mod_backup_mode, last_indexer_change,
+            \\       last_indexer_parser_version
             \\FROM games ORDER BY name COLLATE NOCASE
         , .{}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -317,6 +335,16 @@ pub const Library = struct {
         /// Unix seconds — caller stamps via `Io.Clock.real`. Library
         /// stays clock-free.
         last_scraped_at: ?i64 = null,
+        /// F95Indexer `/fast` last-change timestamp. Set by the indexer
+        /// refresh worker after a successful `/fast` response so the
+        /// next refresh can skip `/full` when nothing moved server-side.
+        /// Scraper path leaves this null.
+        last_indexer_change: ?i64 = null,
+        /// f95_indexer mapping version at the time of this update.
+        /// Worker stamps this after a successful /full so subsequent
+        /// refreshes can detect mapping changes (mirrors F95Checker's
+        /// `last_check_version`).
+        last_indexer_parser_version: ?u32 = null,
     };
 
     pub fn applyScrape(self: *Library, game: *dom.Game, upd: ScrapeUpdate) errs.Error!void {
@@ -366,6 +394,8 @@ pub const Library = struct {
         if (upd.download_links) |new_links| {
             game.download_links = try self.dupStringList(new_links, game.download_links);
         }
+        if (upd.last_indexer_change) |t| game.last_indexer_change = t;
+        if (upd.last_indexer_parser_version) |v| game.last_indexer_parser_version = v;
         try self.upsertGame(game);
     }
 
@@ -467,6 +497,7 @@ pub const Library = struct {
             source_text,
             sha_slice,
         }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
     }
 
     /// Newest install first by VERSION (not `installed_at`). The
@@ -551,9 +582,19 @@ pub const Library = struct {
             if (!gop.found_existing) {
                 gop.value_ptr.* = ver_dup;
             } else if (version_mod.compare(gop.value_ptr.*, ver_dup) == .lt) {
-                // Arena owns both — no free needed when we drop the
-                // pointer to the older version.
+                // We have a newer version. Free the older pointer
+                // BEFORE overwriting — the doc string promised "pass
+                // a short-lived arena" but the production caller
+                // (`ui.zig`'s snapshot-rebuild path) passes a regular
+                // allocator. With an arena `free` is a no-op so this
+                // is safe either way.
+                arena.free(gop.value_ptr.*);
                 gop.value_ptr.* = ver_dup;
+            } else {
+                // Older version arrived second — drop the freshly
+                // duped string we won't be using. Same arena-vs-real
+                // logic as above.
+                arena.free(ver_dup);
             }
         }
         return map;
@@ -619,6 +660,7 @@ pub const Library = struct {
 
     pub fn deleteInstall(self: *Library, install_id: []const u8) errs.Error!void {
         self.conn.inner.exec("DELETE FROM installs WHERE id = ?", .{install_id}) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
     }
 
     /// Write a new `name` value on an existing install row. Pass null
@@ -629,6 +671,7 @@ pub const Library = struct {
             new_name,
             install_id,
         }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
     }
 
     // TODO: mods table — upsertMod / listMods / setModInstalls /
@@ -918,6 +961,31 @@ const migrations = [_]Migration{
         \\CREATE INDEX IF NOT EXISTS applied_compat_install ON applied_compat_fixes(install_id);
         ,
     },
+    .{
+        .id = 14,
+        .sql =
+        // F95Indexer last-change timestamp per game. Returned by the
+        // indexer's `/fast` endpoint; we only call `/full` when the
+        // server-side value moves past this. NULL = never fetched via
+        // indexer → first refresh treats game as "needs full check".
+        \\ALTER TABLE games ADD COLUMN last_indexer_change INTEGER;
+        ,
+    },
+    .{
+        .id = 15,
+        .sql =
+        // Indexer-mapping version at the time of the last successful
+        // /full. Mirrors F95Checker's `last_check_version`. When the
+        // mapping evolves (new fields parsed out of the indexer
+        // response) we bump `f95_indexer.PARSER_VERSION`; rows whose
+        // stored version doesn't match are force-/full'd on the next
+        // refresh regardless of whether `last_indexer_change` moved.
+        // Without this column, a mapping change couldn't propagate to
+        // existing rows because `last_indexer_change` would pin them
+        // to "unchanged".
+        \\ALTER TABLE games ADD COLUMN last_indexer_parser_version INTEGER;
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1129,6 +1197,8 @@ fn hydrateGame(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Game {
     g.censored = dom.CensoredState.fromStr(r.text(24));
     g.auto_update = parseAutoUpdate(r.text(25));
     g.mod_backup_mode = parseBackupModePref(r.text(26));
+    g.last_indexer_change = r.nullableInt(27);
+    if (r.nullableInt(28)) |v| g.last_indexer_parser_version = @intCast(v);
 
     return g;
 }

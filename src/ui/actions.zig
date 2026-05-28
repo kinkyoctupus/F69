@@ -77,6 +77,11 @@ pub const freeSlideCache = sync.freeSlideCache;
 pub const thumbBytes = sync.thumbBytes;
 pub const freeThumbCache = sync.freeThumbCache;
 pub const drainSync = sync.drainSync;
+pub const drainFastCheck = sync.drainFastCheck;
+pub const setImageCpuLimit = sync.setImageCpuLimit;
+pub const freeLibFilterCache = sync.freeLibFilterCache;
+pub const freeSnapshotCache = sync.freeSnapshotCache;
+pub const drainSlideLoads = sync.drainSlideLoads;
 pub const startSyncAll = sync.startSyncAll;
 pub const startSyncAllUnsynced = sync.startSyncAllUnsynced;
 pub const cancelSync = sync.cancelSync;
@@ -86,14 +91,21 @@ pub const coverBytes = sync.coverBytes;
 pub const coverFullBytes = sync.coverFullBytes;
 pub const freeCoverCache = sync.freeCoverCache;
 pub const spawnCoverPrewarm = sync.spawnCoverPrewarm;
+pub const spawnThumbPrewarm = sync.spawnThumbPrewarm;
 
 // ---- Update check + importers ----
 pub const startUpdateCheck = imports.startUpdateCheck;
 pub const drainUpdateCheck = imports.drainUpdateCheck;
 pub const doImportFromF95Checker = imports.doImportFromF95Checker;
 pub const doImportFromXLibrary = imports.doImportFromXLibrary;
+pub const doExportToF95Checker = imports.doExportToF95Checker;
 pub const doFolderScan = imports.doFolderScan;
 pub const folderScanBundle = imports.folderScanBundle;
+pub const folderScanRowStates = imports.folderScanRowStates;
+pub const folderScanLibSnapshot = imports.folderScanLibSnapshot;
+pub const folderScanInProgress = imports.folderScanInProgress;
+pub const tickFolderScan = imports.tickFolderScan;
+pub const commitFolderImport = imports.commitFolderImport;
 pub const resolveFolderEntry = imports.resolveFolderEntry;
 pub const parseF95ThreadInput = imports.parseF95ThreadInput;
 pub const freeFolderScan = imports.freeFolderScan;
@@ -104,12 +116,22 @@ pub const cancelAllWorkers = common.cancelAllWorkers;
 pub const workersBusy = common.workersBusy;
 pub const openInBrowser = common.openInBrowser;
 pub const openExternalUrl = common.openExternalUrl;
+pub const addGuideForGame = common.addGuideForGame;
+pub const openGuide = common.openGuide;
+pub const removeGuide = common.removeGuide;
+pub const listGuides = common.listGuides;
+pub const freeGuides = common.freeGuides;
+pub const GuideEntry = common.GuideEntry;
 pub const saveBrowserPath = common.saveBrowserPath;
 pub const persistUiScaleIfDirty = common.persistUiScaleIfDirty;
 pub const persistAutoCheckIfDirty = common.persistAutoCheckIfDirty;
 pub const persistAutoConvertIfDirty = common.persistAutoConvertIfDirty;
+pub const persistAutoApplyCompatIfDirty = common.persistAutoApplyCompatIfDirty;
 pub const persistSandboxDefaultIfDirty = common.persistSandboxDefaultIfDirty;
 pub const persistAutoUpdateDefaultIfDirty = common.persistAutoUpdateDefaultIfDirty;
+pub const persistRefreshBackendIfDirty = common.persistRefreshBackendIfDirty;
+pub const persistMaxParallelSyncIfDirty = common.persistMaxParallelSyncIfDirty;
+pub const persistMaxParallelImageIfDirty = common.persistMaxParallelImageIfDirty;
 pub const saveAria2Port = common.saveAria2Port;
 pub const saveAria2SeedRatio = common.saveAria2SeedRatio;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
@@ -147,6 +169,7 @@ pub const drainBookmarks = bookmarks.drainBookmarks;
 pub const doLogin = auth.doLogin;
 pub const doLogout = auth.doLogout;
 pub const checkDonorStatus = auth.checkDonorStatus;
+pub const drainDonorProbe = auth.drainDonorProbe;
 pub const doRpdlLogin = auth.doRpdlLogin;
 pub const doRpdlLogout = auth.doRpdlLogout;
 
@@ -166,6 +189,10 @@ pub const drainRunningGames = launch.drainRunningGames;
 pub const doBackupSaves = launch.doBackupSaves;
 pub const doOpenGameFolder = launch.doOpenGameFolder;
 pub const doOpenSaves = launch.doOpenSaves;
+pub const doOpenInstallFolder = launch.doOpenInstallFolder;
+pub const clearLaunchDiag = launch.clearLaunchDiag;
+pub const drainLaunchWatcher = launch.drainLaunchWatcher;
+pub const applyCompatFixForGame = launch.applyCompatFixForGame;
 
 // ---- Installer (mod-job runner + post-install + manual install) ----
 pub const doUninstallMod = installer.doUninstallMod;
@@ -194,6 +221,10 @@ pub const startManualInstall = installer.startManualInstall;
 pub const drainManualInstall = installer.drainManualInstall;
 pub const doRenameInstall = installer.doRenameInstall;
 pub const doDeleteInstall = installer.doDeleteInstall;
+
+// ---- Library maintenance ----
+pub const doReanalyseAllEngines = mods.doReanalyseAllEngines;
+pub const EngineReanalyseStats = mods.EngineReanalyseStats;
 
 // ---- Mods page ----
 pub const doRegisterModArchive = mods.doRegisterModArchive;

@@ -28,6 +28,7 @@ const installer_mod = @import("installer");
 const recipe = @import("recipe");
 const library = @import("library");
 const f95 = @import("f95");
+const f95_indexer = @import("f95_indexer");
 const dvui = @import("dvui");
 const job_mod = @import("job.zig");
 
@@ -172,6 +173,39 @@ pub const SyncPayload = struct {
     err_name: ?[]const u8 = null,
     url: []u8,
     f95_svc: *f95.Service,
+    /// Non-null when this sync should use the F95Indexer cache API
+    /// instead of scraping. Set by `syncGame` from `state.refresh_backend`.
+    /// When non-null, the worker hits `/fast` + maybe `/full/{id}?ts=`
+    /// and skips the HTML scrape entirely.
+    indexer_client: ?*f95_indexer.Client = null,
+    /// Game's persisted `last_indexer_change` value at queue time.
+    /// Used to decide whether to call `/full` (delta optimization, the
+    /// same one F95Checker does — `/fast` returns a timestamp; we only
+    /// pull `/full` if the server-side value moved past this).
+    prev_last_indexer_change: ?i64 = null,
+    /// When set, the indexer worker SKIPS its own `/fast` call and uses
+    /// this timestamp as the `ts` parameter for `/full/{id}`. Populated
+    /// by the batch-fast pre-flight (`startSyncAllIndexer`) so that
+    /// 1000-game refreshes only make 100 `/fast` calls (chunks of 10),
+    /// not 1000.
+    known_last_change: ?i64 = null,
+    /// Filled by the worker after `/fast` returns. drainSync persists
+    /// this to `Game.last_indexer_change` on success.
+    new_last_indexer_change: ?i64 = null,
+    /// Game's stored `last_indexer_parser_version` at queue time.
+    /// Worker compares against the current `f95_indexer.PARSER_VERSION`
+    /// — a mismatch forces /full even when `last_change` is unchanged,
+    /// so a mapping bump propagates to every previously-synced row.
+    prev_indexer_parser_version: ?u32 = null,
+    /// Worker output: the mapping version that filled this row. Set
+    /// to `f95_indexer.PARSER_VERSION` after a successful /full;
+    /// drainSync persists to the games table.
+    new_indexer_parser_version: ?u32 = null,
+    /// Override the unchanged-skip in the indexer worker. Set by
+    /// callers that want /full unconditionally (e.g. parser version
+    /// drift detected on the UI thread, or a user-triggered "Force
+    /// full refresh" click).
+    force_full: bool = false,
     /// Owned copy of the covers cache dir; used by the worker to write
     /// the fetched cover bytes. Owned-and-freed alongside the Job.
     covers_dir: []u8,
@@ -218,6 +252,105 @@ pub const UpdateCheckPayload = struct {
     err_name: ?[]const u8 = null,
 };
 pub const UpdateCheckJob = Job(UpdateCheckPayload);
+
+/// Payload for the indexer batch `/fast` pre-flight worker. Walks
+/// every library thread_id in chunks of `f95_indexer.MAX_IDS_PER_FAST`
+/// (10), accumulates the per-game `last_change` timestamps. The UI
+/// thread's `onFastCheckDone` consumes the result and (1) bulk-updates
+/// `last_indexer_change` on games whose values didn't move, and
+/// (2) builds a sync_queue with only the games that actually need
+/// `/full`. Mirrors F95Checker's `fast_check` pass.
+pub const FastCheckPayload = struct {
+    /// Borrowed slice of thread IDs to check. Allocated by the UI thread
+    /// before spawn and freed in `freeFastCheckPayload` after onDone.
+    ids: []u64,
+    indexer_client: *f95_indexer.Client,
+    io: std.Io,
+    /// Worker output: parallel slice with `last_change` per `ids[i]`.
+    /// `0` means the chunk returned no entry for that ID (treat as
+    /// "needs /full" by the consumer). Allocated by the worker with
+    /// `job.alloc`; ownership transfers to onDone which frees it.
+    last_changes: ?[]i64 = null,
+    err_name: ?[]const u8 = null,
+};
+pub const FastCheckJob = Job(FastCheckPayload);
+
+/// Payload for the one-shot donor-status HTTP probe. Synchronous on
+/// the UI thread (1–2 s blocking) before this job existed; spawning
+/// it as a worker keeps the post-login frame responsive.
+///
+/// `client` is a borrowed reference to the shared F95 HTTP client —
+/// thread-safe under the same cookie_lock + rate-limit mutex that
+/// every other f95 worker (sync, update-check) uses.
+pub const DonorProbePayload = struct {
+    client: *f95.Client,
+    /// Worker output. Set on success.
+    is_donor: ?bool = null,
+    /// Worker output. Set on failure — `@errorName(e)` of the
+    /// underlying scrape error.
+    err_name: ?[]const u8 = null,
+};
+pub const DonorProbeJob = Job(DonorProbePayload);
+
+/// Payload for one off-thread carousel-slide file read. The UI used
+/// to block on `readFileAlloc` whenever the user navigated to a slide
+/// whose bytes weren't cached yet (first frame of a game, 5–50 ms
+/// hit per slide on cold disk). The worker keeps that off the UI
+/// thread; the placeholder shows for one extra frame, the bytes land
+/// the frame after.
+///
+/// Single in-flight per `State.slide_load_job` — fine for sequential
+/// carousel navigation. If the user clicks rapidly while one is
+/// loading, follow-up misses simply wait their turn (re-spawned on
+/// the next frame after the current job drains).
+pub const SlideLoadPayload = struct {
+    /// Inline path buffer. `path[0..path_len]` is the absolute file
+    /// path to read. Inline (rather than heap) so the payload is
+    /// trivially POD-clonable.
+    path: [256]u8 = undefined,
+    path_len: usize = 0,
+    /// dvui Io context for the file read syscalls.
+    io: std.Io,
+    /// Allocator the worker uses for the read buffer. Caller's
+    /// `lib.alloc` — same allocator the slide_cache_bytes array uses.
+    bytes_alloc: std.mem.Allocator,
+    /// Worker output. On success, the file bytes; ownership transfers
+    /// to the slide_cache slot via `drainSlideLoads`.
+    bytes: ?[]u8 = null,
+    err_name: ?[]const u8 = null,
+    /// Bookkeeping so `drainSlideLoads` knows where to deposit bytes
+    /// and can discard a stale result whose game already got swapped.
+    slot_idx: usize = 0,
+    thread_id: u64 = 0,
+};
+pub const SlideLoadJob = Job(SlideLoadPayload);
+
+/// Payload for the post-launch early-failure watcher. After a host
+/// launch returns successfully, this job polls `waitpid(pid, WNOHANG)`
+/// for a short window. If the child exits with a non-zero code inside
+/// that window we surface the diagnostic dialog with the exit code +
+/// a generic "likely launch failure" message. If the child runs past
+/// the window we assume a successful launch and the job ends silently.
+///
+/// Full stderr capture is a follow-up — needs the sandbox layer to
+/// support `.stderr = .pipe`; v1 just classifies early-exit failures
+/// from the exit code alone.
+pub const LaunchWatchPayload = struct {
+    pid: i32,
+    thread_id: u64,
+    watch_ms: u32 = 4000,
+    poll_ms: u32 = 150,
+    io: std.Io,
+    /// Worker output. `early_fail` becomes true if the child exited
+    /// inside the window with a non-zero code. `exit_code` carries
+    /// whatever waitpid reported. `summary` is a one-line human
+    /// reason ("Exited with code 127 inside 1.2 s").
+    early_fail: bool = false,
+    exit_code: i32 = 0,
+    summary_buf: [192]u8 = [_]u8{0} ** 192,
+    summary_len: usize = 0,
+};
+pub const LaunchWatchJob = Job(LaunchWatchPayload);
 
 /// Payload for the RPDL torrent search → fetch worker. Generic
 /// carrier (phase, cancel, thread, allocator, dvui window) provided
