@@ -275,6 +275,14 @@ pub fn build(b: *std.Build) void {
     // `-Dgui=false` for headless / CI builds that only need the non-UI
     // modules to compile.
     const enable_gui = b.option(bool, "gui", "Link dvui (default true)") orelse true;
+    // Install data trees (mkxp-z bundle + compat resources) under
+    // `<prefix>/share/f69/data/` instead of the default
+    // `<prefix>/bin/data/`. Set this when packaging for a Linux distro
+    // that follows FHS — putting 50 MB of Ruby stdlib under /usr/bin
+    // makes rpm/dpkg's shebang-mangler walk the bundle and rewrite
+    // `/usr/bin/env ruby` to `/usr/bin/ruby`, breaking the embedded
+    // mkxp-z runtime. Portable builds keep the default.
+    const fhs_layout = b.option(bool, "fhs-layout", "Install data under share/f69/data/ (FHS) instead of bin/data/ (portable)") orelse false;
     // Pass `-Dbackend=sdl3gpu` to dvui so it only builds the SDL3 GPU
     // backend; without this it builds all backends and the resulting
     // module names collide ("file exists in modules 'dvui' and 'dvui0'").
@@ -314,11 +322,12 @@ pub fn build(b: *std.Build) void {
     // bundle — the runtime detector still fires, the apply step
     // then reports `ResourceNotMaterialized` instead of silently
     // doing the wrong thing.
-    installCompatResource(b, "renpy7-fhs-libs", "F69_COMPAT_RENPY7_FHS_LIBS");
-    installCompatResource(b, "renpy8-fhs-libs", "F69_COMPAT_RENPY8_FHS_LIBS");
-    installCompatResource(b, "rpgm-mv-fhs-libs", "F69_COMPAT_RPGM_MV_FHS_LIBS");
-    installCompatResource(b, "mkxp-z-fhs-libs", "F69_COMPAT_MKXP_Z_FHS_LIBS");
-    installCompatResource(b, "unity-fhs-libs", "F69_COMPAT_UNITY_FHS_LIBS");
+    const data_prefix: []const u8 = if (fhs_layout) "share/f69/data" else "bin/data";
+    installCompatResource(b, "renpy7-fhs-libs", "F69_COMPAT_RENPY7_FHS_LIBS", data_prefix);
+    installCompatResource(b, "renpy8-fhs-libs", "F69_COMPAT_RENPY8_FHS_LIBS", data_prefix);
+    installCompatResource(b, "rpgm-mv-fhs-libs", "F69_COMPAT_RPGM_MV_FHS_LIBS", data_prefix);
+    installCompatResource(b, "mkxp-z-fhs-libs", "F69_COMPAT_MKXP_Z_FHS_LIBS", data_prefix);
+    installCompatResource(b, "unity-fhs-libs", "F69_COMPAT_UNITY_FHS_LIBS", data_prefix);
 
     // Vendored mkxp-z (RGSS reimplementation — runs RPGM XP/VX/VX Ace
     // games natively on Linux). Source tree is checked into
@@ -326,9 +335,10 @@ pub fn build(b: *std.Build) void {
     // verbatim into the install tree. Linux x86_64 only — the convert
     // dispatch in `src/convert/rpgm.zig` no-ops on other targets.
     if (target.result.os.tag == .linux and target.result.cpu.arch == .x86_64) {
+        const mkxp_subdir = std.fmt.allocPrint(b.allocator, "{s}/mkxp-z", .{data_prefix}) catch @panic("OOM");
         const mkxp_install = b.addInstallDirectory(.{
             .source_dir = b.path("third_party/mkxp-z/linux-x86_64"),
-            .install_dir = .{ .custom = "bin/data/mkxp-z" },
+            .install_dir = .{ .custom = mkxp_subdir },
             .install_subdir = "",
         });
         b.getInstallStep().dependOn(&mkxp_install.step);
@@ -473,9 +483,9 @@ fn mod(
 /// compat-resources/<id>/` tree. Reads the absolute source path from
 /// `env_var`; no-ops cleanly when the env var is unset (non-Nix
 /// build, or the dev shell wasn't sourced).
-fn installCompatResource(b: *std.Build, id: []const u8, env_var: []const u8) void {
+fn installCompatResource(b: *std.Build, id: []const u8, env_var: []const u8, data_prefix: []const u8) void {
     const src = b.graph.environ_map.get(env_var) orelse return;
-    const subdir = std.fmt.allocPrint(b.allocator, "bin/data/compat-resources/{s}", .{id}) catch return;
+    const subdir = std.fmt.allocPrint(b.allocator, "{s}/compat-resources/{s}", .{ data_prefix, id }) catch return;
     const step = b.addInstallDirectory(.{
         .source_dir = .{ .cwd_relative = src },
         .install_dir = .{ .custom = subdir },
@@ -1713,6 +1723,14 @@ const RPM_SPEC =
     \\URL:            https://github.com/your-org/f69
     \\Source0:        %{{name}}-%{{version}}.tar.gz
     \\
+    \\# Disable shebang mangling on our bundled data tree: mkxp-z ships
+    \\# a vendored Ruby stdlib whose `#!/usr/bin/env ruby` shebangs must
+    \\# remain pointing at env (mkxp-z embeds its own ruby, not the
+    \\# system one). Without this, brp-mangle-shebangs rewrites every
+    \\# `bin/racc`, `libexec/bundle`, etc. to `#!/usr/bin/ruby` — wrong
+    \\# interpreter, breaks mkxp-z's RGSS script loader at runtime.
+    \\%global __brp_mangle_shebangs_exclude_from ^%{{_datadir}}/%{{name}}/
+    \\
     \\BuildRequires:  zig
     \\BuildRequires:  pkgconfig
     \\BuildRequires:  patchelf
@@ -1761,10 +1779,14 @@ const RPM_SPEC =
     \\# write to the buildroot in %build gets nuked. So %build compiles
     \\# only; %install does the actual prefix-into-buildroot install.
     \\%build
-    \\zig build -Doptimize=ReleaseSafe -Dgui=true
+    \\# -Dfhs-layout=true installs the mkxp-z bundle + compat resources
+    \\# under %{{_datadir}}/f69/ instead of %{{_bindir}}/data/. Putting
+    \\# 50 MB of Ruby stdlib under /usr/bin/ is non-FHS and trips
+    \\# rpm's `check-files` (and the brp shebang mangler).
+    \\zig build -Doptimize=ReleaseSafe -Dgui=true -Dfhs-layout=true
     \\
     \\%install
-    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true
+    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true -Dfhs-layout=true
     \\# Strip baked-in RUNPATH — system installs resolve libs via
     \\# /etc/ld.so.cache, not via RPATH. pkg-config on Fedora sneaks
     \\# `/usr/lib64/pkgconfig/../../lib64` into the linker line, which
@@ -1777,6 +1799,13 @@ const RPM_SPEC =
     \\%license LICENSE
     \\%doc README.md
     \\%{{_bindir}}/f69
+    \\# Bundled mkxp-z runtime + (when materialised by the build env)
+    \\# compat-resource lib bundles. Wildcard is intentional: the
+    \\# compat-resources subtree is only present when the build env
+    \\# exported the matching F69_COMPAT_* paths (NixOS dev shell);
+    \\# omitting it would break the spec on dev shells, while listing
+    \\# it as %dir would break the regular Fedora container build.
+    \\%{{_datadir}}/%{{name}}/
     \\
     \\%changelog
     \\* {s} f69 contributors <noreply@example.com> - {s}-1

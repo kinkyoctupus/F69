@@ -37,6 +37,7 @@ pub const recipeEditorScreen = recipe_editor_screen.recipeEditorScreen;
 pub const settingsScreen = settings_screen.settingsScreen;
 pub const importUrlsScreen = import_screen.importUrlsScreen;
 pub const importFolderScreen = import_screen.importFolderScreen;
+pub const importF95CheckerReviewScreen = import_screen.importF95CheckerReviewScreen;
 pub const downloadsScreen = downloads_screen.downloadsScreen;
 pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 

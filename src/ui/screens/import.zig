@@ -117,6 +117,158 @@ pub fn importFolderScreen(frame: *Frame) !bool {
 }
 
 // ============================================================
+//  Screen 3 — F95Checker review (mode picker + game list)
+// ============================================================
+//
+// Surfaced after the user clicks Settings → "Import from F95Checker…"
+// (and after the games-base-dir picker). Lists every game read out of
+// the F95Checker DB, shows the mode picker right at the top so the
+// user picks Move / Copy / Link at the moment of import. Apply spawns
+// the existing import worker; Cancel discards.
+
+pub fn importF95CheckerReviewScreen(frame: *Frame) !bool {
+    const state = frame.state;
+
+    {
+        var top = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
+        });
+        defer top.deinit();
+        if (components.iconButton(@src(), "Back", entypo.chevron_left, .{})) {
+            actions.doCancelF95CheckerReview(frame);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+        dvui.labelNoFmt(@src(), "Import from F95Checker — review", .{}, .{ .gravity_y = 0.5, .style = .highlight });
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+    var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .min_size_content = .{ .w = 720, .h = 400 },
+        .padding = .{ .x = 10, .y = 8, .w = 10, .h = 8 },
+    });
+    defer body.deinit();
+
+    // Read-only-source assurance. This is the load-bearing UX claim
+    // for users wary of the 2026-05-28 data-loss incident — spell it
+    // out so the user doesn't have to read the code to trust it.
+    {
+        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+        tl.addText(
+            "Your F95Checker database is opened READ-ONLY. Nothing in " ++
+                "~/.config/f95checker/ is modified — including in Move mode. " ++
+                "Move/Copy/Link only affects the game folders themselves.",
+            .{ .font = dvui.Font.theme(.body).withSize(11) },
+        );
+        tl.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    // Mode picker — same three-button layout as Settings, but right
+    // next to the game list so the user makes the choice in context.
+    renderFolderScanModeToggle(state);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    // Counts row + Apply/Cancel buttons.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        var summary_buf: [128]u8 = undefined;
+        const summary = std.fmt.bufPrint(&summary_buf, "Games: {d}  ·  Installed: {d}", .{
+            state.f95_review_game_count,
+            state.f95_review_installed_count,
+        }) catch "Games: ?";
+        dvui.labelNoFmt(@src(), summary, .{}, .{ .gravity_y = 0.5 });
+
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+        if (style.button(@src(), "Cancel", .{}, .{})) {
+            actions.doCancelF95CheckerReview(frame);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+
+        var apply_buf: [64]u8 = undefined;
+        const apply_label = std.fmt.bufPrint(&apply_buf, "Apply ({d})", .{state.f95_review_game_count}) catch "Apply";
+        if (style.button(@src(), apply_label, .{}, .{ .style = .highlight })) {
+            actions.doApplyF95CheckerReview(frame);
+        }
+    }
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    const bundle = actions.f95ReviewBundle(state) orelse {
+        dvui.label(@src(), "(no review bundle — try re-opening the import)", .{}, .{});
+        return true;
+    };
+
+    renderF95ReviewList(state, bundle.games);
+    return true;
+}
+
+const F95_REVIEW_NAME_W: f32 = 280;
+const F95_REVIEW_VERSION_W: f32 = 100;
+const F95_REVIEW_ROW_H: f32 = 24;
+const F95_REVIEW_FONT_SIZE: f32 = 11;
+
+fn renderF95ReviewList(state: *State, games: []importers.ImportedGame) void {
+    var scroll = dvui.scrollArea(@src(), .{
+        .scroll_info = &state.f95_review_scroll_info,
+    }, .{
+        .expand = .both,
+        .min_size_content = .{ .w = 720, .h = 240 },
+    });
+    defer scroll.deinit();
+
+    for (games, 0..) |g, idx| {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = idx,
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 700, .h = F95_REVIEW_ROW_H },
+        });
+        defer row.deinit();
+
+        // Name (truncated to fit the fixed column).
+        var name_buf: [256]u8 = undefined;
+        const name_shown = truncStr(&name_buf, g.name, 60);
+        dvui.labelNoFmt(@src(), name_shown, .{}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = F95_REVIEW_NAME_W, .h = 1 },
+            .font = dvui.Font.theme(.body).withSize(F95_REVIEW_FONT_SIZE),
+        });
+
+        // Version.
+        const ver: []const u8 = g.version orelse "(no ver)";
+        var ver_buf: [128]u8 = undefined;
+        const ver_shown = truncStr(&ver_buf, ver, 20);
+        dvui.labelNoFmt(@src(), ver_shown, .{}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = F95_REVIEW_VERSION_W, .h = 1 },
+            .font = dvui.Font.theme(.body).withSize(F95_REVIEW_FONT_SIZE),
+        });
+
+        // Install dir (or "(not installed)" grey).
+        if (g.installDirRel()) |rel| {
+            var dir_buf: [256]u8 = undefined;
+            const dir_shown = truncStr(&dir_buf, rel, 80);
+            dvui.labelNoFmt(@src(), dir_shown, .{}, .{
+                .gravity_y = 0.5,
+                .font = dvui.Font.theme(.body).withSize(F95_REVIEW_FONT_SIZE),
+                .expand = .horizontal,
+            });
+        } else {
+            dvui.labelNoFmt(@src(), "(not installed — metadata only)", .{}, .{
+                .gravity_y = 0.5,
+                .font = dvui.Font.theme(.body).withSize(F95_REVIEW_FONT_SIZE),
+                .color_text = .{ .r = 0x80, .g = 0x80, .b = 0x80 },
+                .expand = .horizontal,
+            });
+        }
+    }
+}
+
+
+// ============================================================
 //  shared folder-scan rendering
 // ============================================================
 
