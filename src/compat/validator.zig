@@ -61,6 +61,14 @@ fn validateAction(a: dom.Action) errs.Error!void {
         .system_hint => |h| {
             if (h.message.len == 0) return errs.Error.InvalidRecipe;
         },
+        .symlink_create => |s| {
+            if (s.link_path.len == 0 or s.target.len == 0) return errs.Error.InvalidRecipe;
+            // link_path is always relative to install root — no
+            // traversal allowed. target may be relative (most common —
+            // sibling file with different case) or absolute.
+            try checkSafePath(s.link_path);
+            if (s.target[0] != '/') try checkSafePath(s.target);
+        },
     }
 }
 

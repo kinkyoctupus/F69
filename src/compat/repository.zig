@@ -53,6 +53,16 @@ const BUNDLED: []const Bundled = &.{
         .recipe = @import("recipes/linux.unity.fhs.compat.zon"),
         .src = @embedFile("recipes/linux.unity.fhs.compat.zon"),
     },
+    .{
+        .name = "linux.mkxp-z.sdl-fhs.compat.zon",
+        .recipe = @import("recipes/linux.mkxp-z.sdl-fhs.compat.zon"),
+        .src = @embedFile("recipes/linux.mkxp-z.sdl-fhs.compat.zon"),
+    },
+    .{
+        .name = "game.2659.bulma-kame-island.case-fix.compat.zon",
+        .recipe = @import("recipes/game.2659.bulma-kame-island.case-fix.compat.zon"),
+        .src = @embedFile("recipes/game.2659.bulma-kame-island.case-fix.compat.zon"),
+    },
 };
 
 /// Sha-256 hex of one bundled recipe's source bytes, computed at

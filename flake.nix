@@ -143,6 +143,34 @@
           zlib
         ]);
 
+        # ----- mkxp-z (vendored RGSS runtime) ------------------------
+        # `third_party/mkxp-z/linux-x86_64/mkxp-z.x86_64` statically
+        # links SDL2 internally — but SDL2 itself dlopens its X11 /
+        # Wayland video backends, libGL, and the audio backends at
+        # runtime. On NixOS those .so files aren't on the standard
+        # loader path, so SDL_Init fails with
+        # `Error initializing SDL: wayland,x11 not available`.
+        # Bundle the same surface the renpy8 SDL recipe uses, plus
+        # libstdc++ (the only non-glibc system dep the static binary
+        # links against). Recipe applies via env_prepend LD_LIBRARY_PATH
+        # at launch time — same pattern as the engine recipes.
+        mkxp-z-fhs-libs = bundleFhsLibs "mkxp-z-fhs-libs" (with pkgs; [
+          # ---- libstdc++ (mkxp-z binary's only dynamic non-glibc dep) -
+          stdenv.cc.cc.lib
+          # ---- X11 surface ----
+          libx11 libxext libxi libxcursor libxrandr libxinerama libxxf86vm
+          # ---- Wayland + decorations ----
+          libxkbcommon wayland libdecor
+          # ---- GL ----
+          libGL libglvnd
+          # ---- Audio (SDL2 dlopens these) ----
+          alsa-lib libpulseaudio
+          # ---- Fonts ----
+          fontconfig freetype
+          # ---- Misc ----
+          zlib
+        ]);
+
         # ----- Unity (Linux player) ----------------------------------
         # SCAFFOLD — typical Unity-on-Linux pain points are libstdc++
         # version skew, libcurl-gnutls vs libcurl-openssl, and
@@ -165,6 +193,7 @@
         packages.renpy7-fhs-libs = renpy7-fhs-libs;
         packages.renpy8-fhs-libs = renpy8-fhs-libs;
         packages.rpgm-mv-fhs-libs = rpgm-mv-fhs-libs;
+        packages.mkxp-z-fhs-libs = mkxp-z-fhs-libs;
         packages.unity-fhs-libs = unity-fhs-libs;
 
         # ----- f69 itself ------------------------------------------------
@@ -362,6 +391,7 @@
             export F69_COMPAT_RENPY7_FHS_LIBS="${renpy7-fhs-libs}"
             export F69_COMPAT_RENPY8_FHS_LIBS="${renpy8-fhs-libs}"
             export F69_COMPAT_RPGM_MV_FHS_LIBS="${rpgm-mv-fhs-libs}"
+            export F69_COMPAT_MKXP_Z_FHS_LIBS="${mkxp-z-fhs-libs}"
             export F69_COMPAT_UNITY_FHS_LIBS="${unity-fhs-libs}"
 
             echo "f69 dev shell  (target: f69 0.9.0)"

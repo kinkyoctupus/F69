@@ -10,6 +10,8 @@
 
 const std = @import("std");
 
+pub const Engine = @import("util_domain").Engine;
+
 pub const Error = error{
     OpenFailed,
     ParseFailed,
@@ -20,6 +22,12 @@ pub const ImportedGame = struct {
     /// F95Zone thread id — the primary key f69's library uses to dedupe.
     thread_id: u64,
     name: []const u8,
+    /// Detected engine, when the importer was able to determine it.
+    /// The folder-scan importer fills this via file fingerprints
+    /// (`renpy/bootstrap.py`, `UnityPlayer.so`, …). F95Checker /
+    /// xLibrary importers leave it `.unknown` — engine is reconciled
+    /// from the F95 thread title / scrape at sync time for those.
+    engine: Engine = .unknown,
     developer: ?[]const u8 = null,
     version: ?[]const u8 = null,
     description: ?[]const u8 = null,
@@ -46,12 +54,32 @@ pub const ImportedGame = struct {
     completion_status: ?[]const u8 = null,
 
     /// First path segment of `install_executable_rel`, which is the
-    /// directory the migrator should copy. Null when no install or
-    /// when the executable is at the base dir's top level.
+    /// directory the migrator should copy. Null when no install, the
+    /// executable is at the base dir's top level, or the path is
+    /// UNSAFE for use as a sub-directory under the games-base-dir.
+    ///
+    /// SAFETY: rejects absolute paths and `..` traversal segments.
+    /// F95Checker's DB stores absolute paths in its `executables`
+    /// JSON column; xLibrary may do the same. Without this check the
+    /// caller would end up with `src_dir = "<games_base_dir>/"` (an
+    /// empty first segment from a leading "/") and `migrate.copyVerifyDelete`
+    /// would then `deleteTree(games_base_dir)` after copying — wiping
+    /// the user-selected directory. This is HOW
+    /// `~/.config/f95checker/` got nuked for users who pointed the
+    /// games-base-dir picker at their f95checker config folder.
     pub fn installDirRel(self: *const ImportedGame) ?[]const u8 {
         const p = self.install_executable_rel orelse return null;
+        // Reject absolute paths — they're not "relative to games-base-dir"
+        // at all, even though the field name implies otherwise. F95Checker
+        // stores absolute paths here.
+        if (p.len == 0 or p[0] == '/') return null;
         const slash = std.mem.indexOfScalar(u8, p, '/') orelse return null;
-        return p[0..slash];
+        const seg = p[0..slash];
+        // Reject empty and traversal segments. `..` would land src_dir
+        // at games_base_dir's PARENT, an even bigger blast radius.
+        if (seg.len == 0) return null;
+        if (std.mem.eql(u8, seg, "..") or std.mem.eql(u8, seg, ".")) return null;
+        return seg;
     }
 };
 
@@ -72,10 +100,65 @@ pub const f95checker = @import("f95checker.zig");
 pub const xlibrary = @import("xlibrary.zig");
 pub const folder_scan = @import("folder_scan.zig");
 pub const migrate = @import("migrate.zig");
+pub const name_match = @import("name_match.zig");
 
 test {
     _ = f95checker;
     _ = xlibrary;
     _ = folder_scan;
     _ = migrate;
+    _ = name_match;
+}
+
+// ============================================================
+//  installDirRel safety regression tests
+//
+//  REGRESSION: F95Checker's DB stores ABSOLUTE paths in its
+//  `executables` column. The old `installDirRel` returned the
+//  segment before the first '/', which is the empty string for
+//  absolute paths. The migrator then computed
+//  `src_dir = "<games_base_dir>/" + ""` ≈ the games-base-dir
+//  itself, ran `migrate.copyVerifyDelete`, and `deleteTree`d the
+//  user-selected directory. Users who picked `~/.config/f95checker/`
+//  as their games dir lost their entire F95Checker config.
+//
+//  Every case below MUST return null. Adding a case is welcome;
+//  loosening one needs a very careful look at `processOne`.
+// ============================================================
+
+const testing = std.testing;
+
+test "installDirRel: absolute path returns null (F95Checker DB case)" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "/home/u/games/Foo/Foo.sh" };
+    try testing.expect(g.installDirRel() == null);
+}
+
+test "installDirRel: empty string returns null" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "" };
+    try testing.expect(g.installDirRel() == null);
+}
+
+test "installDirRel: leading slash only returns null" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "/" };
+    try testing.expect(g.installDirRel() == null);
+}
+
+test "installDirRel: parent traversal returns null" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "../escape/Foo.sh" };
+    try testing.expect(g.installDirRel() == null);
+}
+
+test "installDirRel: dot traversal returns null" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "./Foo.sh" };
+    try testing.expect(g.installDirRel() == null);
+}
+
+test "installDirRel: legitimate relative path returns the first segment" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "Babysitter-0.2.2b.-linux/Babysitter.sh" };
+    try testing.expectEqualStrings("Babysitter-0.2.2b.-linux", g.installDirRel().?);
+}
+
+test "installDirRel: top-level executable (no slash) returns null" {
+    const g = ImportedGame{ .thread_id = 1, .name = "x", .install_executable_rel = "Game.sh" };
+    try testing.expect(g.installDirRel() == null);
 }

@@ -15,6 +15,7 @@
 const std = @import("std");
 const library = @import("library");
 const f95 = @import("f95");
+const f95_indexer = @import("f95_indexer");
 const downloads = @import("downloads");
 const recipe = @import("recipe");
 const sandbox = @import("sandbox");
@@ -60,6 +61,11 @@ pub const Frame = struct {
     games: []library.Game,
     lib: *library.Library,
     f95_svc: *f95.Service,
+    /// F95Indexer cache API client. Used by the refresh worker when
+    /// `state.refresh_backend == .indexer` (the default). Auth-free;
+    /// independent of `f95_svc.client.cookie`. Always non-null — the
+    /// scraper backend just doesn't touch it.
+    f95_indexer_client: *f95_indexer.Client,
     dl_mgr: *downloads.Manager,
     /// Local recipes repo — used by the per-game Download button to
     /// resolve a game's recipe + sources at click time.
@@ -119,6 +125,10 @@ pub const Browser = struct {
 };
 
 pub const RuntimeInfo = struct {
+    /// Directory holding the f69 executable (or `$F69_EXE_DIR` when
+    /// set by `run.sh`). Used to discover sibling files: the bundled
+    /// `aria2c`, user-dropped fonts under `<exe_dir>/fonts/`, etc.
+    exe_dir: []const u8,
     /// `<exe_dir>/data/` (or `$F69_DATA_DIR`). Single root for every
     /// path below — DB, covers, library, recipes, caches, cookies,
     /// tokens, save backups. Portable: drop the f69 folder anywhere
@@ -187,6 +197,13 @@ pub const RuntimeInfo = struct {
     /// worker reports done. Default false.
     auto_convert_path: []const u8,
     initial_auto_convert: bool,
+    /// `<data_root>/auto_apply_compat` — single-line `true`/`false`.
+    /// When true, every successful Convert (manual or auto) is
+    /// followed by a compat scan + apply of every unfixed issue,
+    /// and re-apply of any fixed issue whose recipe sha changed
+    /// since the apply. Default true.
+    auto_apply_compat_path: []const u8,
+    initial_auto_apply_compat: bool,
     /// `<data_root>/sandbox_default` — single-line `true` / `false`.
     /// Global "sandbox on launch" preference. Per-game
     /// `SandboxOverride` (always / never / use_default) wins;
@@ -199,6 +216,22 @@ pub const RuntimeInfo = struct {
     /// Default false.
     auto_update_default_path: []const u8,
     initial_auto_update_default: bool,
+    /// `<data_root>/refresh_backend` — single-line `indexer` / `scraper`.
+    /// Picks which backend the refresh worker uses. Default `.indexer`
+    /// (F95Indexer cache at `api.f95checker.dev`). Settings → Sync row
+    /// writes here.
+    refresh_backend_path: []const u8,
+    initial_refresh_backend: state_mod.RefreshBackend,
+    /// `<data_root>/max_parallel_sync` — single-line integer (1..16).
+    /// Effective concurrency of the `/full` + scrape worker pool.
+    /// Default 4. Settings → Sync row writes here.
+    max_parallel_sync_path: []const u8,
+    initial_max_parallel_sync: u32,
+    /// `<data_root>/max_parallel_image` — single-line integer (1..16).
+    /// Effective concurrency of the screenshot ImageJob pool.
+    /// Default 4. Settings → Sync row writes here.
+    max_parallel_image_path: []const u8,
+    initial_max_parallel_image: u32,
     /// `<data_root>/tags.txt` — cache of F95's master tag list.
     /// Newline-separated, first line `# fetched: <unix-secs>`.
     tags_master_path: []const u8,

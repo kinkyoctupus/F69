@@ -18,6 +18,7 @@
 const std = @import("std");
 const library = @import("library");
 const f95 = @import("f95");
+const f95_indexer = @import("f95_indexer");
 const downloads = @import("downloads");
 const recipe = @import("recipe");
 const sandbox = @import("sandbox");
@@ -31,6 +32,7 @@ const types = @import("types.zig");
 const actions = @import("actions.zig");
 const screens = @import("screens.zig");
 const mod_job_queue = @import("mod_job_queue.zig");
+const fonts = @import("fonts.zig");
 
 // Test discovery — pull in nested files' test {} blocks (Zig 0.16
 // doesn't walk transitive imports for tests).
@@ -43,6 +45,11 @@ test {
 pub const State = state_mod.State;
 pub const AutoCheckSettings = state_mod.AutoCheckSettings;
 pub const AutoCheckUnit = state_mod.AutoCheckUnit;
+pub const RefreshBackend = state_mod.RefreshBackend;
+pub const MAX_PARALLEL_SYNC = state_mod.MAX_PARALLEL_SYNC;
+pub const MAX_PARALLEL_IMAGE = state_mod.MAX_PARALLEL_IMAGE;
+pub const DEFAULT_PARALLEL = state_mod.DEFAULT_PARALLEL;
+pub const setImageCpuLimit = actions.setImageCpuLimit;
 pub const Frame = types.Frame;
 pub const RuntimeInfo = types.RuntimeInfo;
 pub const Browser = types.Browser;
@@ -51,6 +58,7 @@ pub fn runMainLoop(
     init: std.process.Init,
     lib: *library.Library,
     f95_svc: *f95.Service,
+    f95_indexer_client: *f95_indexer.Client,
     dl_mgr: *downloads.Manager,
     recipe_repo: *recipe.Repo,
     sandbox_backend: *sandbox.Sandbox,
@@ -86,6 +94,24 @@ pub fn runMainLoop(
     // `state.ui_scale`, which the main loop pushes back into
     // `win.content_scale` every frame so changes take effect live.
     win.content_scale = info.initial_ui_scale;
+
+    // Bundled nerd fonts + user-dropped ones from `<exe_dir>/fonts/`.
+    // Register before the first frame so the theme below resolves
+    // them by family name. Default body/heading flips to JetBrainsMono
+    // Nerd Font so the whole UI inherits the broader glyph coverage
+    // (replaces the Latin-only default that rendered ✓ / ⚠ / 📁 as
+    // empty boxes).
+    fonts.registerBundled(&win);
+    fonts.scanUserFonts(&win, gpa, init.io, info.exe_dir);
+    // dvui's Theme exposes four font slots: body, heading, title, mono.
+    // Point body / heading / title at the nerd font so the full UI
+    // (labels, buttons, popovers) picks up the broader glyph coverage.
+    // `font_mono` stays on the original mono family — the existing
+    // mono-font use sites (diagnostics, archive paths, etc.) are
+    // already in monospace and don't need the icon glyph set.
+    win.theme.font_body = win.theme.font_body.withFamily(fonts.DEFAULT_FAMILY);
+    win.theme.font_heading = win.theme.font_heading.withFamily(fonts.DEFAULT_FAMILY);
+    win.theme.font_title = win.theme.font_title.withFamily(fonts.DEFAULT_FAMILY);
 
     // Library snapshot — held by runMainLoop, reloaded when the
     // importer or delete sets `state.reload_requested`.
@@ -131,10 +157,22 @@ pub fn runMainLoop(
     state.aria2_port_persisted = info.initial_aria2_port;
     state.auto_convert = info.initial_auto_convert;
     state.auto_convert_persisted = info.initial_auto_convert;
+    state.auto_apply_compat = info.initial_auto_apply_compat;
+    state.auto_apply_compat_persisted = info.initial_auto_apply_compat;
     state.sandbox_default = info.initial_sandbox_default;
     state.sandbox_default_persisted = info.initial_sandbox_default;
     state.auto_update_default = info.initial_auto_update_default;
     state.auto_update_default_persisted = info.initial_auto_update_default;
+    state.refresh_backend = info.initial_refresh_backend;
+    state.refresh_backend_persisted = info.initial_refresh_backend;
+    state.max_parallel_sync = info.initial_max_parallel_sync;
+    state.max_parallel_sync_persisted = info.initial_max_parallel_sync;
+    state.max_parallel_image = info.initial_max_parallel_image;
+    state.max_parallel_image_persisted = info.initial_max_parallel_image;
+    // Seed the textEntry buffers so the Sync tab renders the saved
+    // values on first paint rather than empty fields.
+    _ = std.fmt.bufPrint(&state.max_parallel_sync_buf, "{d}", .{state.max_parallel_sync}) catch state.max_parallel_sync_buf[0..0];
+    _ = std.fmt.bufPrint(&state.max_parallel_image_buf, "{d}", .{state.max_parallel_image}) catch state.max_parallel_image_buf[0..0];
     // Seed the textEntry buffer with the persisted port (or empty for
     // the "random ephemeral" sentinel). Leaving 0 blank reduces clutter.
     if (info.initial_aria2_port != 0) {
@@ -180,6 +218,8 @@ pub fn runMainLoop(
         actions.freeModfileCacheState(&state, lib.alloc);
         actions.freeClashModalState(&state, lib.alloc);
         actions.freeCoverCache(&state, lib.alloc);
+        actions.freeLibFilterCache(&state, lib.alloc);
+        actions.freeSnapshotCache(&state, lib.alloc);
         actions.freeSlideCache(&state, lib.alloc);
         actions.invalidatePresetCache(&state);
         actions.freeTestInstallJob(&state, io);
@@ -188,7 +228,7 @@ pub fn runMainLoop(
         actions.freeInstalledSet(&state, lib.alloc);
         actions.freePostInstallJobs(&state, lib.alloc);
         actions.freeManualInstallJobs(&state, lib.alloc);
-        actions.freeFolderScan(&state, lib.alloc);
+        actions.freeFolderScan(&state, lib, io);
         // Tear down NFDe if the user ever opened the file picker.
         // No-op when never used.
         @import("util_file_picker").deinit();
@@ -222,8 +262,12 @@ pub fn runMainLoop(
         actions.persistUiScaleIfDirty(&state, info.ui_scale_path, io);
         actions.persistAutoCheckIfDirty(&state, info.auto_check_path, io);
         actions.persistAutoConvertIfDirty(&state, info.auto_convert_path, io);
+        actions.persistAutoApplyCompatIfDirty(&state, info.auto_apply_compat_path, io);
         actions.persistSandboxDefaultIfDirty(&state, info.sandbox_default_path, io);
         actions.persistAutoUpdateDefaultIfDirty(&state, info.auto_update_default_path, io);
+        actions.persistRefreshBackendIfDirty(&state, info.refresh_backend_path, io);
+        actions.persistMaxParallelSyncIfDirty(&state, info.max_parallel_sync_path, io);
+        actions.persistMaxParallelImageIfDirty(&state, info.max_parallel_image_path, io);
         // Age + evict expired toasts each frame. info/success fade
         // around 3s, warn around 6s, err sticks until clicked.
         state.ageToasts();
@@ -253,6 +297,7 @@ pub fn runMainLoop(
                 .games = games,
                 .lib = lib,
                 .f95_svc = f95_svc,
+                .f95_indexer_client = f95_indexer_client,
                 .dl_mgr = dl_mgr,
                 .recipe_repo = recipe_repo,
                 .sandbox = sandbox_backend,
@@ -272,9 +317,13 @@ pub fn runMainLoop(
             const SHUTDOWN_DRAIN_TICKS: u32 = 120; // × 50ms = 6 s
             while (actions.workersBusy(&state) and spin < SHUTDOWN_DRAIN_TICKS) : (spin += 1) {
                 actions.drainSync(&shutdown_frame);
+                actions.drainFastCheck(&shutdown_frame);
                 actions.drainImageQueue(&shutdown_frame);
                 actions.drainBookmarks(&shutdown_frame);
                 actions.drainUpdateCheck(&shutdown_frame);
+                actions.drainDonorProbe(&shutdown_frame);
+                actions.drainSlideLoads(&shutdown_frame);
+                actions.drainLaunchWatcher(&shutdown_frame);
                 actions.drainPostInstall(&shutdown_frame);
                 actions.drainManualInstall(&shutdown_frame);
                 actions.drainTestInstall(&shutdown_frame);
@@ -303,6 +352,7 @@ pub fn runMainLoop(
             .games = games,
             .lib = lib,
             .f95_svc = f95_svc,
+            .f95_indexer_client = f95_indexer_client,
             .dl_mgr = dl_mgr,
             .recipe_repo = recipe_repo,
             .sandbox = sandbox_backend,
@@ -331,36 +381,99 @@ pub fn runMainLoop(
 }
 
 fn guiFrame(frame: *Frame) !bool {
-    // Build per-frame snapshots. Both sit in dvui's per-frame arena
-    // so the storage disappears at frame end; `frame.install_versions`
-    // and `frame.games_by_thread` are only valid for the current
-    // frame. Failure is non-fatal — callers fall back to the
-    // legacy per-game SQL / linear-scan paths via `orelse`.
-    var install_versions = frame.lib.latestInstallVersionMap(dvui.currentWindow().arena()) catch null;
-    if (install_versions) |*m| {
-        frame.install_versions = m;
+    // Snapshot caches: install_versions + games_by_thread. Both
+    // survive across frames (owned by `lib.alloc`, lifetime managed
+    // by `freeSnapshotCache`) and rebuild only when their key
+    // changes:
+    //
+    //   - install_versions: when `Library.install_generation`
+    //     advances (install row added / removed / renamed).
+    //   - games_by_thread:  when `frame.games` ptr or len changes
+    //     (a fresh `listGames` allocation invalidates every cached
+    //     *Game pointer).
+    //
+    // On an idle library-scroll frame both are hits, so the UI
+    // thread skips a full-table SELECT + a linear scan over every
+    // game. Failure is non-fatal — readers fall back to the
+    // per-game SQL / linear-scan paths via `orelse`.
+    {
+        const lib_gen = frame.lib.install_generation;
+        if (frame.state.snapshot_install_versions == null or lib_gen != frame.state.snapshot_install_gen) {
+            const t_iv = types.startLatency(frame.io);
+            if (frame.state.snapshot_install_versions) |*m| {
+                var it = m.valueIterator();
+                while (it.next()) |v| frame.lib.alloc.free(v.*);
+                m.deinit();
+                frame.state.snapshot_install_versions = null;
+            }
+            frame.state.snapshot_install_versions = frame.lib.latestInstallVersionMap(frame.lib.alloc) catch null;
+            frame.state.snapshot_install_gen = lib_gen;
+            types.endLatency(frame.io, t_iv, "snapshot: install_versions rebuild");
+        }
+        if (frame.state.snapshot_install_versions) |*m| {
+            frame.install_versions = m;
+        }
     }
 
-    var games_by_thread = std.AutoHashMap(u64, *library.Game).init(dvui.currentWindow().arena());
-    games_by_thread.ensureTotalCapacity(@intCast(frame.games.len)) catch {};
-    for (frame.games) |*g| games_by_thread.put(g.f95_thread_id, g) catch {};
-    frame.games_by_thread = &games_by_thread;
+    {
+        const games_ptr: usize = @intFromPtr(frame.games.ptr);
+        const games_len: usize = frame.games.len;
+        // `sortGames` swaps `games[]` contents in place without
+        // changing ptr/len, so we additionally key the staleness
+        // check on the applied-sort state. Without this, sorting
+        // would silently keep cached `*Game` pointers that now
+        // address the wrong games — clicking the top card would
+        // open a different game's detail page.
+        const sort_col: u32 = if (frame.state.sort_applied_column) |c| @intFromEnum(c) else std.math.maxInt(u32);
+        const sort_dir: u32 = if (frame.state.sort_applied_dir) |d| @intFromEnum(d) else std.math.maxInt(u32);
+        const stale = frame.state.snapshot_games_by_thread == null or
+            games_ptr != frame.state.snapshot_games_ptr or
+            games_len != frame.state.snapshot_games_len or
+            sort_col != frame.state.snapshot_games_sort_column or
+            sort_dir != frame.state.snapshot_games_sort_dir;
+        if (stale) {
+            if (frame.state.snapshot_games_by_thread) |*m| {
+                m.deinit();
+                frame.state.snapshot_games_by_thread = null;
+            }
+            var m = std.AutoHashMap(u64, *library.Game).init(frame.lib.alloc);
+            m.ensureTotalCapacity(@intCast(frame.games.len)) catch {};
+            for (frame.games) |*g| m.put(g.f95_thread_id, g) catch {};
+            frame.state.snapshot_games_by_thread = m;
+            frame.state.snapshot_games_ptr = games_ptr;
+            frame.state.snapshot_games_len = games_len;
+            frame.state.snapshot_games_sort_column = sort_col;
+            frame.state.snapshot_games_sort_dir = sort_dir;
+        }
+        if (frame.state.snapshot_games_by_thread) |*m| {
+            frame.games_by_thread = m;
+        }
+    }
 
     // One-shot donor-status probe on the first frame after sign-in.
-    // Synchronous HTTP (~1-2s) on the UI thread today; phase 6+ would
-    // move it onto a worker. `donor_check_attempted` flips after any
-    // outcome so we don't re-fire every frame on transient errors.
-    if (frame.state.login_status == .logged_in and !frame.state.donor_check_attempted) {
+    // Spawns a detached worker; result lands via `drainDonorProbe`
+    // (called below). `donor_check_attempted` flips once the worker
+    // reports back so we don't re-fire on transient errors.
+    if (frame.state.login_status == .logged_in and
+        !frame.state.donor_check_attempted and
+        !frame.state.donor_check_in_flight)
+    {
         actions.checkDonorStatus(frame);
     }
 
+    const t_drain = types.startLatency(frame.io);
     actions.drainSync(frame);
+    actions.drainFastCheck(frame);
     actions.drainImageQueue(frame);
     actions.drainBookmarks(frame);
     actions.drainUpdateCheck(frame);
     actions.drainRpdlDownload(frame);
     actions.drainDonorDownload(frame);
+    actions.drainDonorProbe(frame);
+    actions.drainSlideLoads(frame);
+    actions.drainLaunchWatcher(frame);
     actions.drainRefreshTags(frame);
+    types.endLatency(frame.io, t_drain, "drain stack");
     // Refresh aria2-driven download progress. Cheap on localhost
     // (sub-ms RPC) and only walks non-terminal jobs. Skip the call
     // entirely when there are no jobs — pure dead work for idle
@@ -422,7 +535,6 @@ fn guiFrame(frame: *Frame) !bool {
         .detail => screens.detailScreen(frame),
         .settings => screens.settingsScreen(frame),
         .import_urls => screens.importUrlsScreen(frame),
-        .import_f95checker => screens.importF95CheckerScreen(frame),
         .import_folder => screens.importFolderScreen(frame),
         .downloads => screens.downloadsScreen(frame),
         .diagnostics => screens.diagnosticsScreen(frame),
@@ -441,6 +553,12 @@ fn guiFrame(frame: *Frame) !bool {
     if (frame.state.login_popup_open) {
         screens.renderLoginPopup(frame);
     }
+    // Launch-issue dialog — opened by `doLaunchGame` when a pre-launch
+    // check finds an actionable issue. Decoupled from the login popup
+    // so both can be open at once (rare, but no reason to block).
+    if (frame.state.launch_diag_open) {
+        screens.renderLaunchDiagPopup(frame);
+    }
 
     // Toast overlay — rendered after every other screen widget so it
     // floats above the content. Visible from any screen.
@@ -451,7 +569,6 @@ fn guiFrame(frame: *Frame) !bool {
         .detail => "render detail",
         .settings => "render settings",
         .import_urls => "render import (urls)",
-        .import_f95checker => "render import (f95checker)",
         .import_folder => "render import (folder)",
         .downloads => "render downloads",
         .diagnostics => "render diagnostics",

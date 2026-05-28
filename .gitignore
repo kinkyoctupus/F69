@@ -6,3 +6,6 @@ result
 *.swp
 build.log
 .vscode/
+
+# Local-only docs (restored from git history; not tracked).
+docs/

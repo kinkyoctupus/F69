@@ -63,6 +63,15 @@ pub const Service = struct {
                 r.bundle_syslibs,
                 force,
             ),
+            .mkxp_z => |m| return rpgm.convertVxAce(
+                self.alloc,
+                self.io,
+                install_dir,
+                m.mkxp_z_dir,
+                m.extra_libs_dir,
+                m.zoom,
+                force,
+            ),
         }
     }
 

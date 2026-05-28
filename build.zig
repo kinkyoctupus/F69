@@ -21,10 +21,11 @@ pub fn build(b: *std.Build) void {
 
     const config_mod = mod(b, "config", "src/config.zig", target, optimize);
 
-    // Build-time options surface — version string read from build.zig.zon
-    // is currently the only entry. UI's Diagnostics screen imports this
-    // to show "f69 vX.Y.Z" so bug reports identify the build.
-    const app_version: []const u8 = "0.9.0";
+    // Build-time options surface — version string is currently the only
+    // entry. UI's Diagnostics screen and main.zig's `--version` CLI flag
+    // import this to show "f69 vX.Y.Z" so bug reports identify the build.
+    // Keep in sync with `.version` in build.zig.zon.
+    const app_version: []const u8 = "0.9.1";
     const build_opts = b.addOptions();
     build_opts.addOption([]const u8, "version", app_version);
     const build_opts_mod = build_opts.createModule();
@@ -151,6 +152,13 @@ pub fn build(b: *std.Build) void {
     f95_mod_.addImport("util_atomic_io", util_atomic_io_mod);
     f95_mod_.addImport("build_options", build_opts_mod);
 
+    // F95Indexer cache API client — peer of f95_mod_. Auth-free, lives
+    // outside `f95/` because it doesn't touch the forum session.
+    const f95_indexer_mod = mod(b, "f95_indexer", "src/f95_indexer/f95_indexer.zig", target, optimize);
+    f95_indexer_mod.addImport("util_http", util_http_mod);
+    f95_indexer_mod.addImport("library", library_mod);
+    f95_indexer_mod.addImport("build_options", build_opts_mod);
+
     // Image decoding context. Wraps libavif so the sync worker can
     // transcode F95Zone CDN's AVIF screenshots to RGBA and re-encode
     // them as PNG at write time. libavif and its dav1d backend are
@@ -190,6 +198,7 @@ pub fn build(b: *std.Build) void {
     // and translate to library.Game shape. Settings UI invokes these.
     const importers_mod = mod(b, "importers", "src/importers/importers.zig", target, optimize);
     importers_mod.addImport("util_db", util_db_mod);
+    importers_mod.addImport("util_domain", util_domain_mod);
     importers_mod.addImport("util_test_env", util_test_env_mod);
 
     const convert_mod = mod(b, "convert", "src/convert/convert.zig", target, optimize);
@@ -221,6 +230,7 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("recipe", recipe_mod);
     ui_mod.addImport("resolver", resolver_mod);
     ui_mod.addImport("f95", f95_mod_);
+    ui_mod.addImport("f95_indexer", f95_indexer_mod);
     ui_mod.addImport("downloads", downloads_mod);
     ui_mod.addImport("sandbox", sandbox_mod);
     ui_mod.addImport("convert", convert_mod);
@@ -248,6 +258,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("config", config_mod);
     exe_mod.addImport("library", library_mod);
     exe_mod.addImport("f95", f95_mod_);
+    exe_mod.addImport("f95_indexer", f95_indexer_mod);
     exe_mod.addImport("downloads", downloads_mod);
     exe_mod.addImport("recipe", recipe_mod);
     exe_mod.addImport("sandbox", sandbox_mod);
@@ -256,6 +267,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("ui", ui_mod);
     exe_mod.addImport("util_crash", util_crash_mod);
     exe_mod.addImport("util_setting", util_setting_mod);
+    exe_mod.addImport("build_options", build_opts_mod);
 
     // dvui — opt-in. After `zig fetch --save git+…/dvui`, build with
     // `-Dgui=true` to link the SDL3 backend.
@@ -305,7 +317,22 @@ pub fn build(b: *std.Build) void {
     installCompatResource(b, "renpy7-fhs-libs", "F69_COMPAT_RENPY7_FHS_LIBS");
     installCompatResource(b, "renpy8-fhs-libs", "F69_COMPAT_RENPY8_FHS_LIBS");
     installCompatResource(b, "rpgm-mv-fhs-libs", "F69_COMPAT_RPGM_MV_FHS_LIBS");
+    installCompatResource(b, "mkxp-z-fhs-libs", "F69_COMPAT_MKXP_Z_FHS_LIBS");
     installCompatResource(b, "unity-fhs-libs", "F69_COMPAT_UNITY_FHS_LIBS");
+
+    // Vendored mkxp-z (RGSS reimplementation — runs RPGM XP/VX/VX Ace
+    // games natively on Linux). Source tree is checked into
+    // `third_party/mkxp-z/linux-x86_64/` per its README.md; we copy it
+    // verbatim into the install tree. Linux x86_64 only — the convert
+    // dispatch in `src/convert/rpgm.zig` no-ops on other targets.
+    if (target.result.os.tag == .linux and target.result.cpu.arch == .x86_64) {
+        const mkxp_install = b.addInstallDirectory(.{
+            .source_dir = b.path("third_party/mkxp-z/linux-x86_64"),
+            .install_dir = .{ .custom = "bin/data/mkxp-z" },
+            .install_subdir = "",
+        });
+        b.getInstallStep().dependOn(&mkxp_install.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -381,11 +408,35 @@ pub fn build(b: *std.Build) void {
         packages_step.dependOn(&dist.step);
     }
 
+    // ----- prefetch nwjs SDKs -----
+    //
+    // Populates `zig-out/bin/data/cache/convert/sdks/nwjs-<v>/` with
+    // tarballs from dl.nwjs.io. The runtime sdk_cache walks the same
+    // path, so any cached version is consumed without a network round
+    // trip when Convert runs. Intended use: `zig build prefetch-nwjs
+    // -Dnwjs-versions="0.29.4,0.44.6,0.83.0"` before `zig build
+    // portable`, so the resulting portable bundle ships with the SDKs
+    // pre-extracted.
+    //
+    // No default version list — each tarball is ~200 MiB extracted,
+    // shipping all 50 entries in chromeToNwjs would be 7+ GiB and
+    // surprise users. Force them to opt in by spelling out the set
+    // they care about.
+    const nwjs_versions_csv = b.option(
+        []const u8,
+        "nwjs-versions",
+        "Comma-separated list of nwjs versions (e.g. \"0.29.4,0.44.6,0.83.0\") for prefetch-nwjs.",
+    ) orelse "";
+    const prefetch_step = b.step("prefetch-nwjs", "Download nwjs SDKs into the portable cache (see -Dnwjs-versions=…)");
+    const prefetch_helper = PrefetchNwjsStep.create(b, nwjs_versions_csv);
+    prefetch_step.dependOn(&prefetch_helper.step);
+
     // ----- tests: every module's `test {}` blocks -----
 
     const test_targets = [_]*std.Build.Module{
         exe_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
+        f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
         server_mod,        ui_mod,            config_mod,      image_mod,
         importers_mod,     compat_mod,
@@ -492,6 +543,119 @@ const DistStep = struct {
         }
     }
 };
+
+/// `zig build prefetch-nwjs` step. Downloads nwjs SDK tarballs into
+/// the runtime cache location (`zig-out/bin/data/cache/convert/sdks/
+/// nwjs-<v>/`) so a subsequent `zig build portable` ships them
+/// pre-extracted. Idempotent — already-cached versions are skipped.
+const PrefetchNwjsStep = struct {
+    step: std.Build.Step,
+    versions_csv: []const u8,
+
+    fn create(b: *std.Build, versions_csv: []const u8) *PrefetchNwjsStep {
+        const self = b.allocator.create(PrefetchNwjsStep) catch @panic("OOM");
+        self.* = .{
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = "prefetch-nwjs",
+                .owner = b,
+                .makeFn = make,
+            }),
+            .versions_csv = versions_csv,
+        };
+        return self;
+    }
+
+    fn make(step: *std.Build.Step, opts: std.Build.Step.MakeOptions) anyerror!void {
+        _ = opts;
+        const self: *PrefetchNwjsStep = @fieldParentPtr("step", step);
+        const b = step.owner;
+        const csv = std.mem.trim(u8, self.versions_csv, " \t,");
+        if (csv.len == 0) {
+            std.log.err(
+                "prefetch-nwjs: pass -Dnwjs-versions=\"0.29.4,0.44.6,…\" (no default — each tarball is ~200 MiB)",
+                .{},
+            );
+            return error.NoVersionsRequested;
+        }
+        try prefetchNwjs(b, csv);
+    }
+};
+
+/// Per-version: skip if `zig-out/bin/data/cache/convert/sdks/nwjs-<v>/`
+/// exists; otherwise curl the tarball to a temp path, tar-extract into
+/// the dest with `--strip-components=1` (the upstream tarball wraps
+/// everything in `nwjs-v<v>-linux-x64/`). Stays best-effort: a single
+/// failing version logs a warning and the loop continues — partial
+/// caches are still useful.
+fn prefetchNwjs(b: *std.Build, versions_csv: []const u8) !void {
+    const alloc = b.allocator;
+    const io = b.graph.io;
+    const cwd = std.Io.Dir.cwd();
+
+    const cache_root = "zig-out/bin/data/cache/convert/sdks";
+    try cwd.createDirPath(io, cache_root);
+
+    var ok: u32 = 0;
+    var skipped: u32 = 0;
+    var failed: u32 = 0;
+
+    var it = std.mem.tokenizeAny(u8, versions_csv, ", \t\n");
+    while (it.next()) |raw_ver| {
+        const ver = std.mem.trim(u8, raw_ver, " \t");
+        if (ver.len == 0) continue;
+
+        const dest = try std.fmt.allocPrint(alloc, "{s}/nwjs-{s}", .{ cache_root, ver });
+        defer alloc.free(dest);
+
+        // Idempotency probe — any file inside is enough; the tarball
+        // always contains many.
+        const probe = try std.fmt.allocPrint(alloc, "{s}/credits.html", .{dest});
+        defer alloc.free(probe);
+        if (cwd.access(io, probe, .{})) |_| {
+            std.log.info("prefetch-nwjs: nwjs-{s} already cached, skipping", .{ver});
+            skipped += 1;
+            continue;
+        } else |_| {}
+
+        const url = try std.fmt.allocPrint(
+            alloc,
+            "https://dl.nwjs.io/v{s}/nwjs-v{s}-linux-x64.tar.gz",
+            .{ ver, ver },
+        );
+        defer alloc.free(url);
+
+        const tar_path = try std.fmt.allocPrint(alloc, "{s}.tar.gz", .{dest});
+        defer alloc.free(tar_path);
+        defer cwd.deleteFile(io, tar_path) catch {};
+
+        std.log.info("prefetch-nwjs: downloading {s}", .{url});
+        runQuiet(b, &.{ "curl", "-fL", "--retry", "3", "-o", tar_path, url }) catch |e| {
+            std.log.warn("prefetch-nwjs: nwjs-{s} download failed: {s}", .{ ver, @errorName(e) });
+            failed += 1;
+            continue;
+        };
+
+        try cwd.createDirPath(io, dest);
+        runQuiet(b, &.{
+            "tar", "-xzf", tar_path,
+            "-C",  dest,
+            "--strip-components=1",
+        }) catch |e| {
+            std.log.warn("prefetch-nwjs: nwjs-{s} extract failed: {s}", .{ ver, @errorName(e) });
+            // Half-extracted dir is worse than nothing — wipe it so
+            // the next run retries cleanly.
+            cwd.deleteTree(io, dest) catch {};
+            failed += 1;
+            continue;
+        };
+
+        std.log.info("prefetch-nwjs: nwjs-{s} cached at {s}", .{ ver, dest });
+        ok += 1;
+    }
+
+    std.log.info("prefetch-nwjs: {d} cached, {d} already-present, {d} failed", .{ ok, skipped, failed });
+}
 
 const PortableMode = enum { full, slim };
 
@@ -693,6 +857,46 @@ fn makePortable(b: *std.Build, mode: PortableMode) !void {
         }
     }
 
+    // Step 2b: bundle aria2c (the download daemon). Spawned as a
+    // subprocess at runtime; without bundling, the portable bundle's
+    // download path breaks on hosts that don't have it on $PATH.
+    // Slim mode skips this — DEPS.md tells the user to install it.
+    {
+        const aria2_dst = try std.fmt.allocPrint(alloc, "{s}/aria2c", .{dist_dir});
+        defer alloc.free(aria2_dst);
+        if (locateOnPath(b, "aria2c") catch null) |aria2_src| {
+            defer alloc.free(aria2_src);
+            const real = try cwd.realPathFileAlloc(io, aria2_src, alloc);
+            defer alloc.free(real);
+            try cwd.copyFile(real, cwd, aria2_dst, io, .{
+                .permissions = .executable_file,
+                .make_path = false,
+                .replace = true,
+            });
+            // ldd aria2c, pick up any .so deps not already bundled
+            // through the main binary. copyWithTransitives recurses
+            // and skips duplicates via the `bundled` set.
+            const ldd_out = try runCapture(b, &.{ "ldd", aria2_dst });
+            defer alloc.free(ldd_out);
+            var aria_ldd_it = std.mem.tokenizeAny(u8, ldd_out, "\n");
+            while (aria_ldd_it.next()) |line| {
+                const path = parseLddLine(line) orelse continue;
+                try copyWithTransitives(b, path, lib_dir, &bundled);
+            }
+            // RUNPATH $ORIGIN/lib so the bundled aria2c finds its
+            // .so deps next to the main binary's lib/ dir.
+            runQuiet(b, &.{ "patchelf", "--set-rpath", "$ORIGIN/lib", aria2_dst }) catch {};
+            std.log.info("portable: bundled aria2c from {s}", .{aria2_src});
+        } else {
+            // Best-effort: don't fail the bundle if aria2c isn't
+            // installed on the build host. The bundle still ships;
+            // downloads just won't work without aria2c on the
+            // runtime host's $PATH.
+            cwd.deleteFile(io, aria2_dst) catch {};
+            std.log.warn("portable: aria2c not on $PATH — bundle won't auto-download. Install it on the build host (`nix profile add nixpkgs#aria2`) and re-run `zig build portable`.", .{});
+        }
+    }
+
     // Step 3: patchelf RUNPATHs. Binary gets $ORIGIN/lib; each bundled
     // .so gets $ORIGIN. The loader itself doesn't use RUNPATH, so skip.
     try runQuiet(b, &.{ "patchelf", "--set-rpath", "$ORIGIN/lib", bin_src });
@@ -710,7 +914,13 @@ fn makePortable(b: *std.Build, mode: PortableMode) !void {
     // Step 4: launcher.
     try writeFileEnsureDir(b, run_sh_path, RUN_SH_FULL, true);
 
-    std.log.info("portable: wrote {s}/ ({} files in lib/, loader={s})", .{ dist_dir, bundled.count(), ld_linux orelse "?" });
+    // Step 5: project-root convenience launcher. A thin delegator so
+    // `./run.sh` from the repo root just execs the bundle's launcher.
+    // Single source of truth for env / ICD / data-dir setup stays in
+    // `zig-out/bin/run.sh`; the root one only knows how to find it.
+    try writeFileEnsureDir(b, "run.sh", RUN_SH_ROOT_DELEGATOR, true);
+
+    std.log.info("portable: wrote {s}/ ({} files in lib/, loader={s}); plus ./run.sh delegator", .{ dist_dir, bundled.count(), ld_linux orelse "?" });
 }
 
 // ----- portable helpers ---------------------------------------------
@@ -765,16 +975,21 @@ fn parseLddLine(line: []const u8) ?[]const u8 {
 }
 
 fn skipGpuVendor(base: []const u8) bool {
-    // libvulkan.so.1 IS allowed (it's the vendor-neutral loader). Block
-    // anything that's a vendor GPU driver — those must come from the
-    // host's actual NVIDIA / Mesa install at runtime.
-    const blocklist = [_][]const u8{
-        "libGL.so",      "libGLX.so",      "libGLX_",
-        "libEGL.so",     "libGLdispatch", "libOpenGL.so",
-    };
-    inline for (blocklist) |needle| {
-        if (std.mem.startsWith(u8, base, needle)) return true;
-    }
+    // Vendor-suffixed backends (`libGLX_nvidia`, `libGLX_mesa`,
+    // `libGLESv2_nvidia`, `libEGL_mesa`, …) MUST come from the host's
+    // own NVIDIA / Mesa install at runtime — shipping them locks the
+    // bundle to one driver version and one card vendor.
+    //
+    // Bare glvnd dispatchers (`libGL.so.1`, `libGLX.so.0`,
+    // `libEGL.so.1`, `libGLdispatch.so.0`) are vendor-neutral and
+    // SHIP because game binaries (Ren'Py / Unity / godot) link them
+    // by SONAME and crash on NixOS hosts where the system loader
+    // can't find them. We point the games at our bundled glvnd via
+    // LD_LIBRARY_PATH at launch time.
+    if (std.mem.startsWith(u8, base, "libGLX_")) return true;
+    if (std.mem.startsWith(u8, base, "libGLESv1_CM_")) return true;
+    if (std.mem.startsWith(u8, base, "libGLESv2_")) return true;
+    if (std.mem.startsWith(u8, base, "libEGL_")) return true;
     return false;
 }
 
@@ -799,6 +1014,26 @@ fn copyResolveSymlink(b: *std.Build, src: []const u8, dst_dir: []const u8) !void
         .make_path = false,
         .replace = true,
     });
+}
+
+/// Search the colon-separated `$PATH` for an executable named `name`.
+/// Returns an owned path or null if not found. Used by the portable
+/// step to locate aria2c (or other tools) on the build host.
+fn locateOnPath(b: *std.Build, name: []const u8) !?[]u8 {
+    const alloc = b.allocator;
+    const io = b.graph.io;
+    const cwd = std.Io.Dir.cwd();
+    const path_env = b.graph.environ_map.get("PATH") orelse return null;
+    var it = std.mem.tokenizeScalar(u8, path_env, ':');
+    while (it.next()) |dir| {
+        const candidate = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, name });
+        cwd.access(io, candidate, .{}) catch {
+            alloc.free(candidate);
+            continue;
+        };
+        return candidate;
+    }
+    return null;
 }
 
 /// Search the colon-separated LD_LIBRARY_PATH for `name`. Returns an
@@ -1301,6 +1536,17 @@ const DLOPEN_LIBS = [_][]const u8{
     // Vulkan loader (vendor-neutral). The actual GPU driver
     // (libGLX_nvidia / libvulkan_radeon / etc.) stays on the host.
     "libvulkan.so.1",
+    // libglvnd entry points. f69 itself doesn't dlopen these (SDL3
+    // is Vulkan-first for our GPU backend), but bundling them lets
+    // the launch-time host-GPU fix point game binaries (Ren'Py /
+    // Unity / godot) at the bundled glvnd so they don't blow up on
+    // NixOS hosts where the system loader can't find these libs by
+    // name. Vendor backends (libGLX_nvidia, libGLESv2_mesa, …)
+    // still live on /run/opengl-driver/lib and aren't bundled.
+    "libGL.so.1",
+    "libGLX.so.0",
+    "libEGL.so.1",
+    "libGLdispatch.so.0",
 };
 
 // ============================================================
@@ -1566,10 +1812,13 @@ const RUN_SH_FULL =
     \\esac
     \\DIR=$(CDPATH= cd -- "$DIR" && pwd)
     \\
-    \\# Pin data dir next to *this script*. When the loader is invoked
-    \\# directly, /proc/self/exe inside the child resolves to the loader
-    \\# (in lib/), so the app's exe-discovery would otherwise place data
-    \\# in lib/data/.
+    \\# Pin the bundle root + data dir next to *this script*. When the
+    \\# loader is invoked directly (the `exec ld-linux …` line below),
+    \\# /proc/self/exe inside the child resolves to the loader (in
+    \\# lib/), so the app's exe-discovery would otherwise place every
+    \\# `<exe_dir>/foo` lookup inside lib/. F69_EXE_DIR overrides that
+    \\# (used to find the bundled aria2c); F69_DATA_DIR handles data/.
+    \\export F69_EXE_DIR="$DIR"
     \\export F69_DATA_DIR="$DIR/data"
     \\
     \\# Prepend our bundled lib/ but PRESERVE the host's LD_LIBRARY_PATH
@@ -1584,7 +1833,51 @@ const RUN_SH_FULL =
     \\fi
     \\export LD_LIBRARY_PATH
     \\
+    \\# Vulkan + EGL driver discovery. SDL3's GPU backend needs the ICD
+    \\# JSONs (separate from the .so files) to know which GPU stack to
+    \\# use. NixOS hides them under /run/opengl-driver/share/; standard
+    \\# distros put them in /usr/share/ and /etc/. Probe NixOS first,
+    \\# fall back to the standard paths so the same launcher works
+    \\# everywhere.
+    \\NIXOS_VK_ICD=/run/opengl-driver/share/vulkan/icd.d
+    \\STD_VK_ICD=/usr/share/vulkan/icd.d:/etc/vulkan/icd.d
+    \\if [ -d "$NIXOS_VK_ICD" ]; then
+    \\    VK_DRIVER_FILES="$NIXOS_VK_ICD"
+    \\else
+    \\    VK_DRIVER_FILES="$STD_VK_ICD"
+    \\fi
+    \\export VK_DRIVER_FILES
+    \\export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+    \\NIXOS_EGL=/run/opengl-driver/share/glvnd/egl_vendor.d
+    \\STD_EGL=/usr/share/glvnd/egl_vendor.d
+    \\if [ -d "$NIXOS_EGL" ]; then
+    \\    __EGL_VENDOR_LIBRARY_DIRS="$NIXOS_EGL:$STD_EGL"
+    \\else
+    \\    __EGL_VENDOR_LIBRARY_DIRS="$STD_EGL"
+    \\fi
+    \\export __EGL_VENDOR_LIBRARY_DIRS
+    \\
     \\exec "$DIR/lib/ld-linux-x86-64.so.2" "$DIR/f69" "$@"
+    \\
+;
+
+/// Thin delegator written to project root by `zig build portable`.
+/// Lets the developer run `./run.sh` from the repo root instead of
+/// `./zig-out/bin/run.sh`. The bundle's launcher carries every
+/// LD_LIBRARY_PATH / VK_DRIVER_FILES / data-dir detail; this script
+/// only locates it and forwards args. Regenerated on every build —
+/// safe to commit but also gitignored if the user prefers.
+const RUN_SH_ROOT_DELEGATOR =
+    \\#!/bin/sh
+    \\# f69 dev-convenience launcher (project root).
+    \\# Delegates to `zig-out/bin/run.sh` which carries the actual
+    \\# env / ICD / data-dir setup. Regenerated by `zig build portable`.
+    \\case "$0" in
+    \\    */*) DIR=${0%/*} ;;
+    \\    *)   DIR=. ;;
+    \\esac
+    \\DIR=$(CDPATH= cd -- "$DIR" && pwd)
+    \\exec "$DIR/zig-out/bin/run.sh" "$@"
     \\
 ;
 
@@ -1597,6 +1890,7 @@ const RUN_SH_SLIM =
     \\    *)   DIR=. ;;
     \\esac
     \\DIR=$(CDPATH= cd -- "$DIR" && pwd)
+    \\export F69_EXE_DIR="$DIR"
     \\export F69_DATA_DIR="$DIR/data"
     \\
     \\GPU_PATHS=/run/opengl-driver/lib:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib
@@ -1606,6 +1900,28 @@ const RUN_SH_SLIM =
     \\    LD_LIBRARY_PATH="$GPU_PATHS"
     \\fi
     \\export LD_LIBRARY_PATH
+    \\
+    \\# Vulkan + EGL driver discovery. SDL3's GPU backend needs the
+    \\# ICD JSONs (separate from the .so files); without them you get
+    \\# "No supported SDL_GPU backend found". NixOS hides them under
+    \\# /run/opengl-driver/share/; standard distros use /usr/share/.
+    \\NIXOS_VK_ICD=/run/opengl-driver/share/vulkan/icd.d
+    \\STD_VK_ICD=/usr/share/vulkan/icd.d:/etc/vulkan/icd.d
+    \\if [ -d "$NIXOS_VK_ICD" ]; then
+    \\    VK_DRIVER_FILES="$NIXOS_VK_ICD"
+    \\else
+    \\    VK_DRIVER_FILES="$STD_VK_ICD"
+    \\fi
+    \\export VK_DRIVER_FILES
+    \\export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+    \\NIXOS_EGL=/run/opengl-driver/share/glvnd/egl_vendor.d
+    \\STD_EGL=/usr/share/glvnd/egl_vendor.d
+    \\if [ -d "$NIXOS_EGL" ]; then
+    \\    __EGL_VENDOR_LIBRARY_DIRS="$NIXOS_EGL:$STD_EGL"
+    \\else
+    \\    __EGL_VENDOR_LIBRARY_DIRS="$STD_EGL"
+    \\fi
+    \\export __EGL_VENDOR_LIBRARY_DIRS
     \\
     \\exec "$DIR/f69" "$@"
     \\
@@ -1657,6 +1973,19 @@ const DEPS_MD =
     \\
     \\`nix build .#f69` from a checkout. The flake's `packages.f69`
     \\derivation pulls every dep automatically.
+    \\
+    \\## aria2 (recommended — needed for in-app downloads)
+    \\
+    \\f69 spawns `aria2c` as an RPC daemon when the user starts a
+    \\download. The slim bundle does not carry it; install via:
+    \\
+    \\- Arch:     `sudo pacman -S aria2`
+    \\- Debian:   `sudo apt install aria2`
+    \\- Fedora:   `sudo dnf install aria2`
+    \\- NixOS:    `nix profile add nixpkgs#aria2`
+    \\
+    \\If absent, the rest of the app works but the Download button
+    \\errors with `aria2 spawn failed (FileNotFound)`.
     \\
     \\## GPU drivers (NEVER bundled — vendor-specific)
     \\

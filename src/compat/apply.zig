@@ -24,6 +24,14 @@ const resources_mod = @import("resources.zig");
 pub fn touchedPaths(action: dom.Action, alloc: std.mem.Allocator) errs.Error![]dom.TouchedPath {
     return switch (action) {
         .env_prepend, .env_set, .system_hint => alloc.alloc(dom.TouchedPath, 0) catch errs.Error.OutOfMemory,
+        .symlink_create => |s| blk: {
+            const list = alloc.alloc(dom.TouchedPath, 1) catch return errs.Error.OutOfMemory;
+            list[0] = .{
+                .relpath = alloc.dupe(u8, s.link_path) catch return errs.Error.OutOfMemory,
+                .kind = .symlink,
+            };
+            break :blk list;
+        },
     };
 }
 
@@ -50,9 +58,16 @@ pub const Outcome = struct {
 
 /// Run one action. The action must already have its `touched_paths`
 /// backed up (service.zig handles that before calling this).
+///
+/// `install_root` is the absolute path to the game install. Only used
+/// by file-mutating actions (`symlink_create`). Pass null when called
+/// from `composeEnv` (env-replay at launch time) — file actions are
+/// no-ops in that mode since they already ran during apply.
 pub fn applyAction(
     alloc: std.mem.Allocator,
     resolver: *const resources_mod.Resolver,
+    io: std.Io,
+    install_root: ?[]const u8,
     action: dom.Action,
     out: *Outcome,
 ) errs.Error!void {
@@ -88,6 +103,27 @@ pub fn applyAction(
         .system_hint => {
             // No side effect. The UI renders the hint message from
             // the recipe directly when surfacing the issue.
+        },
+        .symlink_create => |s| {
+            // composeEnv replay path — file already created during
+            // initial apply, skip silently.
+            const root = install_root orelse return;
+
+            var link_buf: [1024]u8 = undefined;
+            const link_full = std.fmt.bufPrint(&link_buf, "{s}/{s}", .{ root, s.link_path }) catch return errs.Error.OutOfMemory;
+
+            // Idempotency: skip when link already exists. Catches
+            // both Apply-twice and the case where the host fs is
+            // case-insensitive (link "VNButtons.png" already resolves
+            // to the underlying file via the fs).
+            if (std.Io.Dir.cwd().access(io, link_full, .{})) |_| {
+                return;
+            } else |_| {}
+
+            std.Io.Dir.cwd().symLink(io, s.target, link_full, .{}) catch |e| switch (e) {
+                error.PathAlreadyExists => return,
+                else => return errs.Error.IoError,
+            };
         },
     }
 }

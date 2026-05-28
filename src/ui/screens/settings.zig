@@ -2,11 +2,13 @@
 // downloads / mod-presets / convert-presets / about.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
 
 const types = @import("../types.zig");
+const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const import_job_mod = @import("../import_job.zig");
@@ -136,12 +138,23 @@ fn renderAutoConvertSection(frame: *Frame) void {
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     _ = dvui.checkbox(@src(), &state.auto_convert, "Convert new installs automatically", .{});
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    components.settingsHelpText(
+        "After Convert, scan compat recipes and apply any blockers automatically. Re-applies recipes whose bundled version has changed. All compat fixes are reversible via the Fix Compat / Undo UI.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    _ = dvui.checkbox(@src(), &state.auto_apply_compat, "Apply compat fixes automatically after Convert", .{});
 }
 
-/// Sync tab — auto-check preferences + the F95 rate-limit info row.
+/// Sync tab — auto-check preferences, refresh backend toggle, the
+/// parallelism knobs, and the F95 rate-limit info row.
 fn renderSettingsSync(frame: *Frame) void {
     renderAutoCheckSection(frame);
     settingsSectionDivider(2);
+    renderRefreshBackendSection(frame);
+    settingsSectionDivider(3);
+    renderParallelismSection(frame);
+    settingsSectionDivider(4);
     dvui.label(@src(), "Network", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     var rl_buf: [32]u8 = undefined;
@@ -150,6 +163,136 @@ fn renderSettingsSync(frame: *Frame) void {
     settingsRow(&row_id, "F95 forum rate limit", rl);
     components.settingsHelpText(
         "Throttle between forum HTTP requests. Image fetches against attachments.f95zone.to (CDN) bypass this limit.",
+    );
+}
+
+/// Two textEntry rows controlling the parallel-slot pools. Live-edited
+/// values are clamped to `[1, MAX_PARALLEL_*]` on each frame so an
+/// out-of-range integer never reaches the slot-spawn helpers. Mirrors
+/// F95Checker's `max_connections` setting; here we expose both pools
+/// independently so users with slow disks can hold images back while
+/// keeping metadata refreshes fast.
+fn renderParallelismSection(frame: *Frame) void {
+    const state = frame.state;
+    dvui.label(@src(), "Parallelism", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    components.settingsHelpText(
+        "How many refresh workers run at the same time. Sync workers fetch metadata " ++
+            "(/full + cover); image workers fetch screenshots in phase-2. Both pools " ++
+            "are capped at 16. Default 4 — matches F95Checker. Higher values speed up " ++
+            "library-wide refreshes but increase indexer / forum load proportionally. " ++
+            "Changes take effect from the next spawn (already-running workers continue).",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    // Row 1 — /full + scrape pool
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        dvui.label(@src(), "Sync workers (/full + scrape)", .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.max_parallel_sync_buf },
+        }, .{
+            .min_size_content = .{ .w = 60, .h = 24 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        const typed = std.mem.sliceTo(&state.max_parallel_sync_buf, 0);
+        if (std.fmt.parseInt(u32, typed, 10)) |n| {
+            const clamped: u32 = std.math.clamp(
+                n,
+                @as(u32, 1),
+                @as(u32, @intCast(state_mod.MAX_PARALLEL_SYNC)),
+            );
+            state.max_parallel_sync = clamped;
+        } else |_| {}
+    }
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    // Row 2 — screenshot ImageJob pool
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        dvui.label(@src(), "Image workers (screenshots)", .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.max_parallel_image_buf },
+        }, .{
+            .min_size_content = .{ .w = 60, .h = 24 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        const typed = std.mem.sliceTo(&state.max_parallel_image_buf, 0);
+        if (std.fmt.parseInt(u32, typed, 10)) |n| {
+            const clamped: u32 = std.math.clamp(
+                n,
+                @as(u32, 1),
+                @as(u32, @intCast(state_mod.MAX_PARALLEL_IMAGE)),
+            );
+            state.max_parallel_image = clamped;
+        } else |_| {}
+    }
+}
+
+/// Refresh-backend toggle. Two-mode strict separation:
+///   F95Checker indexer — ALL game metadata comes from
+///     `api.f95checker.dev`. Cover + screenshot bytes still come from
+///     `attachments.f95zone.to` (CDN; same model F95Checker uses).
+///     Auto-update walker disabled (indexer monitors latest updates
+///     server-side every 5 min).
+///   Scraper — direct f95zone.to thread scrapes. Auto-update walker
+///     active. Slower, more forum load, no third-party dependency.
+/// Forum-account actions (login, donor DDL, bookmark import) hit
+/// f95zone.to in BOTH modes — the indexer doesn't proxy them.
+///
+/// Layout note: dropdown sits directly under the section header so
+/// it's the first interactive widget the eye lands on. Help blurb
+/// follows — previously the help text came first and a tall
+/// `textLayout` (which captures clicks for text-selection) ate
+/// pointer events meant for the dropdown.
+fn renderRefreshBackendSection(frame: *Frame) void {
+    const state = frame.state;
+    dvui.label(@src(), "Refresh backend", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    // Dropdown row — label + dropdown side-by-side, clearly above any
+    // longer prose so its hit-test box isn't shadowed by a textLayout.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        dvui.label(@src(), "Source:", .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        const backend_labels = &[_][]const u8{ "F95Checker indexer (recommended)", "Direct F95 scraper" };
+        var picked: usize = @intFromEnum(state.refresh_backend);
+        if (style.dropdown(@src(), backend_labels, .{ .choice = &picked }, .{}, .{
+            .min_size_content = .{ .w = 280, .h = 28 },
+            .gravity_y = 0.5,
+        })) {
+            state.refresh_backend = @enumFromInt(picked);
+        }
+    }
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+
+    // Short summary, indexer first (matches the recommended default).
+    components.settingsHelpText(
+        "F95Checker indexer: metadata comes from api.f95checker.dev. " ++
+            "Covers + screenshots still come from attachments.f95zone.to (CDN). " ++
+            "Auto-update walker is disabled here because the indexer monitors " ++
+            "latest-updates server-side every 5 minutes.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    components.settingsHelpText(
+        "Direct F95 scraper: every refresh hits f95zone.to thread pages directly. " ++
+            "The auto-update walker is active. Slower, more load on the forum, but " ++
+            "no third-party dependency.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    components.settingsHelpText(
+        "Forum-account actions (login, bookmark import, donor DDL) always hit " ++
+            "f95zone.to in either mode — the indexer doesn't proxy authenticated endpoints.",
     );
 }
 
@@ -216,6 +359,46 @@ fn renderSettingsLibrary(frame: *Frame) void {
 
     settingsSectionDivider(5);
     renderTagsRefreshSection(frame);
+
+    settingsSectionDivider(6);
+    renderEngineReanalyseSection(frame);
+}
+
+/// Settings → Library → "Re-detect engines from installs". One-shot
+/// button that walks every installed game, peels the wrapper folder,
+/// runs the same `detectEngine` + RGSS-marker probe the Convert path
+/// uses, and updates `Game.engine` when it differs. Synchronous: cost
+/// per game is a handful of `access()` calls, so even a few hundred
+/// games stays well under a second on native FS (a few seconds on
+/// FUSE NTFS). No background-job machinery needed.
+fn renderEngineReanalyseSection(frame: *Frame) void {
+    const state = frame.state;
+    dvui.label(@src(), "Engine labels", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    components.settingsHelpText(
+        "Walks each installed game, probes the on-disk files, and updates the engine label when the bracket-derived guess from F95's title turns out to be wrong. Skips games with no install.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer row.deinit();
+
+    if (components.iconButton(@src(), "Re-detect engines", entypo.cycle, .{
+        .style = .highlight,
+        .gravity_y = 0.5,
+    })) {
+        _ = actions.doReanalyseAllEngines(frame);
+    }
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+
+    if (state.engine_reanalyse_msg_len > 0) {
+        const msg = state.engine_reanalyse_msg_buf[0..state.engine_reanalyse_msg_len];
+        dvui.labelNoFmt(@src(), msg, .{}, .{
+            .gravity_y = 0.5,
+            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        });
+    }
 }
 
 /// Settings → Library → Import section. Two buttons: F95Checker
@@ -223,39 +406,90 @@ fn renderSettingsLibrary(frame: *Frame) void {
 /// ~/.config/xlibrary/). Each opens a folder picker for the source's
 /// games-base-dir, then spawns the worker. A live banner under the
 /// buttons surfaces progress while one is running.
+/// Same three-button toggle the folder-scan screen uses, surfaced
+/// here so the Settings → Library import path can pick its mode
+/// too. Shared state via `state.folder_scan_mode` keeps the user's
+/// preference consistent across import sources.
+fn renderImportModePicker(state: *State) void {
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer row.deinit();
+    dvui.label(@src(), "Transfer mode:", .{}, .{ .gravity_y = 0.5 });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+    const move_style: dvui.Options = if (state.folder_scan_mode == .move) .{ .style = .highlight } else .{};
+    if (style.button(@src(), "Move", .{}, move_style)) {
+        state.folder_scan_mode = .move;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+    const copy_style: dvui.Options = if (state.folder_scan_mode == .copy) .{ .style = .highlight } else .{};
+    if (style.button(@src(), "Copy (2x disk)", .{}, copy_style)) {
+        state.folder_scan_mode = .copy;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+    const link_style: dvui.Options = if (state.folder_scan_mode == .link) .{ .style = .highlight } else .{};
+    if (style.button(@src(), "Link in place (safest)", .{}, link_style)) {
+        state.folder_scan_mode = .link;
+    }
+}
+
 fn renderSettingsImport(frame: *Frame) void {
     const state = frame.state;
     dvui.label(@src(), "Import library", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
         "Bring in games + installs from F95Checker or xLibrary. Existing entries in this library are skipped. " ++
-            "Install directories are copied + SHA-256 verified before the originals are removed, so a crash or " ++
-            "verification mismatch leaves both copies intact.",
+            "Pick a transfer mode below — `Link in place` is safest (no file mutation), `Move` cuts+pastes " ++
+            "the games into f69's library_root, `Copy` keeps the originals (2x disk).",
     );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    renderImportModePicker(state);
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     const running = state.import_job != null;
 
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    defer row.deinit();
-    const f95_label: []const u8 = if (running) "Importing\u{2026}" else "Import from F95Checker\u{2026}";
-    if (style.button(@src(), f95_label, .{}, .{
-        .style = .highlight,
-        .min_size_content = .{ .w = 240, .h = style.button_h },
-    })) {
-        if (!running) actions.doImportFromF95Checker(frame);
-    }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-    const xl_label: []const u8 = if (running) "Importing\u{2026}" else "Import from xLibrary\u{2026}";
-    if (style.button(@src(), xl_label, .{}, .{
-        .min_size_content = .{ .w = 220, .h = style.button_h },
-    })) {
-        if (!running) actions.doImportFromXLibrary(frame);
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        const f95_label: []const u8 = if (running) "Importing\u{2026}" else "Import from F95Checker\u{2026}";
+        if (style.button(@src(), f95_label, .{}, .{
+            .style = .highlight,
+            .min_size_content = .{ .w = 240, .h = style.button_h },
+        })) {
+            if (!running) actions.doImportFromF95Checker(frame);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        const xl_label: []const u8 = if (running) "Importing\u{2026}" else "Import from xLibrary\u{2026}";
+        if (style.button(@src(), xl_label, .{}, .{
+            .min_size_content = .{ .w = 220, .h = style.button_h },
+        })) {
+            if (!running) actions.doImportFromXLibrary(frame);
+        }
     }
 
     if (running) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
         renderImportBanner(frame);
+    }
+
+    // Export — separate row + help text. Surfaced under the import
+    // section because it's the natural inverse (and because that's
+    // where a user looking for "move my library to F95Checker"
+    // would look).
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    components.settingsHelpText(
+        "Write f69's library to a F95Checker-shaped db.sqlite3. Game metadata + install paths " ++
+            "are exported in F95Checker's modern schema; if a db.sqlite3 already lives at the picked " ++
+            "location it's renamed to db.sqlite3.bak-<unix-ts> before the new file is written — never overwritten.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    {
+        var export_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer export_row.deinit();
+        if (style.button(@src(), "Export to F95Checker DB\u{2026}", .{}, .{
+            .min_size_content = .{ .w = 260, .h = style.button_h },
+        })) {
+            actions.doExportToF95Checker(frame);
+        }
     }
 }
 
@@ -673,6 +907,7 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
             .none => "no-op",
             .renpy => "renpy-sdk-overlay",
             .rpgm => "nwjs-overlay",
+            .mkxp_z => "mkxp-z-launcher",
         };
         const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  -  engine: {s}  -  strategy: {s}  -  weight: {d:.1}", .{
             p.id, engine_txt, spec_txt, p.weight,
@@ -687,6 +922,15 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
 
 /// About tab — diagnostics link + version blurb.
 fn renderSettingsAbout(frame: *Frame) void {
+    dvui.label(@src(), "Version", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    var row_id: u32 = 0;
+    var ver_buf: [48]u8 = undefined;
+    const ver = std.fmt.bufPrint(&ver_buf, "f69 v{s}", .{build_options.version}) catch "f69";
+    settingsRow(&row_id, "Build", ver);
+    components.settingsHelpText("Same string the `--version` flag prints and that ships in the User-Agent.");
+    settingsSectionDivider(1);
+
     renderDiagnosticsLink(frame);
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 16 } });
     components.settingsHelpText("f69 — phase 1 alpha. Editable settings land in phase 1.5 (config.toml).");

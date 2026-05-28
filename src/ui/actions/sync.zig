@@ -14,11 +14,58 @@
 const std = @import("std");
 const atomic_io = @import("util_atomic_io");
 const log = std.log.scoped(.ui_actions);
+
+/// CPU gate for image decode + JPEG encode across every in-flight
+/// sync / image worker. Without this, raising the parallel worker
+/// counts (Settings → Sync) to e.g. 8 + 8 = 16 simultaneous AVIF/JPEG
+/// decode passes saturates every CPU core and starves the UI thread
+/// of cycles — every dvui frame stalls until a worker finishes.
+///
+/// Implementation: an atomic counter + yield loop. We don't use
+/// `std.Io.Semaphore` because the worker helpers don't have easy
+/// access to the `io` context. Spin-yielding is fine here — contention
+/// only kicks in when N+ workers are mid-decode, and the wait time is
+/// roughly one decode pass which is plenty of "real CPU work going
+/// on" for the loop to be benign.
+///
+/// Default cap = 4. Override via `setImageCpuLimit` from `main.zig`
+/// after `std.Thread.getCpuCount` to tighten on low-core systems.
+var image_cpu_limit: std.atomic.Value(u32) = .init(4);
+var image_cpu_in_flight: std.atomic.Value(u32) = .init(0);
+
+/// Replace the CPU cap. Safe to call at any time; new permits take
+/// effect on the next `acquireImageCpuSlot` call.
+pub fn setImageCpuLimit(permits: usize) void {
+    const cap: u32 = @intCast(@max(@as(usize, 1), permits));
+    image_cpu_limit.store(cap, .release);
+    log.info("image-cpu cap: {d} permits", .{cap});
+}
+
+/// Acquire a CPU permit; spins-with-yield until one is free. Pair every
+/// `acquireImageCpuSlot` with exactly one `releaseImageCpuSlot`.
+fn acquireImageCpuSlot() void {
+    while (true) {
+        const cap = image_cpu_limit.load(.acquire);
+        const cur = image_cpu_in_flight.load(.monotonic);
+        if (cur < cap) {
+            if (image_cpu_in_flight.cmpxchgWeak(cur, cur + 1, .acquire, .monotonic) == null) return;
+            // CAS lost the race; retry without yielding.
+            continue;
+        }
+        std.Thread.yield() catch {};
+    }
+}
+
+fn releaseImageCpuSlot() void {
+    _ = image_cpu_in_flight.fetchSub(1, .release);
+}
 const library = @import("library");
 const f95 = @import("f95");
+const f95_indexer = @import("f95_indexer");
 const dvui = @import("dvui");
 const image = @import("image");
 const types = @import("../types.zig");
+const state_mod = @import("../state.zig");
 const owned_types = @import("../owned.zig");
 const job_mod = @import("../job.zig");
 const common = @import("common.zig");
@@ -37,6 +84,8 @@ pub const SyncPayload = owned_types.SyncPayload;
 pub const SyncJob = owned_types.SyncJob;
 pub const ImagePayload = owned_types.ImagePayload;
 pub const ImageJob = owned_types.ImageJob;
+pub const FastCheckPayload = owned_types.FastCheckPayload;
+pub const FastCheckJob = owned_types.FastCheckJob;
 
 // ============================================================
 //  sync-batch recap — end-of-run "what changed" popup
@@ -157,12 +206,30 @@ fn markRecapAutoDownloaded(state: *State, thread_id: u64) void {
 // ============================================================
 
 pub fn syncGame(frame: *Frame, game: *library.Game) void {
+    // Any explicit user-initiated refresh re-enables the image
+    // pipeline — a previous Cancel shouldn't keep new syncs from
+    // queueing their screenshots.
+    frame.state.image_fetch_suspended = false;
+    spawnSyncJob(frame, game, null);
+}
+
+/// Internal worker spawner shared by the manual-button path (`syncGame`)
+/// and the batch advance path (`advanceSyncQueue`). `known_lc` is the
+/// pre-fetched `/fast` result when the batch indexer pre-flight already
+/// learned it; null otherwise (worker will do its own `/fast` for the
+/// indexer backend, or skip /fast for the scraper backend).
+fn spawnSyncJob(frame: *Frame, game: *library.Game, known_lc: ?i64) void {
     const state = frame.state;
-    // If a sync is already running, append THIS game to the queue
-    // instead of bouncing the click. The drainSync loop will pop it
-    // when the active job finishes. Idempotent: re-clicking on a
-    // game that's already queued is a no-op.
-    if (state.pending_sync != null) {
+    // Idempotent guard: if this thread_id is already an active sync
+    // OR already in the queue, do nothing.
+    for (state.active_syncs) |maybe_slot| {
+        if (maybe_slot) |j| {
+            if (j.payload.thread_id == game.f95_thread_id) return;
+        }
+    }
+    // If every sync slot is full, queue this game; drainSync will
+    // pick it up as soon as a slot frees.
+    if (!state.hasFreeSyncSlot()) {
         if (queuePosition(state, game.f95_thread_id) != null) return;
         appendToSyncQueue(frame.lib.alloc, state, game.f95_thread_id) catch {
             state.sync_status = .err;
@@ -197,6 +264,31 @@ pub fn syncGame(frame: *Frame, game: *library.Game) void {
         return;
     };
 
+    // Pick the refresh backend at queue time, not worker time, so a
+    // mid-sync settings toggle doesn't flip the in-flight job to a
+    // half-different code path.
+    const want_indexer = state.refresh_backend == .indexer;
+
+    // Force /full when this row was synced under an older mapping
+    // (or never indexer-synced at all). Mirrors F95Checker's
+    // `last_check_before("X.Y", game.last_check_version)` check. The
+    // worker honors `force_full` by skipping its unchanged-/full-skip
+    // optimization.
+    const parser_outdated = want_indexer and blk: {
+        const v = game.last_indexer_parser_version orelse break :blk true;
+        break :blk v != f95_indexer.PARSER_VERSION;
+    };
+
+    const slot = state.findEmptySyncSlot() orelse {
+        // Race-safety: hasFreeSyncSlot returned true above, but if
+        // something raced (it shouldn't on the UI thread) we'd hit
+        // null here. Treat as "queue it" rather than panic.
+        appendToSyncQueue(alloc, state, game.f95_thread_id) catch {};
+        alloc.free(covers_owned);
+        alloc.free(url_owned);
+        return;
+    };
+
     _ = job_mod.spawnJob(
         SyncPayload,
         syncWorker,
@@ -206,12 +298,17 @@ pub fn syncGame(frame: *Frame, game: *library.Game) void {
             .thread_id = game.f95_thread_id,
             .url = url_owned,
             .f95_svc = frame.f95_svc,
+            .indexer_client = if (want_indexer) frame.f95_indexer_client else null,
+            .prev_last_indexer_change = game.last_indexer_change,
+            .known_last_change = known_lc,
+            .prev_indexer_parser_version = game.last_indexer_parser_version,
+            .force_full = parser_outdated,
             .covers_dir = covers_owned,
             .io = frame.io,
             .progress_done = .init(0),
             .progress_total = .init(1),
         },
-        &state.pending_sync,
+        slot,
     ) catch {
         alloc.free(covers_owned);
         alloc.free(url_owned);
@@ -238,7 +335,31 @@ fn nowMs(io: std.Io) i64 {
     return std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
 }
 
+/// Should this game be skipped when the user clicks Refresh All /
+/// Check for updates? Match F95Checker's default refresh filter:
+/// completed / abandoned / orphaned games that have been synced at
+/// least once contribute essentially zero new information per refresh,
+/// so spending /fast quota on them is wasteful. Unsynced games (never
+/// scraped) always pass through; the first refresh has to learn their
+/// state from somewhere.
+fn shouldSkipInRefreshAll(g: *const library.Game) bool {
+    // Never-synced rows always run — we still need their first /full.
+    if (g.last_scraped_at == null) return false;
+    return switch (g.dev_status) {
+        .completed, .abandoned, .orphaned => true,
+        else => false,
+    };
+}
+
 fn syncWorker(job: *SyncJob) void {
+    // Route to the indexer pipeline when state picked `.indexer` at
+    // queue time. The two pipelines fill the same payload slots so
+    // `drainSync` doesn't have to care which one ran.
+    if (job.payload.indexer_client) |client| {
+        indexerWorker(job, client);
+        return;
+    }
+
     const p = &job.payload;
     // Coarse wall-clock timing so the log shows where the seconds go.
     // Phase boundaries: HTML fetch+parse → cover fetch → screenshots.
@@ -332,7 +453,7 @@ fn syncWorker(job: *SyncJob) void {
         // Cover work coming up — publish the planned step count.
         p.progress_total.store(2, .release);
         p.progress_done.store(1, .release);
-        dvui.refresh(job.win, @src(), null);
+        job_mod.refreshDebounced(job.win, @src());
         if (scraped.cover_url) |cu| {
             defer job.alloc.free(cu);
             if (job.cancelRequested()) {
@@ -346,7 +467,7 @@ fn syncWorker(job: *SyncJob) void {
                     log.info("sync tid={d} cover FAIL elapsed_ms={d}", .{ p.thread_id, nowMs(p.io) - t_c0 });
                 }
                 _ = p.progress_done.fetchAdd(1, .release);
-                dvui.refresh(job.win, @src(), null);
+                job_mod.refreshDebounced(job.win, @src());
             }
         }
     }
@@ -367,6 +488,199 @@ fn syncWorker(job: *SyncJob) void {
         .{ p.thread_id, nowMs(p.io) - t_start, t_after_scrape - t_start, nowMs(p.io) - t_before_images },
     );
     job.markDone();
+}
+
+/// F95Indexer pipeline. Hits `/fast` to learn the latest change ts;
+/// only pulls `/full/{id}?ts=<ts>` when that's newer than the persisted
+/// `last_indexer_change`. Fills the same payload slots the scraper
+/// path does, so `drainSync` is backend-agnostic.
+///
+/// Per-game chunk size 1 today; sync-all batching to chunk-of-10 is a
+/// follow-up optimization (see docs/superpowers/specs/2026-05-26-...).
+fn indexerWorker(job: *SyncJob, client: *f95_indexer.Client) void {
+    const p = &job.payload;
+    const t_start = nowMs(p.io);
+
+    // If the batch pre-flight already ran `/fast` for this game, skip
+    // the per-game call. Otherwise do a single-id `/fast` here (used
+    // for single-game Refresh on a detail row).
+    const last_change: i64 = if (p.known_last_change) |kt| kt else blk: {
+        const ids = [_]u64{p.thread_id};
+        const fast_results = client.fastCheck(&ids) catch |e| {
+            log.info("indexer tid={d} /fast FAIL err={s}", .{ p.thread_id, @errorName(e) });
+            p.err_name = @errorName(e);
+            job.markFailed();
+            return;
+        };
+        defer job.alloc.free(fast_results);
+
+        if (fast_results.len == 0) {
+            log.info("indexer tid={d} /fast returned empty", .{p.thread_id});
+            p.err_name = "indexer /fast returned no results";
+            job.markFailed();
+            return;
+        }
+        break :blk fast_results[0].last_change;
+    };
+    p.new_last_indexer_change = last_change;
+
+    // Skip `/full` when the indexer's last_change hasn't moved past
+    // our recorded value AND the row was synced under the current
+    // mapping version — F95Checker's same optimization, with the
+    // mapping-version migration check added so a parser bump
+    // propagates to every previously-synced row.
+    const need_full = blk: {
+        if (p.force_full) break :blk true;
+        const prev = p.prev_last_indexer_change orelse break :blk true;
+        if (last_change > prev) break :blk true;
+        // Last_change didn't move. If our mapping has evolved since
+        // this row was filled, treat it as needing /full anyway.
+        const v = p.prev_indexer_parser_version orelse break :blk true;
+        break :blk v != f95_indexer.PARSER_VERSION;
+    };
+    if (!need_full) {
+        log.info(
+            "indexer tid={d} unchanged last_change={d} elapsed_ms={d}",
+            .{ p.thread_id, last_change, nowMs(p.io) - t_start },
+        );
+        // Mark done so drainSync can persist new_last_indexer_change.
+        // All content slots stay null → applyScrape is a no-op for
+        // those fields.
+        job.markDone();
+        return;
+    }
+
+    var data = client.fullCheck(p.thread_id, last_change) catch |e| {
+        if (e == f95_indexer.Error.ThreadMissing) {
+            log.info("indexer tid={d} ORPHANED (/full 404)", .{p.thread_id});
+            p.orphaned = true;
+            job.markDone();
+            return;
+        }
+        log.info("indexer tid={d} /full FAIL err={s}", .{ p.thread_id, @errorName(e) });
+        p.err_name = @errorName(e);
+        job.markFailed();
+        return;
+    };
+    defer data.deinit();
+
+    // Strings in `data` are arena-owned; dupe into job.alloc which is
+    // what drainSync expects on the payload slots.
+    if (data.name) |n| p.name = job.alloc.dupe(u8, n) catch null;
+    if (data.version) |v| p.version = job.alloc.dupe(u8, v) catch null;
+    if (data.developer) |d| p.developer = job.alloc.dupe(u8, d) catch null;
+    if (data.description) |s| p.description_md = job.alloc.dupe(u8, s) catch null;
+    if (data.changelog) |s| p.changelog_md = job.alloc.dupe(u8, s) catch null;
+    if (data.score) |s| p.rating = s;
+    if (data.votes) |v| p.vote_count = v;
+    if (data.last_updated) |t| p.last_updated_at = t;
+    if (data.previews_urls.len > 0) {
+        p.screenshots = dupStringList(job.alloc, data.previews_urls) catch null;
+    }
+
+    // F95Checker int → f69 enum translations. These are what the user
+    // was missing vs the scraper path — the recipe-resolver, sort, and
+    // filter widgets all key off `engine` / `dev_status`, so leaving
+    // them null made indexer-synced rows feel "less synced".
+    if (data.type_int) |t| p.engine = f95_indexer.engineFromTypeInt(t);
+    if (data.status_int) |s| p.dev_status = f95_indexer.devStatusFromStatusInt(s);
+
+    // Tags: indexer returns numeric IDs (F95Checker `Tag` enum) plus
+    // a parallel `unknown_tags` slice for strings outside the table.
+    // The embedded tag_table translates IDs back to the human-readable
+    // labels f69 stores.
+    if (data.tag_ids.len > 0 or data.unknown_tags.len > 0) {
+        p.tags = f95_indexer.translateTags(job.alloc, data.tag_ids, data.unknown_tags) catch null;
+    }
+
+    // Reconstruct the "Key: Value" header block (Thread Updated /
+    // Developer / Version / Engine / Status / Censored / Language).
+    // Mines Censored + Language from the translated tags above, so it
+    // must run AFTER `p.tags` is populated. Indexer doesn't expose
+    // Release Date or OS — those fields are only in the verbatim OP
+    // body the scraper preserves; an indexer-only refresh on a row
+    // that's never been scraper-synced won't have them.
+    const tags_for_header: []const []const u8 = if (p.tags) |t| t else &.{};
+    if (f95_indexer.buildThreadInfoMd(job.alloc, &data, tags_for_header)) |info_md| {
+        if (info_md.len > 0) {
+            p.thread_info_md = info_md;
+        } else {
+            job.alloc.free(info_md);
+        }
+    } else |_| {}
+
+    // Downloads: indexer returns groups of (label, [(host, url), ...]).
+    // Encode into the same line format the scraper produces so
+    // `applyScrape` can stash them in `Game.download_links`, and build
+    // a markdown blob for the Downloads tab.
+    if (data.downloads.len > 0) {
+        p.download_links = f95_indexer.encodeDownloadLinks(job.alloc, data.downloads) catch null;
+        p.downloads_md = f95_indexer.buildDownloadsMd(job.alloc, data.downloads) catch null;
+    }
+
+    // Cover handling — same on-disk layout as the scraper path. Fetch
+    // only when the file is missing; URL-changed detection would need
+    // a Game.cover_url roundtrip we don't have here (drainSync does
+    // it post-hoc via applyScrape + image-queue enqueue).
+    const want_cover = data.image_url != null;
+    var cover_path_buf: [256]u8 = undefined;
+    const cover_present = if (want_cover) blk: {
+        const cp = std.fmt.bufPrint(&cover_path_buf, "{s}/{d}", .{ p.covers_dir, p.thread_id }) catch break :blk false;
+        break :blk fileExists(p.io, cp);
+    } else true;
+
+    if (want_cover and !cover_present) {
+        p.progress_total.store(2, .release);
+        p.progress_done.store(1, .release);
+        job_mod.refreshDebounced(job.win, @src());
+        if (data.image_url) |url| {
+            if (!job.cancelRequested()) {
+                const t_c0 = nowMs(p.io);
+                if (fetchAndWriteCover(job, url)) {
+                    p.cover_updated = true;
+                    log.info("indexer tid={d} cover_ms={d}", .{ p.thread_id, nowMs(p.io) - t_c0 });
+                } else |_| {
+                    log.info("indexer tid={d} cover FAIL", .{p.thread_id});
+                }
+                _ = p.progress_done.fetchAdd(1, .release);
+                job_mod.refreshDebounced(job.win, @src());
+            }
+        }
+    }
+
+    if (job.cancelRequested()) {
+        log.info("indexer tid={d} TOTAL_ms={d} CANCELLED", .{ p.thread_id, nowMs(p.io) - t_start });
+        p.err_name = "Cancelled";
+        job.markFailed();
+        return;
+    }
+
+    // Successful /full ran end-to-end — stamp the mapping version so
+    // a future refresh can detect parser drift and force /full again
+    // when needed. Mirrors F95Checker setting `game.last_check_version
+    // = globals.version` after every successful full_check.
+    p.new_indexer_parser_version = f95_indexer.PARSER_VERSION;
+    log.info("indexer tid={d} TOTAL_ms={d}", .{ p.thread_id, nowMs(p.io) - t_start });
+    job.markDone();
+}
+
+/// Duplicate a list of strings into `alloc`-owned storage. Used by the
+/// indexer worker to move tags / previews_urls off the arena that
+/// `ThreadData.deinit()` will free.
+fn dupStringList(
+    alloc: std.mem.Allocator,
+    src: []const []const u8,
+) ![]const []const u8 {
+    var out = try alloc.alloc([]const u8, src.len);
+    var i: usize = 0;
+    errdefer {
+        for (out[0..i]) |s| alloc.free(s);
+        alloc.free(out);
+    }
+    while (i < src.len) : (i += 1) {
+        out[i] = try alloc.dupe(u8, src[i]);
+    }
+    return out;
 }
 
 /// Encode a `DownloadLink` slice into the persisted line format —
@@ -390,10 +704,20 @@ fn encodeDownloadLinks(alloc: std.mem.Allocator, links: []const f95.DownloadLink
 
 /// Worker-thread helper: fetch image bytes via the same rate-limited
 /// HTTP client and atomically replace the on-disk cover file.
+///
+/// The decode + JPEG-encode work is gated by `image_cpu_sem` so
+/// raising the parallel-worker caps to (say) 8+8 doesn't run 16
+/// simultaneous AVIF decodes — which would saturate every CPU core
+/// and freeze the UI. Network fetch is OUTSIDE the gate so I/O still
+/// parallelizes freely.
 fn fetchAndWriteCover(job: *SyncJob, cover_url: []const u8) !void {
     const p = &job.payload;
     const raw = try p.f95_svc.client.getImage(cover_url);
     defer job.alloc.free(raw);
+
+    acquireImageCpuSlot();
+    defer releaseImageCpuSlot();
+
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("cover transcode failed ({s}): {s}", .{ @errorName(e), cover_url });
         return e;
@@ -419,11 +743,17 @@ fn writeAtomic(io: std.Io, path: []const u8, bytes: []const u8) !void {
 }
 
 /// Fetch a single screenshot to `<covers_dir>/<tid>.s<n>`. Same atomic
-/// write pattern as the cover.
+/// write pattern as the cover; same CPU-semaphore gating around the
+/// decode+encode work so 8 parallel image workers can't run 8
+/// simultaneous AVIF decodes.
 fn fetchAndWriteScreenshot(job: *SyncJob, url: []const u8, idx: usize) !void {
     const p = &job.payload;
     const raw = try p.f95_svc.client.getImage(url);
     defer job.alloc.free(raw);
+
+    acquireImageCpuSlot();
+    defer releaseImageCpuSlot();
+
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("screenshot {d} transcode failed ({s}): {s}", .{ idx, @errorName(e), url });
         return e;
@@ -641,37 +971,126 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 /// must be called when the detail page closes or the user navigates
 /// to a different game so we don't leak the buffer.
 pub fn slideBytes(frame: *Frame, thread_id: u64, idx: usize) ?[]const u8 {
-    const state = frame.state;
-    const same = state.slide_cache_thread == thread_id and state.slide_cache_idx == idx;
-    if (same) {
-        return state.slide_cache_bytes;
-    }
-    // Different slide — drop old buffer.
-    if (state.slide_cache_bytes) |old| frame.lib.alloc.free(old);
-    state.slide_cache_bytes = null;
-    state.slide_cache_thread = thread_id;
-    state.slide_cache_idx = idx;
-
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ frame.info.covers_dir, thread_id, idx }) catch return null;
-    state.slide_cache_bytes = std.Io.Dir.cwd().readFileAlloc(
-        frame.io,
-        path,
-        frame.lib.alloc,
-        .limited(16 * 1024 * 1024),
-    ) catch null;
-    return state.slide_cache_bytes;
+    const path = std.fmt.bufPrint(
+        &path_buf,
+        "{s}/{d}.s{d}",
+        .{ frame.info.covers_dir, thread_id, idx },
+    ) catch return null;
+    return slideSlotBytes(frame, thread_id, idx, path);
 }
 
-/// Drop the slide cache. Call on detail-page exit, on Sync (the bytes
-/// just got rewritten), and when navigating to a different game.
-pub fn freeSlideCache(state: *State, alloc: std.mem.Allocator) void {
-    if (state.slide_cache_bytes) |b| {
-        alloc.free(b);
-        state.slide_cache_bytes = null;
+/// Shared slot lookup for the multi-slot slide cache. `slot_idx` is
+/// the index into `state.slide_cache_bytes`: 0 = full-resolution cover,
+/// 1..N = screenshots. `path` is the on-disk file the slot should
+/// hold. Thread-switch detection lives here, so both `slideBytes` and
+/// `coverFullBytes` share the same lifetime semantics.
+///
+/// On a slot miss the file read is dispatched to a detached worker
+/// (`slide_load_job` slot). The caller sees `null` for this frame;
+/// the bytes land via `drainSlideLoads` on a subsequent frame. One
+/// in-flight job at a time — fine for sequential carousel use.
+fn slideSlotBytes(frame: *Frame, thread_id: u64, slot_idx: usize, path: []const u8) ?[]const u8 {
+    const state = frame.state;
+    if (state.slide_cache_thread != thread_id) {
+        freeSlideCache(state, frame.lib.alloc);
+        state.slide_cache_thread = thread_id;
     }
+    if (slot_idx >= state_mod.SLIDE_CACHE_SLOTS) return null;
+    if (state.slide_cache_bytes[slot_idx]) |b| return b;
+    // Slot empty — try to put a loader in flight. If one is already
+    // running (possibly for a different slot, since we serialise),
+    // the caller renders a placeholder this frame and tries again
+    // next frame.
+    if (state.slide_load_job == null and path.len <= 256) {
+        spawnSlideLoad(frame, thread_id, slot_idx, path);
+    }
+    return null;
+}
+
+fn slideLoadWorker(job: *owned_types.SlideLoadJob) void {
+    const p = &job.payload;
+    if (job.cancelRequested()) {
+        p.err_name = "cancelled";
+        job.markFailed();
+        return;
+    }
+    const path = p.path[0..p.path_len];
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        p.io,
+        path,
+        p.bytes_alloc,
+        .limited(16 * 1024 * 1024),
+    ) catch |e| {
+        p.err_name = @errorName(e);
+        job.markFailed();
+        return;
+    };
+    p.bytes = bytes;
+    job.markDone();
+}
+
+fn spawnSlideLoad(frame: *Frame, thread_id: u64, slot_idx: usize, path: []const u8) void {
+    std.debug.assert(path.len <= 256);
+    var payload: owned_types.SlideLoadPayload = .{
+        .io = frame.io,
+        .bytes_alloc = frame.lib.alloc,
+        .slot_idx = slot_idx,
+        .thread_id = thread_id,
+        .path_len = path.len,
+    };
+    @memcpy(payload.path[0..path.len], path);
+    _ = job_mod.spawnJob(
+        owned_types.SlideLoadPayload,
+        slideLoadWorker,
+        frame.lib.alloc,
+        frame.win,
+        payload,
+        &frame.state.slide_load_job,
+    ) catch return;
+}
+
+/// Reap the single in-flight slide loader. On `.done`, transfer
+/// bytes into the matching cache slot (if the game hasn't switched
+/// underneath us — otherwise drop them). On `.failed`, just clear
+/// the slot. Caller-frame ownership: `frame.lib.alloc` matches the
+/// allocator the worker used.
+pub fn drainSlideLoads(frame: *Frame) void {
+    const state = frame.state;
+    const job = state.slide_load_job orelse return;
+    switch (job.phaseGet()) {
+        .pending => return,
+        .done => {
+            const same_game = state.slide_cache_thread == job.payload.thread_id;
+            const idx = job.payload.slot_idx;
+            if (same_game and idx < state_mod.SLIDE_CACHE_SLOTS and
+                state.slide_cache_bytes[idx] == null)
+            {
+                state.slide_cache_bytes[idx] = job.payload.bytes;
+                job.payload.bytes = null;
+            } else if (job.payload.bytes) |b| {
+                frame.lib.alloc.free(b);
+                job.payload.bytes = null;
+            }
+        },
+        .failed => {},
+    }
+    state.slide_load_job = null;
+    job.alloc.destroy(job);
+}
+
+/// Drop every slot of the slide cache. Call on detail-page exit, on
+/// Sync (the bytes on disk just got rewritten), and when navigating
+/// to a different game. The in-flight loader (if any) is asked to
+/// cancel; `drainSlideLoads` reaps it next frame and discards any
+/// bytes whose `thread_id` no longer matches.
+pub fn freeSlideCache(state: *State, alloc: std.mem.Allocator) void {
+    for (&state.slide_cache_bytes) |*slot| {
+        if (slot.*) |b| alloc.free(b);
+        slot.* = null;
+    }
+    if (state.slide_load_job) |j| j.cancel.store(true, .release);
     state.slide_cache_thread = null;
-    state.slide_cache_idx = 0;
 }
 
 /// Return cached bytes for the thumbnail-strip slot at `idx` for the
@@ -728,29 +1147,31 @@ pub fn freeThumbCache(state: *State, alloc: std.mem.Allocator) void {
     state.thumb_cache_thread = null;
 }
 
-/// Called once per frame. If a worker has finished, applies its result
-/// to the matching game row, persists, frees the job, clears
-/// `state.pending_sync`. No-op while the worker is still pending.
+/// Called once per frame. Iterates every parallel sync slot; for each
+/// slot that holds a worker, drains its terminal phase and either
+/// applies the result or surfaces the error. After all slots are
+/// drained, refills empty ones from the sync queue (so a sync-all
+/// batch keeps `MAX_PARALLEL_SYNC` workers in flight until exhausted).
 pub fn drainSync(frame: *Frame) void {
     const state = frame.state;
-    // Snapshot the slot before draining so we can do the post-drain
-    // cache invalidation + queue advance independent of the carrier
-    // (drainBackgroundJob destroys it via the .done/.failed handler).
-    const slot_was_set = state.pending_sync != null;
-    job_mod.drainBackgroundJob(
-        SyncPayload,
-        onSyncDone,
-        onSyncFailed,
-        frame,
-        &state.pending_sync,
-    );
-    if (!slot_was_set) return;
-    if (state.pending_sync != null) return; // worker still pending — no-op
-    // Worker reached terminal phase and the carrier is freed. Clear
-    // the active-sync banner and advance the queue if a batch is in
-    // flight. (cancelSync nulls sync_queue, so a cancelled run won't
-    // advance — matches the previous behaviour.)
-    state.active_sync_name.clear();
+    var any_drained: bool = false;
+    for (&state.active_syncs) |*slot| {
+        if (slot.* == null) continue;
+        // Snapshot before drain so we know to do post-drain bookkeeping
+        // for THIS slot even after drainBackgroundJob nulls it.
+        any_drained = true;
+        job_mod.drainBackgroundJob(
+            SyncPayload,
+            onSyncDone,
+            onSyncFailed,
+            frame,
+            slot,
+        );
+    }
+    if (!any_drained) return;
+    // Clear the active-sync banner once nothing's running. Single-game
+    // mid-flight ⇒ banner stays. Batch refill happens unconditionally.
+    if (!state.anyActiveSync()) state.active_sync_name.clear();
     if (state.sync_queue != null) advanceSyncQueue(frame);
 }
 
@@ -857,6 +1278,8 @@ fn onSyncDone(frame: *Frame, job: *SyncJob) void {
         frame.lib.applyScrape(game, .{
             .dev_status = .orphaned,
             .last_scraped_at = now_s,
+            .last_indexer_change = p.new_last_indexer_change,
+            .last_indexer_parser_version = p.new_indexer_parser_version,
         }) catch |e| {
             state.sync_status = .err;
             var emsg: [80]u8 = undefined;
@@ -888,6 +1311,18 @@ fn onSyncDone(frame: *Frame, job: *SyncJob) void {
         null;
     defer if (old_version_snapshot) |s| frame.lib.alloc.free(s);
 
+    // Indexer-mode synthesized `thread_info_md` is intentionally lean
+    // (no Release Date / OS / Developer links — those only exist in
+    // the verbatim OP body the scraper preserves). If this row was
+    // ever scraper-synced it already has the richer block, so don't
+    // clobber it with the synthesized version. The job came from the
+    // indexer pipeline iff `indexer_client != null` at queue time.
+    const indexer_origin = p.indexer_client != null;
+    const new_info_len: usize = if (p.thread_info_md) |s| s.len else 0;
+    const existing_info_len: usize = if (game.thread_info_md) |s| s.len else 0;
+    const keep_existing_info = indexer_origin and existing_info_len > new_info_len;
+    const apply_info_md: ?[]u8 = if (keep_existing_info) null else p.thread_info_md;
+
     frame.lib.applyScrape(game, .{
         .name = p.name,
         .version = p.version,
@@ -897,7 +1332,7 @@ fn onSyncDone(frame: *Frame, job: *SyncJob) void {
         .engine = p.engine,
         .dev_status = p.dev_status,
         .last_updated_at = p.last_updated_at,
-        .thread_info_md = p.thread_info_md,
+        .thread_info_md = apply_info_md,
         .censored = p.censored,
         .tags = p.tags,
         .screenshots = p.screenshots,
@@ -907,6 +1342,7 @@ fn onSyncDone(frame: *Frame, job: *SyncJob) void {
         .download_links = p.download_links,
         .downloads_md = p.downloads_md,
         .last_scraped_at = now_s,
+        .last_indexer_change = p.new_last_indexer_change,
     }) catch |e| {
         state.sync_status = .err;
         var emsg: [80]u8 = undefined;
@@ -999,7 +1435,11 @@ fn onSyncDone(frame: *Frame, job: *SyncJob) void {
 /// the first sync. drainSync auto-pops the next when each completes.
 pub fn startSyncAll(frame: *Frame) void {
     const state = frame.state;
-    if (state.pending_sync != null or state.sync_queue != null) return;
+    if (state.anyActiveSync() or state.sync_queue != null) return;
+    if (state.pending_fast_check != null) return;
+    // Clear the cancel-cascade suspend so this fresh batch can queue
+    // screenshot fetches normally.
+    state.image_fetch_suspended = false;
     log.info("startSyncAll: queueing all {d} games", .{frame.games.len});
     // Fresh batch starts with an empty recap — stale entries from a
     // previous run would mislead the end-of-batch popup.
@@ -1008,12 +1448,20 @@ pub fn startSyncAll(frame: *Frame) void {
     var ids: std.ArrayList(u64) = .empty;
     defer ids.deinit(frame.lib.alloc);
 
-    // Queue every game in the library — synced rows get re-scraped so
-    // rating / version / changelog / downloads stay current. The user
-    // can still hit Cancel mid-batch via the per-game queue position.
+    // Filter out terminal-state games so refresh-all isn't dominated by
+    // pinging the indexer about games that effectively never change.
+    // Mirrors F95Checker's default: Completed / Abandoned threads are
+    // skipped, and orphaned (thread gone from F95) makes no sense to
+    // check. Unsynced games always pass through. This is the main
+    // reason F95Checker's "Refresh!" runs in seconds while our naive
+    // "check everything" walked the whole library.
     for (frame.games) |*g| {
+        if (shouldSkipInRefreshAll(g)) continue;
         ids.append(frame.lib.alloc, g.f95_thread_id) catch return;
     }
+    log.info("startSyncAll: filtered {d}/{d} games (skipped completed/abandoned/orphaned)", .{
+        ids.items.len, frame.games.len,
+    });
 
     if (ids.items.len == 0) {
         state.sync_status = .ok;
@@ -1022,11 +1470,19 @@ pub fn startSyncAll(frame: *Frame) void {
     }
 
     const owned = ids.toOwnedSlice(frame.lib.alloc) catch return;
+
+    // Indexer mode: send through the batched `/fast` pre-flight so we
+    // only run `/full` against games that actually changed.
+    // Scraper mode: every game gets a full HTML scrape, so just queue
+    // them all and let the parallel slot pool grind through.
+    if (state.refresh_backend == .indexer) {
+        startSyncBatchIndexer(frame, owned);
+        return;
+    }
     state.sync_queue = owned;
     state.sync_queue_idx = 0;
     state.sync_queue_started = 0;
     state.sync_queue_total = @intCast(owned.len);
-
     advanceSyncQueue(frame);
 }
 
@@ -1040,11 +1496,13 @@ pub fn startSyncAllUnsynced(frame: *Frame) void {
     // visible in the log instead of silently doing nothing.
     log.info("startSyncAllUnsynced: invoked (games_len={d})", .{frame.games.len});
 
-    if (state.pending_sync != null or state.sync_queue != null) {
+    if (state.anyActiveSync() or state.sync_queue != null or state.pending_fast_check != null) {
         log.info("startSyncAllUnsynced: refused — a sync is already running", .{});
         state.pushToast(.info, "A sync is already running — cancel it first.");
         return;
     }
+    // Fresh batch — let new syncs enqueue images again.
+    state.image_fetch_suspended = false;
     clearSyncRecap(frame);
 
     var ids: std.ArrayList(u64) = .empty;
@@ -1074,11 +1532,15 @@ pub fn startSyncAllUnsynced(frame: *Frame) void {
     log.info("startSyncAllUnsynced: queueing {d} unsynced game(s)", .{ids.items.len});
 
     const owned = ids.toOwnedSlice(frame.lib.alloc) catch return;
+
+    if (state.refresh_backend == .indexer) {
+        startSyncBatchIndexer(frame, owned);
+        return;
+    }
     state.sync_queue = owned;
     state.sync_queue_idx = 0;
     state.sync_queue_started = 0;
     state.sync_queue_total = @intCast(owned.len);
-
     advanceSyncQueue(frame);
 }
 
@@ -1130,9 +1592,13 @@ fn appendToSyncQueue(alloc: std.mem.Allocator, state: *State, thread_id: u64) !v
 /// cleanup will run when the worker reports back.
 pub fn cancelSync(frame: *Frame) void {
     const state = frame.state;
-    if (state.pending_sync) |j| {
-        j.cancel.store(true, .release);
-        log.info("cancelSync: flag set on tid={d}", .{j.payload.thread_id});
+    // Flag cancel on every active sync slot. drainSync will reap them
+    // in the next few frames as each worker checks `job.cancel`.
+    for (state.active_syncs) |maybe_slot| {
+        if (maybe_slot) |j| {
+            j.cancel.store(true, .release);
+            log.info("cancelSync: flag set on tid={d}", .{j.payload.thread_id});
+        }
     }
     if (state.sync_queue) |q| {
         frame.lib.alloc.free(q);
@@ -1141,28 +1607,79 @@ pub fn cancelSync(frame: *Frame) void {
         state.sync_queue_started = 0;
         state.sync_queue_total = 0;
     }
+    if (state.sync_queue_known_last_change) |arr| {
+        frame.lib.alloc.free(arr);
+        state.sync_queue_known_last_change = null;
+    }
+    // Cancel the fast-check pre-flight if it's still running so it
+    // doesn't carry on after cancellation and re-install a queue.
+    if (state.pending_fast_check) |j| j.cancel.store(true, .release);
     // Phase-2 piggybacks: cancelling a sync drops queued image work
-    // too. `drainImageQueue` reaps the active job, clears the queue,
+    // too. `drainImageQueue` reaps active jobs, clears the queue,
     // and resets `image_cancel` to false once everything's torn down.
+    // The persistent `image_fetch_suspended` flag prevents any in-flight
+    // sync that finishes AFTER cancel from re-enqueueing screenshots.
     state.image_cancel.store(true, .release);
+    state.image_fetch_suspended = true;
 }
 
 /// Cancel ONLY the phase-2 image fetch queue. Leaves any in-flight
 /// sync alone — used by the dedicated "Cancel images" banner button
-/// that shows after phase-1 has wrapped up.
+/// that shows after phase-1 has wrapped up. Sets the same suspend
+/// flag so a sync that hasn't finished yet won't re-queue screenshots
+/// when it later commits.
 pub fn cancelImageQueue(frame: *Frame) void {
     frame.state.image_cancel.store(true, .release);
-    log.info("cancelImageQueue: flag set", .{});
+    frame.state.image_fetch_suspended = true;
+    log.info("cancelImageQueue: flag set, image_fetch_suspended=true", .{});
 }
 
-/// Pop the next thread_id off the queue and spawn its SyncJob. Frees
-/// the queue when exhausted.
-
+/// Refill every empty sync slot from the queue. Called once per frame
+/// by `drainSync` (after a worker completes) and at batch start by
+/// `startSyncAll` / `startSyncAllUnsynced`.
+///
+/// Pops as many thread_ids as there are free slots, spawning each via
+/// `syncGame`. When the queue runs dry AND every slot is idle, the
+/// batch is declared complete and the recap popup may show.
 pub fn advanceSyncQueue(frame: *Frame) void {
     const state = frame.state;
     const queue = state.sync_queue orelse return;
-    if (state.sync_queue_idx >= queue.len) {
+
+    // Spawn workers into every free slot until either the queue is
+    // exhausted or all `MAX_PARALLEL_SYNC` slots are full.
+    while (state.hasFreeSyncSlot() and state.sync_queue_idx < queue.len) {
+        const idx = state.sync_queue_idx;
+        const tid = queue[idx];
+        // `null` ⇒ no batch pre-flight ran for THIS slot (either we're
+        // in scraper mode, or this slot is an ad-hoc append after the
+        // batch was queued). The worker then handles `/fast` itself.
+        const known_lc: ?i64 = blk: {
+            const arr = state.sync_queue_known_last_change orelse break :blk null;
+            if (idx >= arr.len) break :blk null;
+            break :blk arr[idx];
+        };
+        state.sync_queue_idx += 1;
+        state.sync_queue_started += 1;
+
+        var target: ?*library.Game = null;
+        for (frame.games) |*gg| {
+            if (gg.f95_thread_id == tid) {
+                target = gg;
+                break;
+            }
+        }
+        const game = target orelse continue; // disappeared — skip
+        spawnSyncJob(frame, game, known_lc);
+    }
+
+    // Queue exhausted? Only declare "complete" once every in-flight
+    // slot has also drained — workers can outlive the queue.
+    if (state.sync_queue_idx >= queue.len and !state.anyActiveSync()) {
         frame.lib.alloc.free(queue);
+        if (state.sync_queue_known_last_change) |arr| {
+            frame.lib.alloc.free(arr);
+            state.sync_queue_known_last_change = null;
+        }
         state.sync_queue = null;
         state.sync_queue_idx = 0;
         var msg_buf: [80]u8 = undefined;
@@ -1171,31 +1688,10 @@ pub fn advanceSyncQueue(frame: *Frame) void {
         state.setSyncMsg(m);
         state.sync_queue_total = 0;
         state.sync_queue_started = 0;
-        // Surface the end-of-batch popup if any games actually
-        // changed versions. Empty recap stays hidden — no point
-        // showing an empty list.
         if (syncRecapEntries(state).len > 0) {
             state.sync_recap_show = true;
         }
-        return;
     }
-    const tid = queue[state.sync_queue_idx];
-    state.sync_queue_idx += 1;
-    state.sync_queue_started += 1;
-
-    var target: ?*library.Game = null;
-    for (frame.games) |*gg| {
-        if (gg.f95_thread_id == tid) {
-            target = gg;
-            break;
-        }
-    }
-    const game = target orelse {
-        // Game disappeared from the slice — skip and try the next.
-        advanceSyncQueue(frame);
-        return;
-    };
-    syncGame(frame, game);
 }
 
 // ============================================================
@@ -1243,14 +1739,14 @@ fn imageWorker(job: *ImageJob) void {
             fail += 1;
             _ = p.aggregate_done.fetchAdd(1, .release);
             _ = p.progress_done.fetchAdd(1, .release);
-            dvui.refresh(job.win, @src(), null);
+            job_mod.refreshDebounced(job.win, @src());
             continue;
         };
         if (fileExists(p.io, path)) {
             skipped += 1;
             _ = p.aggregate_done.fetchAdd(1, .release);
             _ = p.progress_done.fetchAdd(1, .release);
-            dvui.refresh(job.win, @src(), null);
+            job_mod.refreshDebounced(job.win, @src());
             continue;
         }
 
@@ -1266,14 +1762,14 @@ fn imageWorker(job: *ImageJob) void {
             fail += 1;
             _ = p.aggregate_done.fetchAdd(1, .release);
             _ = p.progress_done.fetchAdd(1, .release);
-            dvui.refresh(job.win, @src(), null);
+            job_mod.refreshDebounced(job.win, @src());
             continue;
         };
         log.info("imgworker tid={d} shot[{d}]_ms={d}", .{ p.thread_id, idx + 1, nowMs(p.io) - t_s0 });
         ok += 1;
         _ = p.aggregate_done.fetchAdd(1, .release);
         _ = p.progress_done.fetchAdd(1, .release);
-        dvui.refresh(job.win, @src(), null);
+        job_mod.refreshDebounced(job.win, @src());
     }
 
     job.markDone();
@@ -1286,6 +1782,10 @@ fn fetchAndWriteScreenshotForImage(job: *ImageJob, url: []const u8, idx: usize) 
     const p = &job.payload;
     const raw = try p.f95_svc.client.getImage(url);
     defer job.alloc.free(raw);
+
+    acquireImageCpuSlot();
+    defer releaseImageCpuSlot();
+
     const ready = prepareImageForDisk(job.alloc, raw) catch |e| {
         std.log.scoped(.ui_actions).warn("phase2 screenshot {d} transcode failed ({s}): {s}", .{ idx, @errorName(e), url });
         return e;
@@ -1309,13 +1809,28 @@ fn fetchAndWriteScreenshotForImage(job: *ImageJob, url: []const u8, idx: usize) 
 pub fn enqueueImageFetch(frame: *Frame, thread_id: u64, planned_urls: usize) void {
     const state = frame.state;
     if (planned_urls == 0) return;
+    // Honor the cancel-cascade flag — a sync that finishes after the
+    // user clicked Cancel must NOT re-fill the image queue, otherwise
+    // canceling would just postpone the work by one drain cycle.
+    if (state.image_fetch_suspended) return;
 
-    // Dedup: scan pending range. Cheap — sync-all batches are typically
-    // a few hundred items max and most have ~5 screenshots.
+    // Dedup against the PENDING queue.
     if (state.image_queue) |q| {
         var i: usize = state.image_queue_head;
         while (i < state.image_queue_len) : (i += 1) {
             if (q[i] == thread_id) return;
+        }
+    }
+    // Dedup against the ACTIVELY-RUNNING image slots. Without this,
+    // a re-sync of game X while X's image worker was still mid-fetch
+    // would spawn a SECOND worker for X. Both would iterate the same
+    // url list and write to the same `<tid>.s<N>` paths, interleaving
+    // each other's atomic-renames and producing screenshot files
+    // whose contents don't match their thumb siblings (and vice
+    // versa). dedup here is O(MAX_PARALLEL_IMAGE) — trivially cheap.
+    for (state.active_images) |maybe_slot| {
+        if (maybe_slot) |j| {
+            if (j.payload.thread_id == thread_id) return;
         }
     }
 
@@ -1339,19 +1854,19 @@ pub fn enqueueImageFetch(frame: *Frame, thread_id: u64, planned_urls: usize) voi
     log.info("enqueueImageFetch tid={d} urls={d} queue_len={d} total={d}", .{ thread_id, planned_urls, state.image_queue_len - state.image_queue_head, state.image_total });
 }
 
-/// Per-frame: spawn the next image job when idle, and tear down a
-/// completed one. Mirrors `drainSync`'s shape. Safe to call every
-/// frame even when no work is pending.
+/// Per-frame: reap every completed image slot, then refill all empty
+/// slots from the queue. Runs up to `MAX_PARALLEL_IMAGE` workers in
+/// parallel — covers + screenshots from `attachments.f95zone.to` (a
+/// Cloudflare CDN that bypasses the forum rate limit) can saturate
+/// the slot pool without triggering 429s.
 pub fn drainImageQueue(frame: *Frame) void {
     const state = frame.state;
 
-    // Reap a finished job first so we can chain into the next.
-    if (state.image_active) |job| {
-        if (job.phaseGet() != .done) {
-            // Still running — wait for next frame.
-            return;
-        }
-        // Worker is exiting — already detached at spawn so nothing to join.
+    // Reap every finished slot. The worker may still be running in
+    // some slots — leave those untouched and continue with the rest.
+    for (&state.active_images) |*slot| {
+        const job = slot.* orelse continue;
+        if (job.phaseGet() != .done) continue;
         const p = &job.payload;
         log.info("drainImageQueue: tid={d} job done", .{p.thread_id});
 
@@ -1372,12 +1887,19 @@ pub fn drainImageQueue(frame: *Frame) void {
         if (p.name.len > 0) job.alloc.free(p.name);
         job.alloc.free(p.covers_dir);
         job.alloc.destroy(job);
-        state.image_active = null;
-        state.image_active_name.clear();
+        slot.* = null;
     }
+    if (!state.anyActiveImage()) state.image_active_name.clear();
 
-    // If the user cancelled, drop the rest of the queue NOW (after the
-    // active job has been reaped) and reset counters/cancel flag.
+    // If the user cancelled, drop the rest of the queue NOW (after
+    // each slot's active job has been reaped). But DO NOT reset
+    // `image_cancel` until every active worker has actually exited —
+    // workers read `p.cancel_ptr` (pointing at `state.image_cancel`)
+    // between fetches, so resetting it early would unstick the
+    // in-flight workers and they'd happily finish downloading the
+    // remaining URLs (the old behavior — cancel button felt
+    // unresponsive because the workers kept fetching for seconds
+    // after the click).
     if (state.image_cancel.load(.acquire)) {
         if (state.image_queue) |q| {
             frame.lib.alloc.free(q);
@@ -1386,18 +1908,26 @@ pub fn drainImageQueue(frame: *Frame) void {
         }
         state.image_queue_head = 0;
         state.image_queue_len = 0;
+        if (state.anyActiveImage()) {
+            // Workers still mid-fetch — keep the flag set so each
+            // one's loop iteration sees `cancel=true` and breaks. We
+            // come back next frame.
+            return;
+        }
+        // All workers gone — fully clear cancel state.
         state.image_total = 0;
         state.image_done.store(0, .release);
         state.image_cancel.store(false, .release);
-        log.info("drainImageQueue: cancelled, queue cleared", .{});
+        log.info("drainImageQueue: cancelled + drained", .{});
         return;
     }
 
-    // Pop next pending tid.
-    if (state.image_queue == null) return;
+    if (state.image_queue == null) {
+        if (!state.anyActiveImage()) state.image_total = 0;
+        return;
+    }
     if (state.image_queue_head >= state.image_queue_len) {
-        // Drained. Free buffer, reset counters so the banner row
-        // disappears on the next frame.
+        if (state.anyActiveImage()) return; // last in-flight workers still running
         frame.lib.alloc.free(state.image_queue.?);
         state.image_queue = null;
         state.image_queue_head = 0;
@@ -1409,6 +1939,18 @@ pub fn drainImageQueue(frame: *Frame) void {
         return;
     }
 
+    // Refill every empty slot from the queue.
+    while (state.hasFreeImageSlot() and state.image_queue_head < state.image_queue_len) {
+        if (!spawnNextImageJob(frame)) return;
+    }
+}
+
+/// Pop one tid from the queue and spawn an image worker into the
+/// first free slot. Returns `true` on success, `false` if anything
+/// went wrong (caller should stop trying for this frame). Idempotent
+/// on alloc-failure: any partial state is rolled back.
+fn spawnNextImageJob(frame: *Frame) bool {
+    const state = frame.state;
     const tid = state.image_queue.?[state.image_queue_head];
     state.image_queue_head += 1;
 
@@ -1422,25 +1964,22 @@ pub fn drainImageQueue(frame: *Frame) void {
     }
     const game = target orelse {
         log.info("drainImageQueue: tid={d} not in games list, skipping", .{tid});
-        return;
+        return true; // not a fatal error — try the next id next iteration
     };
 
     const urls_src = game.screenshots;
     if (urls_src.len == 0) {
         // No screenshots advertised — nothing to fetch. Skip cleanly;
         // we already charged `image_total` for this tid at enqueue
-        // time. (We over-charged; subtract back so the bar stays
-        // honest. enqueueImageFetch returned early when urls==0, so
-        // this only triggers if the DB lost shots between enqueue and
-        // drain — exotic but worth handling.)
+        // time.
         log.info("drainImageQueue: tid={d} has 0 screenshots, skipping", .{tid});
-        return;
+        return true;
     }
 
     // Spawn the worker via the Job(P) primitive. URLs + name +
     // covers_dir all live on lib.alloc; cancel + aggregate_done point
-    // into shared state slots so a Cancel click reaches both the
-    // active worker and any queued tids.
+    // into shared state slots so a Cancel click reaches every parallel
+    // worker AND any queued tids.
     var alloc_failed = false;
     const urls_dup = blk: {
         const outer = frame.lib.alloc.alloc([]const u8, urls_src.len) catch {
@@ -1465,7 +2004,7 @@ pub fn drainImageQueue(frame: *Frame) void {
     };
     if (alloc_failed) {
         log.warn("drainImageQueue: URL dup failed for tid={d}", .{tid});
-        return;
+        return false;
     }
     const name_dup = frame.lib.alloc.dupe(u8, game.name) catch "";
     const covers_dup = frame.lib.alloc.dupe(u8, frame.info.covers_dir) catch {
@@ -1473,7 +2012,16 @@ pub fn drainImageQueue(frame: *Frame) void {
         frame.lib.alloc.free(@constCast(urls_dup));
         if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
         log.warn("drainImageQueue: covers_dir dup failed for tid={d}", .{tid});
-        return;
+        return false;
+    };
+
+    const slot = state.findEmptyImageSlot() orelse {
+        // Should not happen — caller already verified `hasFreeImageSlot`.
+        for (urls_dup) |u| frame.lib.alloc.free(u);
+        frame.lib.alloc.free(@constCast(urls_dup));
+        if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
+        frame.lib.alloc.free(covers_dup);
+        return false;
     };
 
     _ = job_mod.spawnJob(
@@ -1492,7 +2040,7 @@ pub fn drainImageQueue(frame: *Frame) void {
             .cancel_ptr = &state.image_cancel,
             .aggregate_done = &state.image_done,
         },
-        &state.image_active,
+        slot,
     ) catch {
         log.warn("drainImageQueue: spawn failed for tid={d}", .{tid});
         // Roll back the payload-owned allocs so we don't leak.
@@ -1500,11 +2048,11 @@ pub fn drainImageQueue(frame: *Frame) void {
         frame.lib.alloc.free(@constCast(urls_dup));
         if (name_dup.len > 0) frame.lib.alloc.free(name_dup);
         frame.lib.alloc.free(covers_dup);
-        state.image_active_name.clear();
-        return;
+        return false;
     };
     state.setCurrentImageName(name_dup);
     log.info("drainImageQueue: spawned tid={d} urls={d}", .{ tid, urls_dup.len });
+    return true;
 }
 
 // ============================================================
@@ -1568,27 +2116,13 @@ pub fn coverBytes(frame: *Frame, thread_id: u64) ?[]const u8 {
 
 /// Read full-size cover bytes for the detail-page carousel slide 0.
 /// Bypasses the thumb-bound `cover_cache`. Caller does NOT free —
-/// the bytes are managed via `slide_cache_bytes` (single-slot,
-/// reused across frames while the user stays on slide 0).
+/// the bytes are managed via the multi-slot `slide_cache_bytes` array
+/// (slot 0). Reused across frames while the carousel stays on this
+/// game; freed wholesale on game switch by `freeSlideCache`.
 pub fn coverFullBytes(frame: *Frame, thread_id: u64) ?[]const u8 {
-    const state = frame.state;
-    // Reuse the same single-slot slide cache. Slide 0 marker is
-    // (thread_id, 0). Slides 1..N use (thread_id, n).
-    const same = state.slide_cache_thread == thread_id and state.slide_cache_idx == 0;
-    if (same) return state.slide_cache_bytes;
-    if (state.slide_cache_bytes) |old| frame.lib.alloc.free(old);
-    state.slide_cache_bytes = null;
-    state.slide_cache_thread = thread_id;
-    state.slide_cache_idx = 0;
     var buf: [256]u8 = undefined;
     const path = coverPath(&buf, frame.info.covers_dir, thread_id) catch return null;
-    state.slide_cache_bytes = std.Io.Dir.cwd().readFileAlloc(
-        frame.io,
-        path,
-        frame.lib.alloc,
-        .limited(16 * 1024 * 1024),
-    ) catch null;
-    return state.slide_cache_bytes;
+    return slideSlotBytes(frame, thread_id, 0, path);
 }
 
 /// Drop the cache entry for `thread_id` (sync just rewrote the file).
@@ -1611,6 +2145,35 @@ pub fn freeCoverCache(state: *State, alloc: std.mem.Allocator) void {
             slot_ptr.* = null;
         }
     }
+}
+
+/// Tear down the library-list filter-result cache. Called from the
+/// shutdown defer chain in `runMainLoop`.
+pub fn freeLibFilterCache(state: *State, alloc: std.mem.Allocator) void {
+    if (state.lib_filter_cache_indices) |old| {
+        alloc.free(old);
+        state.lib_filter_cache_indices = null;
+    }
+    state.lib_filter_cache_sig = 0;
+}
+
+/// Tear down the per-frame snapshot caches (install_versions +
+/// games_by_thread). Called from the shutdown defer chain in
+/// `runMainLoop` and from each cache-miss rebuild path.
+pub fn freeSnapshotCache(state: *State, alloc: std.mem.Allocator) void {
+    if (state.snapshot_install_versions) |*m| {
+        var it = m.valueIterator();
+        while (it.next()) |v| alloc.free(v.*);
+        m.deinit();
+        state.snapshot_install_versions = null;
+    }
+    if (state.snapshot_games_by_thread) |*m| {
+        m.deinit();
+        state.snapshot_games_by_thread = null;
+    }
+    state.snapshot_install_gen = 0;
+    state.snapshot_games_ptr = 0;
+    state.snapshot_games_len = 0;
 }
 
 // ============================================================
@@ -1674,6 +2237,7 @@ pub fn spawnCoverPrewarm(
 }
 
 fn prewarmWorker(job: *PrewarmJob) void {
+    job_mod.lowerWorkerPriority();
     defer {
         job.alloc.free(job.covers_dir);
         job.alloc.free(job.thread_ids);
@@ -1695,3 +2259,272 @@ fn prewarmWorker(job: *PrewarmJob) void {
     }
 }
 
+// ============================================================
+//  thumb pre-warmer — same trick, run on detail-page entry
+// ============================================================
+//
+// First frame of the detail page calls `thumbBytes` for every slot
+// in the ribbon strip — 20+ synchronous `readFileAlloc` calls. We
+// can't fill the in-memory cache from a worker (UI thread owns it),
+// but reading the files off-thread populates the OS page cache so
+// the UI-thread reads land in memory.
+
+const ThumbPrewarmJob = struct {
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    covers_dir: []u8,
+    thread_id: u64,
+    count: usize,
+};
+
+/// Spawn a detached worker that reads every thumbnail file for the
+/// given game (slots 1..count). Slot 0 (the cover thumb) is already
+/// covered by `spawnCoverPrewarm` / `cover_cache`.
+pub fn spawnThumbPrewarm(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    covers_dir: []const u8,
+    thread_id: u64,
+    count: usize,
+) void {
+    if (count == 0) return;
+    const job = alloc.create(ThumbPrewarmJob) catch return;
+    const dir_owned = alloc.dupe(u8, covers_dir) catch {
+        alloc.destroy(job);
+        return;
+    };
+    job.* = .{ .alloc = alloc, .io = io, .covers_dir = dir_owned, .thread_id = thread_id, .count = count };
+    const thr = std.Thread.spawn(.{}, thumbPrewarmWorker, .{job}) catch {
+        alloc.free(dir_owned);
+        alloc.destroy(job);
+        return;
+    };
+    thr.detach();
+}
+
+fn thumbPrewarmWorker(job: *ThumbPrewarmJob) void {
+    job_mod.lowerWorkerPriority();
+    defer {
+        job.alloc.free(job.covers_dir);
+        job.alloc.destroy(job);
+    }
+    var buf: [256]u8 = undefined;
+    var i: usize = 1;
+    while (i <= job.count) : (i += 1) {
+        const path = std.fmt.bufPrint(&buf, "{s}/{d}.s{d}.t", .{ job.covers_dir, job.thread_id, i }) catch continue;
+        const bytes = std.Io.Dir.cwd().readFileAlloc(
+            job.io,
+            path,
+            job.alloc,
+            .limited(2 * 1024 * 1024),
+        ) catch continue;
+        job.alloc.free(bytes);
+    }
+}
+
+// ============================================================
+//  indexer: batch /fast pre-flight
+// ============================================================
+//
+// F95Checker pattern: refresh-all chunks games into groups of 10 and
+// hits `/fast?ids=<csv>` per chunk to learn each game's `last_change`
+// without scraping. Only games whose `last_change` advanced get a
+// `/full/{id}?ts=<last_change>` call after.
+//
+// This worker is the chunked /fast pass. It runs alone (one in-flight
+// at a time, gated through `state.pending_fast_check`), then hands
+// the per-game decision back to the UI thread which populates the
+// regular `sync_queue` + `sync_queue_known_last_change` parallel slice.
+// Per-game indexer workers then spawn in parallel through the
+// `MAX_PARALLEL_SYNC` slot pool, each skipping its own `/fast` because
+// `known_last_change` is already set.
+
+/// Spawn the indexer batch /fast pre-flight. Owns `ids_slice` for the
+/// duration of the job. UI thread sets `sync_status = .running` + a
+/// "checking…" banner; the recap clear / queue init happens after the
+/// worker reports back.
+fn startSyncBatchIndexer(frame: *Frame, ids_slice: []u64) void {
+    const state = frame.state;
+    const alloc = frame.lib.alloc;
+
+    _ = job_mod.spawnJob(
+        FastCheckPayload,
+        fastCheckWorker,
+        alloc,
+        frame.win,
+        .{
+            .ids = ids_slice,
+            .indexer_client = frame.f95_indexer_client,
+            .io = frame.io,
+        },
+        &state.pending_fast_check,
+    ) catch {
+        alloc.free(ids_slice);
+        state.sync_status = .err;
+        state.setSyncMsg("fast-check spawn failed");
+        return;
+    };
+
+    state.sync_status = .running;
+    state.setSyncMsg("checking for changes…");
+    log.info("startSyncBatchIndexer: /fast pre-flight ids={d}", .{ids_slice.len});
+}
+
+fn fastCheckWorker(job: *FastCheckJob) void {
+    const p = &job.payload;
+    const alloc = job.alloc;
+    const t_start = nowMs(p.io);
+
+    const last_changes = alloc.alloc(i64, p.ids.len) catch {
+        p.err_name = "OutOfMemory";
+        job.markFailed();
+        return;
+    };
+    @memset(last_changes, 0);
+
+    var i: usize = 0;
+    while (i < p.ids.len) {
+        if (job.cancelRequested()) {
+            alloc.free(last_changes);
+            p.err_name = "Cancelled";
+            job.markFailed();
+            return;
+        }
+        const chunk_end = @min(i + f95_indexer.MAX_IDS_PER_FAST, p.ids.len);
+        const chunk = p.ids[i..chunk_end];
+        const results = p.indexer_client.fastCheck(chunk) catch |e| {
+            log.warn("fast-check chunk {d}..{d} FAIL: {s}", .{ i, chunk_end, @errorName(e) });
+            alloc.free(last_changes);
+            p.err_name = @errorName(e);
+            job.markFailed();
+            return;
+        };
+        defer alloc.free(results);
+
+        // The indexer doesn't guarantee response order matches request;
+        // it returns a dict. Match each result back to its slot.
+        for (results) |r| {
+            for (chunk, 0..) |tid, j| {
+                if (tid == r.id) {
+                    last_changes[i + j] = r.last_change;
+                    break;
+                }
+            }
+        }
+        i = chunk_end;
+    }
+
+    p.last_changes = last_changes;
+    log.info("fast-check TOTAL_ms={d} ids={d} chunks={d}", .{
+        nowMs(p.io) - t_start,
+        p.ids.len,
+        (p.ids.len + f95_indexer.MAX_IDS_PER_FAST - 1) / f95_indexer.MAX_IDS_PER_FAST,
+    });
+    job.markDone();
+}
+
+fn onFastCheckDone(frame: *Frame, job: *FastCheckJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    const alloc = frame.lib.alloc;
+    defer freeFastCheckPayload(job);
+
+    const last_changes = p.last_changes orelse {
+        state.sync_status = .err;
+        state.setSyncMsg("fast-check: no results returned");
+        return;
+    };
+
+    // Filter to games whose `last_change` actually moved. Each kept
+    // entry's index in keep_ids matches its known_last_change in
+    // keep_lcs (parallel slices).
+    var keep_ids: std.ArrayList(u64) = .empty;
+    var keep_lcs: std.ArrayList(i64) = .empty;
+    defer keep_ids.deinit(alloc);
+    defer keep_lcs.deinit(alloc);
+
+    for (p.ids, 0..) |tid, i| {
+        const lc = last_changes[i];
+        var target: ?*library.Game = null;
+        for (frame.games) |*gg| {
+            if (gg.f95_thread_id == tid) {
+                target = gg;
+                break;
+            }
+        }
+        const game = target orelse continue;
+        const prev = game.last_indexer_change orelse 0;
+        // Parser-version migration check (mirrors F95Checker's
+        // `last_check_before(...)`). If we've bumped the mapping
+        // since this row was filled, force-queue it so it picks up
+        // the new fields even when `last_change` hasn't moved.
+        const parser_drift = blk: {
+            const v = game.last_indexer_parser_version orelse break :blk true;
+            break :blk v != f95_indexer.PARSER_VERSION;
+        };
+        if (prev == 0 or lc > prev or parser_drift) {
+            keep_ids.append(alloc, tid) catch return;
+            keep_lcs.append(alloc, lc) catch return;
+        }
+    }
+
+    if (keep_ids.items.len == 0) {
+        state.sync_status = .ok;
+        var buf: [128]u8 = undefined;
+        const m = std.fmt.bufPrint(
+            &buf,
+            "all {d} games up to date — nothing to fetch",
+            .{p.ids.len},
+        ) catch "all games up to date";
+        state.setSyncMsg(m);
+        return;
+    }
+
+    const owned_ids = keep_ids.toOwnedSlice(alloc) catch return;
+    const owned_lcs = keep_lcs.toOwnedSlice(alloc) catch {
+        alloc.free(owned_ids);
+        return;
+    };
+    state.sync_queue = owned_ids;
+    state.sync_queue_known_last_change = owned_lcs;
+    state.sync_queue_idx = 0;
+    state.sync_queue_started = 0;
+    state.sync_queue_total = @intCast(owned_ids.len);
+    log.info("fast-check: queued {d}/{d} games for /full", .{ owned_ids.len, p.ids.len });
+    advanceSyncQueue(frame);
+}
+
+fn onFastCheckFailed(frame: *Frame, job: *FastCheckJob) void {
+    const state = frame.state;
+    const p = &job.payload;
+    defer freeFastCheckPayload(job);
+
+    const cancelled = p.err_name != null and std.mem.eql(u8, p.err_name.?, "Cancelled");
+    if (cancelled) {
+        state.sync_status = .idle;
+        state.sync_msg.clear();
+        return;
+    }
+    state.sync_status = .err;
+    var emsg: [160]u8 = undefined;
+    const m = std.fmt.bufPrint(&emsg, "indexer fast-check failed: {s}", .{p.err_name orelse "?"}) catch "indexer fast-check failed";
+    state.setSyncMsg(m);
+}
+
+fn freeFastCheckPayload(job: *FastCheckJob) void {
+    const p = &job.payload;
+    job.alloc.free(p.ids);
+    if (p.last_changes) |lc| job.alloc.free(lc);
+}
+
+/// Drain the fast-check job — called once per frame from the main loop.
+pub fn drainFastCheck(frame: *Frame) void {
+    const state = frame.state;
+    job_mod.drainBackgroundJob(
+        FastCheckPayload,
+        onFastCheckDone,
+        onFastCheckFailed,
+        frame,
+        &state.pending_fast_check,
+    );
+}

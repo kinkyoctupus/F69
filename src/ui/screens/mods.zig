@@ -1,5 +1,16 @@
-// Per-game Mods screen — install/remove/import mod archives and
-// recipes. Reached from the detail page's "Mods" button.
+// Per-game Mods screen — two-pane manager.
+//
+//   Left pane:  filter checkboxes, scrollable list of modfiles
+//               (archives) and orphan recipes, "+ Add modfile" /
+//               "Import recipe" buttons.
+//   Right pane: detail view for the selected entry — name + status
+//               pill, primary action (Install / Uninstall / Set up
+//               plan), Edit plan, plan summary, file impact, source
+//               metadata.
+//
+// Replaces the previous tab-strip layout where every mod row carried
+// every action and the user had to expand each row to see the install
+// plan.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -14,9 +25,17 @@ const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const mod_job_queue = @import("../mod_job_queue.zig");
 const components = @import("../components.zig");
+const installer_mod = @import("installer");
 
 const Frame = types.Frame;
 const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+
+/// Width of the left list pane. Right pane takes the remainder.
+const LEFT_PANE_W: f32 = 360;
+
+// ============================================================
+//  Screen entry
+// ============================================================
 
 pub fn modsScreen(frame: *Frame) !bool {
     const state = frame.state;
@@ -27,129 +46,725 @@ pub fn modsScreen(frame: *Frame) !bool {
         return true;
     };
 
-    // ---- header: Back + title + Settings link ----
+    renderModsHeader(frame, game);
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+    // Page-level controls — apply to the whole game, not per-mod.
+    // Sit above the two-pane body so switching selection in the list
+    // doesn't reset them.
     {
-        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        var page = dvui.box(@src(), .{ .dir = .vertical }, .{
             .expand = .horizontal,
-            .padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 },
+            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 4 },
         });
-        defer hdr.deinit();
-        if (style.button(@src(), "< Back", .{}, .{})) {
-            state.screen = .detail;
-            return true;
-        }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        var title_buf: [256]u8 = undefined;
-        const title = std.fmt.bufPrint(&title_buf, "Mods — {s}", .{game.name}) catch "Mods";
-        dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
-
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (style.button(@src(), "Manage install patterns...", .{}, .{ .gravity_y = 0.5 })) {
-            actions.openSettingsTab(state, .mod_presets);
-            return true;
-        }
+        defer page.deinit();
+        renderModsInstallPicker(frame, game);
+        renderModsBackupModePicker(frame, game);
+        renderModJobBanner(frame);
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
-    // Body scrolls so very-long archive / mod lists don't push the
-    // header off-screen.
-    var page_scroll = dvui.scrollArea(@src(), .{}, .{
+    // Two-pane body.
+    var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .both,
-        .padding = .{ .x = 24, .y = 12, .w = 24, .h = 12 },
     });
-    defer page_scroll.deinit();
+    defer body.deinit();
 
-    // Install picker — shown when more than one install exists so the
-    // user can choose which version Install / Uninstall acts on.
-    // Sits ABOVE the tab strip so switching tabs doesn't lose this
-    // context.
-    renderModsInstallPicker(frame, game);
-
-    // Backup mode selector + queue banner — both feed off the global
-    // mod-job state so they make sense on every game's Mods page.
-    renderModsBackupModePicker(frame, game);
-    renderModJobBanner(frame);
-
-    // Top action bar: Add modfile / Scan / Import recipe — visible
-    // on every tab so the "add stuff" affordances are never hidden.
-    renderModfileActionBar(frame, game);
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-
-    // Tab strip — filter views over the master modfile + recipe list.
-    {
-        var tabs = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .padding = .{ .y = 0, .h = 4 },
-        });
-        defer tabs.deinit();
-
-        const counts: owned_types.ModsTabCounts = if (actions.modsPageCache(frame, game)) |c| c.counts else .{};
-        if (components.tabButton(modsTabLabel(.installed, "Installed", counts.installed), state.mods_tab == .installed)) state.mods_tab = .installed;
-        if (components.tabButton(modsTabLabel(.ready, "Ready", counts.ready), state.mods_tab == .ready)) state.mods_tab = .ready;
-        if (components.tabButton(modsTabLabel(.needs_archive, "Needs archive", counts.needs_archive), state.mods_tab == .needs_archive)) state.mods_tab = .needs_archive;
-        if (components.tabButton(modsTabLabel(.needs_recipe, "Needs recipe", counts.needs_recipe), state.mods_tab == .needs_recipe)) state.mods_tab = .needs_recipe;
-    }
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-
-    // Onboarding hint — only on the first-ever-visit case, otherwise
-    // the empty tab body says the right thing per-tab.
-    const modfiles_now = actions.modfilesForGame(frame, game);
-    if (modfiles_now.len == 0) {
-        dvui.label(@src(), "Mods extend this game with extra files.", .{}, .{ .color_text = HELP_TEXT_COLOR });
-        dvui.label(@src(), "1) Add the mod's archive  -OR-  Import a recipe   2) Set up the install plan   3) Click Install.", .{}, .{ .color_text = HELP_TEXT_COLOR });
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    }
-
-    renderModsTabBody(frame, game);
+    renderModsLeftPane(frame, game);
+    _ = dvui.separator(@src(), .{ .expand = .vertical });
+    renderModsRightPane(frame, game);
 
     return true;
 }
 
-/// Short helper to assemble a tab label with count suffix when the
-/// tab has entries. Empty tabs show plain text — keeps the bar quiet
-/// for typical games. Each tab gets a fixed static buffer keyed off
-/// the ModsTab tag so the label slice (and therefore the widget id
-/// `tabButton` derives from `label.ptr`) stays pointer-stable across
-/// frames; without this dvui sees a new id every paint and click
-/// events vanish into thin air.
-fn modsTabLabel(tag: state_mod.ModsTab, name: []const u8, count: usize) []const u8 {
-    if (count == 0) return name;
-    const Static = struct {
-        var bufs: [4][64]u8 = undefined;
-    };
-    const slot: usize = switch (tag) {
-        .installed => 0,
-        .ready => 1,
-        .needs_archive => 2,
-        .needs_recipe => 3,
-    };
-    const out = std.fmt.bufPrint(&Static.bufs[slot], "{s} ({d})", .{ name, count }) catch return name;
-    return out;
-}
-
-/// Tab-strip counters. Defined in `actions/mods.zig` (`actions.ModsTabCounts`)
-/// so the cache that produces them can live alongside `ModfileCache`.
-
-/// Body of the Mods page — picks the active tab + renders the
-/// filtered list.
-fn renderModsTabBody(frame: *Frame, game: *const library.Game) void {
+fn renderModsHeader(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
-    switch (state.mods_tab) {
-        .installed => renderModsTabInstalled(frame, game),
-        .ready => renderModsTabReady(frame, game),
-        .needs_archive => renderModsTabNeedsArchive(frame, game),
-        .needs_recipe => renderModsTabNeedsRecipe(frame, game),
+    var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 },
+    });
+    defer hdr.deinit();
+    if (style.button(@src(), "< Back", .{}, .{})) {
+        state.screen = .detail;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+    var title_buf: [256]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "Mods — {s}", .{game.name}) catch "Mods";
+    dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+    if (style.button(@src(), "Open game folder", .{}, .{ .gravity_y = 0.5 })) {
+        actions.doOpenInstallFolder(frame, game);
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+    if (style.button(@src(), "Manage install patterns...", .{}, .{ .gravity_y = 0.5 })) {
+        actions.openSettingsTab(state, .mod_presets);
     }
 }
 
-/// Surface an install-version picker at the top of the Mods page so the
-/// user always sees — and can switch — which install the page is acting
-/// on. Three render modes by install count:
-///   0 → muted "No install for this game" hint.
-///   1 → static "Applying to: vX.Y  (source)" label.
-///   2+ → dropdown writing the selected id to `state.mods_page_install_id`.
-/// Install / Uninstall / installed-status checks read that field via
-/// `resolveModsPageInstall`.
+// ============================================================
+//  List item types + selection
+// ============================================================
+
+const ListItemKind = enum { modfile, orphan_recipe };
+
+/// One entry in the left-pane list. Either a modfile (an on-disk
+/// archive in the game's mods dir, optionally linked to a recipe)
+/// or an orphan recipe (a `.mod.zon` not yet linked to an archive —
+/// usually from `Import recipe...`).
+const ListItem = union(ListItemKind) {
+    modfile: struct {
+        modfile_idx: usize,
+        recipe_idx: ?usize,
+    },
+    orphan_recipe: struct {
+        recipe_idx: usize,
+    },
+};
+
+const ItemStatus = enum {
+    installed,
+    ready,
+    needs_setup,
+
+    fn pillColor(s: ItemStatus) dvui.Color {
+        return switch (s) {
+            .installed => .{ .r = 0x2D, .g = 0x6A, .b = 0x4F },
+            .ready => .{ .r = 0x3C, .g = 0x55, .b = 0x77 },
+            .needs_setup => .{ .r = 0x55, .g = 0x55, .b = 0x55 },
+        };
+    }
+
+    fn label(s: ItemStatus) []const u8 {
+        return switch (s) {
+            .installed => "Installed",
+            .ready => "Ready",
+            .needs_setup => "Needs setup",
+        };
+    }
+
+    fn allowedBy(s: ItemStatus, f: state_mod.ModsViewFilter) bool {
+        return switch (s) {
+            .installed => f.installed,
+            .ready => f.ready,
+            .needs_setup => f.needs_setup,
+        };
+    }
+};
+
+fn itemStatus(cache: *const owned_types.ModsPageCache, item: ListItem) ItemStatus {
+    switch (item) {
+        .modfile => |m| {
+            if (m.recipe_idx == null) return .needs_setup;
+            const idx = m.recipe_idx.?;
+            if (cache.installed.len > idx and cache.installed[idx]) return .installed;
+            return .ready;
+        },
+        .orphan_recipe => return .needs_setup,
+    }
+}
+
+/// Stable selection key. Modfile id is sha256 hex (up to 64 chars);
+/// orphan recipe id is the recipe slug. Prefix distinguishes the
+/// kind through a single buffer in State.
+fn itemSelectionId(
+    buf: []u8,
+    item: ListItem,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) []const u8 {
+    return switch (item) {
+        .modfile => |m| std.fmt.bufPrint(buf, "m:{s}", .{modfiles[m.modfile_idx].id}) catch "",
+        .orphan_recipe => |r| std.fmt.bufPrint(buf, "r:{s}", .{cache.mods[r.recipe_idx].recipe.id}) catch "",
+    };
+}
+
+fn isSelected(state: *const types.State, id: []const u8) bool {
+    const cur = state.mods_selected_id_buf[0..state.mods_selected_id_len];
+    return std.mem.eql(u8, cur, id);
+}
+
+fn setSelected(state: *types.State, id: []const u8) void {
+    const n = @min(id.len, state.mods_selected_id_buf.len);
+    @memcpy(state.mods_selected_id_buf[0..n], id[0..n]);
+    state.mods_selected_id_len = n;
+}
+
+fn clearSelection(state: *types.State) void {
+    state.mods_selected_id_len = 0;
+}
+
+/// Resolve the currently-selected list item by parsing the prefixed
+/// id buffer and searching modfiles + cache. Returns null when no
+/// selection or the target has been deleted underneath us.
+fn resolveSelection(
+    state: *const types.State,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) ?ListItem {
+    const cur = state.mods_selected_id_buf[0..state.mods_selected_id_len];
+    if (cur.len < 3) return null; // "m:" / "r:" + at least one char
+    const kind_tag = cur[0..2];
+    const id_part = cur[2..];
+    if (std.mem.eql(u8, kind_tag, "m:")) {
+        for (modfiles, 0..) |m, i| {
+            if (std.mem.eql(u8, m.id, id_part)) {
+                var ridx: ?usize = null;
+                if (m.recipe_ids.len > 0) {
+                    const target = m.recipe_ids[0];
+                    for (cache.mods, 0..) |*pm, j| {
+                        if (std.mem.eql(u8, pm.recipe.id, target)) {
+                            ridx = j;
+                            break;
+                        }
+                    }
+                }
+                return .{ .modfile = .{ .modfile_idx = i, .recipe_idx = ridx } };
+            }
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, kind_tag, "r:")) {
+        for (cache.mods, 0..) |*pm, i| {
+            if (std.mem.eql(u8, pm.recipe.id, id_part)) {
+                if (i >= cache.have_archive.len or cache.have_archive[i]) return null;
+                return .{ .orphan_recipe = .{ .recipe_idx = i } };
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+// ============================================================
+//  Left pane — filter + list + add buttons
+// ============================================================
+
+fn renderModsLeftPane(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    var pane = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .min_size_content = .{ .w = LEFT_PANE_W, .h = 1 },
+        .expand = .vertical,
+        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+    });
+    defer pane.deinit();
+
+    // Add buttons row.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .y = 0, .h = 6 },
+        });
+        defer row.deinit();
+        if (style.button(@src(), "+ Add modfile\u{2026}", .{}, .{ .style = .highlight })) {
+            actions.clearPendingDelete(frame);
+            pickAndAddModfile(frame, game);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        if (style.button(@src(), "Import recipe\u{2026}", .{}, .{})) {
+            actions.clearPendingDelete(frame);
+            pickAndImportModRecipe(frame);
+        }
+    }
+
+    // Filter checkboxes.
+    {
+        var box = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .padding = .{ .y = 4, .h = 4 },
+        });
+        defer box.deinit();
+        dvui.labelNoFmt(@src(), "Show:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        _ = dvui.checkbox(@src(), &state.mods_view_filter.installed, "Installed", .{});
+        _ = dvui.checkbox(@src(), &state.mods_view_filter.ready, "Ready", .{});
+        _ = dvui.checkbox(@src(), &state.mods_view_filter.needs_setup, "Needs setup", .{});
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+
+    // Scrollable list.
+    var scroll = dvui.scrollArea(@src(), .{}, .{
+        .expand = .both,
+        .padding = .{ .y = 4, .h = 4 },
+    });
+    defer scroll.deinit();
+
+    const cache = actions.modsPageCache(frame, game) orelse {
+        dvui.label(@src(), "(failed to load mods)", .{}, .{ .style = .err });
+        return;
+    };
+    const modfiles = actions.modfilesForGame(frame, game);
+
+    var rendered: usize = 0;
+    var key_buf: [80]u8 = undefined;
+
+    // Pass 1: modfiles (archives present on disk). Insertion order.
+    for (modfiles, 0..) |m, i| {
+        var ridx: ?usize = null;
+        if (m.recipe_ids.len > 0) {
+            const target = m.recipe_ids[0];
+            for (cache.mods, 0..) |*pm, j| {
+                if (std.mem.eql(u8, pm.recipe.id, target)) {
+                    ridx = j;
+                    break;
+                }
+            }
+        }
+        const item: ListItem = .{ .modfile = .{ .modfile_idx = i, .recipe_idx = ridx } };
+        const status = itemStatus(cache, item);
+        if (!status.allowedBy(state.mods_view_filter)) continue;
+        const id = itemSelectionId(&key_buf, item, modfiles, cache);
+        renderListRow(frame, item, status, id, modfiles, cache);
+        rendered += 1;
+        // Click handlers inside the row may have freed the cache via
+        // refreshModfileCache; bail out of the iteration if so.
+        if (frame.state.mods_page_cache == null) return;
+    }
+
+    // Pass 2: orphan recipes (no archive linked). Only shown when the
+    // "needs setup" filter is on.
+    if (state.mods_view_filter.needs_setup) {
+        for (cache.mods, 0..) |_, i| {
+            if (i >= cache.have_archive.len) break;
+            if (cache.have_archive[i]) continue;
+            const item: ListItem = .{ .orphan_recipe = .{ .recipe_idx = i } };
+            const id = itemSelectionId(&key_buf, item, modfiles, cache);
+            renderListRow(frame, item, .needs_setup, id, modfiles, cache);
+            rendered += 1;
+            if (frame.state.mods_page_cache == null) return;
+        }
+    }
+
+    if (rendered == 0) {
+        dvui.label(@src(), "(no mods match the current filter)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+}
+
+fn renderListRow(
+    frame: *Frame,
+    item: ListItem,
+    status: ItemStatus,
+    id: []const u8,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) void {
+    const state = frame.state;
+    const selected = isSelected(state, id);
+    const id_key = std.hash.Wyhash.hash(0, id);
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = id_key,
+        .expand = .horizontal,
+        .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
+        .background = true,
+        .corner_radius = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
+        .color_fill = if (selected)
+            dvui.Color{ .r = 0x44, .g = 0x28, .b = 0x36 }
+        else
+            dvui.Color{ .r = 0x1A, .g = 0x10, .b = 0x14 },
+    });
+    defer row.deinit();
+
+    // Status dot (10×10 circle).
+    {
+        var dot = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .id_extra = id_key,
+            .min_size_content = .{ .w = 10, .h = 10 },
+            .max_size_content = .{ .w = 10, .h = 10 },
+            .background = true,
+            .corner_radius = .{ .x = 5, .y = 5, .w = 5, .h = 5 },
+            .color_fill = status.pillColor(),
+            .gravity_y = 0.5,
+        });
+        defer dot.deinit();
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+
+    // Info column.
+    {
+        var info = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .id_extra = id_key,
+            .expand = .horizontal,
+            .gravity_y = 0.5,
+        });
+        defer info.deinit();
+
+        const name: []const u8 = switch (item) {
+            .modfile => |m| modfiles[m.modfile_idx].filename,
+            .orphan_recipe => |r| cache.mods[r.recipe_idx].recipe.name,
+        };
+        dvui.labelNoFmt(@src(), name, .{}, .{ .style = .highlight });
+
+        var version_buf: [128]u8 = undefined;
+        const sub: []const u8 = switch (item) {
+            .modfile => |m| blk: {
+                if (m.recipe_idx) |ri| {
+                    if (ri < cache.mods.len) {
+                        const v = cache.mods[ri].recipe.version;
+                        break :blk std.fmt.bufPrint(&version_buf, "v{s} · {s}", .{ v, status.label() }) catch status.label();
+                    }
+                }
+                break :blk status.label();
+            },
+            .orphan_recipe => |r| std.fmt.bufPrint(&version_buf, "v{s} · needs archive", .{cache.mods[r.recipe_idx].recipe.version}) catch "needs archive",
+        };
+        dvui.labelNoFmt(@src(), sub, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+
+    // Whole-row click → select.
+    if (dvui.clicked(row.data(), .{})) {
+        setSelected(state, id);
+    }
+}
+
+// ============================================================
+//  Right pane — detail for the selected entry
+// ============================================================
+
+fn renderModsRightPane(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    var pane = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
+    });
+    defer pane.deinit();
+
+    const cache = actions.modsPageCache(frame, game) orelse {
+        dvui.label(@src(), "(failed to load mod details)", .{}, .{ .style = .err });
+        return;
+    };
+    const modfiles = actions.modfilesForGame(frame, game);
+    const item_opt = resolveSelection(state, modfiles, cache);
+
+    const item = item_opt orelse {
+        renderEmptyDetail();
+        return;
+    };
+
+    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+    defer scroll.deinit();
+
+    const status = itemStatus(cache, item);
+    renderDetailHeader(item, status, modfiles, cache);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    renderDetailActions(frame, game, item, status, modfiles, cache);
+    if (frame.state.mods_page_cache == null) return;
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    renderDetailPlan(item, cache);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    renderDetailImpact(item, cache);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    renderDetailMetadata(frame, item, cache);
+}
+
+fn renderEmptyDetail() void {
+    var box = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+    });
+    defer box.deinit();
+    dvui.label(@src(), "Select a mod from the left to see its details.", .{}, .{
+        .color_text = HELP_TEXT_COLOR,
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+    });
+}
+
+fn renderDetailHeader(
+    item: ListItem,
+    status: ItemStatus,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) void {
+    var hdr = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
+    defer hdr.deinit();
+
+    // Name + status pill row.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        const title: []const u8 = switch (item) {
+            .modfile => |m| modfiles[m.modfile_idx].filename,
+            .orphan_recipe => |r| cache.mods[r.recipe_idx].recipe.name,
+        };
+        dvui.labelNoFmt(@src(), title, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        renderStatusPill(status);
+    }
+
+    var sub_buf: [256]u8 = undefined;
+    const subtitle = formatSubtitle(&sub_buf, item, modfiles, cache);
+    dvui.labelNoFmt(@src(), subtitle, .{}, .{ .color_text = HELP_TEXT_COLOR });
+}
+
+fn renderStatusPill(status: ItemStatus) void {
+    var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
+        .background = true,
+        .corner_radius = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
+        .color_fill = status.pillColor(),
+        .gravity_y = 0.5,
+    });
+    defer pill.deinit();
+    dvui.labelNoFmt(@src(), status.label(), .{}, .{
+        .color_text = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
+    });
+}
+
+fn formatSubtitle(
+    buf: []u8,
+    item: ListItem,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) []const u8 {
+    switch (item) {
+        .modfile => |m| {
+            const mf = modfiles[m.modfile_idx];
+            const version: []const u8 = if (m.recipe_idx) |ri|
+                (if (ri < cache.mods.len) cache.mods[ri].recipe.version else "?")
+            else
+                "no recipe";
+            const sha_prefix = mf.id[0..@min(12, mf.id.len)];
+            if (mf.size_bytes >= 1024 * 1024) {
+                return std.fmt.bufPrint(buf, "v{s} · {d:.1} MiB · sha:{s}...", .{
+                    version,
+                    @as(f64, @floatFromInt(mf.size_bytes)) / (1024.0 * 1024.0),
+                    sha_prefix,
+                }) catch "";
+            }
+            return std.fmt.bufPrint(buf, "v{s} · {d:.1} KiB · sha:{s}...", .{
+                version,
+                @as(f64, @floatFromInt(mf.size_bytes)) / 1024.0,
+                sha_prefix,
+            }) catch "";
+        },
+        .orphan_recipe => |r| {
+            return std.fmt.bufPrint(buf, "v{s} · no archive linked yet", .{cache.mods[r.recipe_idx].recipe.version}) catch "";
+        },
+    }
+}
+
+fn renderDetailActions(
+    frame: *Frame,
+    game: *const library.Game,
+    item: ListItem,
+    status: ItemStatus,
+    modfiles: []const installer_mod.mod_archives.Modfile,
+    cache: *const owned_types.ModsPageCache,
+) void {
+    const state = frame.state;
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer row.deinit();
+
+    switch (item) {
+        .modfile => |m| {
+            const mf = modfiles[m.modfile_idx];
+            if (m.recipe_idx) |ri| {
+                if (ri >= cache.mods.len) return;
+                const pm = &cache.mods[ri];
+                const busy = frame.mod_jobs.isModBusy(game.f95_thread_id, pm.recipe.f95_thread);
+                switch (status) {
+                    .installed => {
+                        const label: []const u8 = if (busy) "Uninstalling\u{2026}" else "Uninstall";
+                        if (style.button(@src(), label, .{}, .{ .style = .err })) {
+                            if (!busy) actions.doUninstallMod(frame, game, &pm.recipe);
+                        }
+                    },
+                    .ready => {
+                        const label: []const u8 = if (busy) "Installing\u{2026}" else "Install";
+                        if (style.button(@src(), label, .{}, .{ .style = .highlight })) {
+                            if (!busy) actions.doInstallMod(frame, game, &pm.recipe);
+                        }
+                    },
+                    .needs_setup => {},
+                }
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+                if (style.button(@src(), "Edit plan\u{2026}", .{}, .{})) {
+                    actions.clearPendingDelete(frame);
+                    actions.openWizardForModfile(frame, game, mf.id);
+                }
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+                if (style.button(@src(), "Save as preset\u{2026}", .{}, .{})) {
+                    actions.doSaveModRecipeAsPreset(frame, game, &pm.recipe);
+                }
+                _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+                const pending_slice = state.modfile_pending_delete_id_buf[0..state.modfile_pending_delete_id_len];
+                const armed = std.mem.eql(u8, pending_slice, pm.recipe.id);
+                const del_label: []const u8 = if (armed) "Confirm delete recipe" else "Delete recipe";
+                if (style.button(@src(), del_label, .{}, .{ .style = .err })) {
+                    actions.doDeleteModRecipeArmed(frame, game, pm.recipe.id);
+                    if (frame.state.mods_page_cache == null) {
+                        clearSelection(frame.state);
+                        return;
+                    }
+                }
+            } else {
+                // Modfile present but no recipe yet — primary action
+                // is "Set up plan" via the wizard. Delete archive is
+                // available behind the same two-click arm as a recipe
+                // delete.
+                if (style.button(@src(), "Set up plan\u{2026}", .{}, .{ .style = .highlight })) {
+                    actions.clearPendingDelete(frame);
+                    actions.openWizardForModfile(frame, game, mf.id);
+                }
+                _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+                const pending_slice = state.modfile_pending_delete_id_buf[0..state.modfile_pending_delete_id_len];
+                const armed = std.mem.eql(u8, pending_slice, mf.id);
+                const del_label: []const u8 = if (armed) "Confirm delete archive" else "Delete archive";
+                if (style.button(@src(), del_label, .{}, .{ .style = .err })) {
+                    actions.doDeleteModfile(frame, game, mf.id);
+                }
+            }
+        },
+        .orphan_recipe => |r| {
+            const pm = &cache.mods[r.recipe_idx];
+            if (style.button(@src(), "Add archive\u{2026}", .{}, .{ .style = .highlight })) {
+                actions.clearPendingDelete(frame);
+                pickAndRegisterModArchive(frame, game, &pm.recipe);
+            }
+            _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+            const pending_slice = state.modfile_pending_delete_id_buf[0..state.modfile_pending_delete_id_len];
+            const armed = std.mem.eql(u8, pending_slice, pm.recipe.id);
+            const del_label: []const u8 = if (armed) "Confirm delete recipe" else "Delete recipe";
+            if (style.button(@src(), del_label, .{}, .{ .style = .err })) {
+                actions.doDeleteModRecipeArmed(frame, game, pm.recipe.id);
+                if (frame.state.mods_page_cache == null) {
+                    clearSelection(frame.state);
+                    return;
+                }
+            }
+        },
+    }
+}
+
+fn renderDetailPlan(item: ListItem, cache: *const owned_types.ModsPageCache) void {
+    const pm: ?*const recipe.ParsedMod = switch (item) {
+        .modfile => |m| if (m.recipe_idx) |ri|
+            (if (ri < cache.mods.len) &cache.mods[ri] else null)
+        else
+            null,
+        .orphan_recipe => |r| &cache.mods[r.recipe_idx],
+    };
+
+    dvui.labelNoFmt(@src(), "Plan summary", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+
+    if (pm == null) {
+        dvui.label(@src(), "  (no recipe yet — click Set up plan to create one)", .{}, .{
+            .color_text = HELP_TEXT_COLOR,
+        });
+        return;
+    }
+    const steps = pm.?.recipe.install;
+    if (steps.len == 0) {
+        dvui.label(@src(), "  (no steps — install does nothing)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        return;
+    }
+    var line_buf: [320]u8 = undefined;
+    var bullet_buf: [380]u8 = undefined;
+    for (steps) |s| {
+        const txt = formatStepSummary(&line_buf, s);
+        const full = std.fmt.bufPrint(&bullet_buf, "  • {s}", .{txt}) catch txt;
+        dvui.labelNoFmt(@src(), full, .{}, .{});
+    }
+}
+
+fn formatStepSummary(buf: []u8, step: recipe.InstallStep) []const u8 {
+    return switch (step) {
+        .extract => |x| std.fmt.bufPrint(buf, "Extract archive · {s} wrapper · into {s}", .{
+            if (x.strip > 0) "skip" else "keep",
+            if (x.to.len == 0 or std.mem.eql(u8, x.to, ".")) "(install root)" else x.to,
+        }) catch "Extract",
+        .extract_inner => |x| std.fmt.bufPrint(buf, "Extract inner '{s}' · {s} wrapper · into {s}", .{
+            x.archive,
+            if (x.strip > 0) "skip" else "keep",
+            if (x.to.len == 0 or std.mem.eql(u8, x.to, ".")) "(install root)" else x.to,
+        }) catch "Extract inner",
+        .copy => |x| std.fmt.bufPrint(buf, "Copy {s} → {s}", .{ x.src, x.dest }) catch "Copy",
+        .move => |x| std.fmt.bufPrint(buf, "Move {s} → {s}", .{ x.src, x.dest }) catch "Move",
+        .delete => |x| std.fmt.bufPrint(buf, "Delete {s}", .{x.path}) catch "Delete",
+        .chmod_x => |x| std.fmt.bufPrint(buf, "Mark executable: {d} path(s)", .{x.paths.len}) catch "Mark executable",
+    };
+}
+
+fn renderDetailImpact(item: ListItem, cache: *const owned_types.ModsPageCache) void {
+    const pm: ?*const recipe.ParsedMod = switch (item) {
+        .modfile => |m| if (m.recipe_idx) |ri|
+            (if (ri < cache.mods.len) &cache.mods[ri] else null)
+        else
+            null,
+        .orphan_recipe => |r| &cache.mods[r.recipe_idx],
+    };
+
+    dvui.labelNoFmt(@src(), "File impact", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+
+    if (pm == null) {
+        dvui.label(@src(), "  (no recipe to preview)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        return;
+    }
+    if (pm.?.recipe.files.len > 0) {
+        var buf: [160]u8 = undefined;
+        const txt = std.fmt.bufPrint(&buf, "  Declares {d} file(s). Open Edit plan for the full file-impact preview.", .{pm.?.recipe.files.len}) catch "  Declares files.";
+        dvui.labelNoFmt(@src(), txt, .{}, .{});
+    } else {
+        dvui.label(@src(), "  (impact preview not computed — open Edit plan to simulate)", .{}, .{
+            .color_text = HELP_TEXT_COLOR,
+        });
+    }
+}
+
+fn renderDetailMetadata(
+    frame: *Frame,
+    item: ListItem,
+    cache: *const owned_types.ModsPageCache,
+) void {
+    const pm: ?*const recipe.ParsedMod = switch (item) {
+        .modfile => |m| if (m.recipe_idx) |ri|
+            (if (ri < cache.mods.len) &cache.mods[ri] else null)
+        else
+            null,
+        .orphan_recipe => |r| &cache.mods[r.recipe_idx],
+    };
+    if (pm == null) return;
+
+    dvui.labelNoFmt(@src(), "Details", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    const rec = pm.?.recipe;
+    if (rec.for_game_version) |fgv| {
+        var buf: [128]u8 = undefined;
+        const txt = std.fmt.bufPrint(&buf, "  Targets game version: {s}", .{fgv}) catch "";
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+    if (rec.requires.len > 0) {
+        var buf: [256]u8 = undefined;
+        const txt = std.fmt.bufPrint(&buf, "  Requires: {d} mod(s)", .{rec.requires.len}) catch "";
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    }
+    if (rec.conflicts.len > 0) {
+        var buf: [256]u8 = undefined;
+        const txt = std.fmt.bufPrint(&buf, "  Conflicts with: {d} mod(s)", .{rec.conflicts.len}) catch "";
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .style = .err });
+    }
+    if (rec.post_url) |url| {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer row.deinit();
+        dvui.label(@src(), "  Source: ", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        if (style.button(@src(), url, .{}, .{
+            .style = .control,
+            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        })) {
+            actions.openExternalUrl(frame, url);
+        }
+    }
+}
+
+// ============================================================
+//  Preserved helpers (page-level controls + pickers)
+// ============================================================
+
 fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
     const installs = frame.lib.listInstalls(game.f95_thread_id) catch {
@@ -180,14 +795,10 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
             .{},
             .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR },
         );
-        // Drop any stale selection so a later install ends up resolved
-        // via the latest-install fallback rather than a vanished id.
         state.mods_page_install_id = null;
         return;
     }
 
-    // Build labels: "vX.Y  (source)" — same format the detail-page
-    // launch picker uses.
     var labels_buf: [16][]const u8 = undefined;
     var join_buf: [16 * 96]u8 = undefined;
     var join_used: usize = 0;
@@ -204,8 +815,6 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
     }
 
     if (n == 1) {
-        // Single-install case: still display which install we're modding,
-        // but no need for a clickable dropdown.
         dvui.labelNoFmt(@src(), labels_buf[0], .{}, .{ .gravity_y = 0.5, .style = .highlight });
         if (state.mods_page_install_id == null) {
             state.mods_page_install_id = installs[0].id;
@@ -213,7 +822,6 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
         return;
     }
 
-    // Resolve initial pick from saved id, defaulting to 0 (newest).
     var picked: usize = 0;
     if (state.mods_page_install_id) |sel| {
         for (installs[0..n], 0..) |inst, i| {
@@ -230,19 +838,12 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
     })) {
         state.mods_page_install_id = installs[picked].id;
     } else {
-        // Keep the field in sync on first render so resolveModsPageInstall
-        // can rely on it being populated.
         if (state.mods_page_install_id == null) {
             state.mods_page_install_id = installs[picked].id;
         }
     }
 }
 
-/// Tiny picker for the per-install backup policy. The picked value is
-/// persisted on the game row (`games.mod_backup_mode`) so it survives
-/// app restarts and is per-game — a heavy overlay-mod game stays
-/// `.none` while a text-patch-heavy game stays `.copy` without the
-/// user re-picking on each session.
 fn renderModsBackupModePicker(frame: *Frame, game: *const library.Game) void {
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
@@ -268,18 +869,11 @@ fn renderModsBackupModePicker(frame: *Frame, game: *const library.Game) void {
             frame.state.notifyErr(msg);
             return;
         };
-        // Reload the library so the in-memory snapshot reflects the
-        // new value on the next paint.
         frame.state.reload_requested = true;
     }
 }
 
-/// Banner showing the in-flight mod job at the top of the Mods page.
-/// Hidden when the queue is empty. Includes a Cancel button that flips
-/// the job's cooperative-cancel flag.
 fn renderModJobBanner(frame: *Frame) void {
-    // Snapshot the head under the queue lock — no UI work inside the
-    // critical section so we don't hold it across a frame.
     var head_info: ?struct {
         id: u64,
         kind: mod_job_queue.Kind,
@@ -295,8 +889,6 @@ fn renderModJobBanner(frame: *Frame) void {
     {
         const jobs = frame.mod_jobs.jobsLocked();
         if (jobs.len > 0) {
-            // Pick the first non-terminal job — drainFinished hasn't
-            // run yet on the first frame after completion.
             for (jobs) |j| {
                 const p = j.currentPhase();
                 if (p == .done or p == .err or p == .canceled) continue;
@@ -332,7 +924,7 @@ fn renderModJobBanner(frame: *Frame) void {
     const phase_text = mod_job_queue.phaseLabel(h.phase);
     var buf: [256]u8 = undefined;
     const disp = h.display[0..h.display_len];
-    const status = blk: {
+    const status_txt = blk: {
         if (h.total > 0) {
             break :blk std.fmt.bufPrint(&buf, "{s}: {s} - {s} ({d}/{d})", .{ verb, disp, phase_text, h.done, h.total }) catch "Mod job in flight";
         }
@@ -341,7 +933,7 @@ fn renderModJobBanner(frame: *Frame) void {
         }
         break :blk std.fmt.bufPrint(&buf, "{s}: {s} - {s}", .{ verb, disp, phase_text }) catch "Mod job in flight";
     };
-    dvui.labelNoFmt(@src(), status, .{}, .{ .gravity_y = 0.5, .style = .highlight });
+    dvui.labelNoFmt(@src(), status_txt, .{}, .{ .gravity_y = 0.5, .style = .highlight });
 
     if (h.depth > 1) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
@@ -356,222 +948,17 @@ fn renderModJobBanner(frame: *Frame) void {
     }
 }
 
-/// Resolve the game whose Mods page is being rendered. Uses
-/// `state.selected_thread` (set by the detail screen before nav).
 fn currentGameForMods(frame: *Frame) ?*const library.Game {
     const tid = frame.state.selected_thread orelse return null;
-    return components.gameByThreadId(frame, tid);
+    if (frame.games_by_thread) |map| {
+        if (map.get(tid)) |g| return g;
+    }
+    for (frame.games) |*g| {
+        if (g.f95_thread_id == tid) return g;
+    }
+    return null;
 }
 
-/// Which slice of the mod-recipe list a tab body should render. The
-/// orphan-modfile bucket lives in its own renderer because its row
-/// shape differs (modfile metadata, not recipe metadata).
-const ModRecipeFilter = enum { installed, ready, needs_archive };
-
-/// Tab body: only mod recipes whose archive is registered AND whose
-/// install tracker shows their thread id.
-fn renderModsTabInstalled(frame: *Frame, game: *const library.Game) void {
-    renderModRecipeList(frame, game, .installed);
-}
-
-/// Tab body: mod recipes with an archive on disk but not yet installed.
-fn renderModsTabReady(frame: *Frame, game: *const library.Game) void {
-    renderModRecipeList(frame, game, .ready);
-}
-
-/// Tab body: mod recipes the user has imported (or authored) but for
-/// which no archive is registered. The row CTA flips to "Add modfile..."
-/// so the next step is one click away.
-fn renderModsTabNeedsArchive(frame: *Frame, game: *const library.Game) void {
-    renderModRecipeList(frame, game, .needs_archive);
-}
-
-/// Tab body: orphan modfiles — archives on disk with zero linked
-/// recipes. The CTA on each row is "Create recipe..." which opens the
-/// recipe editor scoped to that archive.
-fn renderModsTabNeedsRecipe(frame: *Frame, game: *const library.Game) void {
-    const preset_bundle = actions.getMergedPresets(frame);
-    const presets_slice: []const recipe.Preset = if (preset_bundle) |b| b.presets else &.{};
-
-    const mods = actions.modfilesForGame(frame, game);
-    var count: usize = 0;
-    for (mods) |m| {
-        if (m.recipe_ids.len > 0) continue;
-        renderModfileRow(frame, game, m, presets_slice);
-        count += 1;
-    }
-    if (count == 0) {
-        dvui.label(
-            @src(),
-            "No archives waiting on a recipe. Use Add modfile... above to register one.",
-            .{},
-            .{ .color_text = HELP_TEXT_COLOR },
-        );
-    }
-}
-
-/// Shared body for the three recipe-driven tabs (installed / ready /
-/// needs_archive). One pass loads the parsed mod recipes, computes
-/// installed-state + load-order, then filters + renders rows.
-fn renderModRecipeList(frame: *Frame, game: *const library.Game, filter: ModRecipeFilter) void {
-    const state = frame.state;
-    const cache = actions.modsPageCache(frame, game) orelse {
-        renderTabEmptyHint(filter);
-        return;
-    };
-
-    if (cache.game_parsed == null) {
-        renderTabEmptyHint(filter);
-        return;
-    }
-    if (cache.mods.len == 0) {
-        renderTabEmptyHint(filter);
-        return;
-    }
-
-    var rendered: usize = 0;
-    for (cache.mods, 0..) |*pm, i| {
-        const installed = cache.installed[i];
-        const have_archive = cache.have_archive[i];
-        const load_index = cache.load_index[i];
-
-        const keep = switch (filter) {
-            .installed => installed,
-            .ready => !installed and have_archive,
-            .needs_archive => !installed and !have_archive,
-        };
-        if (!keep) continue;
-
-        renderRecipeRow(frame, game, pm, load_index, installed, have_archive, state);
-        rendered += 1;
-    }
-
-    if (rendered == 0) {
-        renderTabEmptyHint(filter);
-    }
-}
-
-/// Per-tab placeholder shown when the filtered list is empty. Keeps
-/// the page from going blank without forcing the user to guess what
-/// the tab is supposed to contain. `dvui.label` wants a comptime fmt
-/// string so we route each case to its own call site.
-fn renderTabEmptyHint(filter: ModRecipeFilter) void {
-    switch (filter) {
-        .installed => dvui.label(
-            @src(),
-            "No mods installed yet. Switch to Ready or Needs archive to set one up.",
-            .{},
-            .{ .color_text = HELP_TEXT_COLOR },
-        ),
-        .ready => dvui.label(
-            @src(),
-            "Nothing waiting to install. Add a modfile or create a recipe to get started.",
-            .{},
-            .{ .color_text = HELP_TEXT_COLOR },
-        ),
-        .needs_archive => dvui.label(
-            @src(),
-            "Every imported recipe already has its archive. Import another recipe to add more.",
-            .{},
-            .{ .color_text = HELP_TEXT_COLOR },
-        ),
-    }
-}
-
-/// Render one mod-recipe row. Caller decides whether to render based
-/// on the active tab filter; this function just lays out the row.
-fn renderRecipeRow(
-    frame: *Frame,
-    game: *const library.Game,
-    pm: *recipe.ParsedMod,
-    load_index: ?u32,
-    installed: bool,
-    have_archive: bool,
-    state: anytype,
-) void {
-    const row_key = std.hash.Wyhash.hash(0, pm.recipe.id);
-    var row = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
-        .id_extra = row_key,
-    });
-    defer row.deinit();
-
-    {
-        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-        defer hdr.deinit();
-        if (load_index) |li| {
-            var idx_buf: [16]u8 = undefined;
-            const idx_txt = std.fmt.bufPrint(&idx_buf, "#{d:0>2}", .{li}) catch "#?";
-            dvui.labelNoFmt(@src(), idx_txt, .{}, .{ .style = .highlight, .gravity_y = 0.5 });
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        }
-        dvui.label(@src(), "{s}  v{s}", .{ pm.recipe.name, pm.recipe.version }, .{ .style = .highlight, .gravity_y = 0.5 });
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-
-        const busy = frame.mod_jobs.isModBusy(game.f95_thread_id, pm.recipe.f95_thread);
-
-        if (installed) {
-            const label: []const u8 = if (busy) "Uninstalling\u{2026}" else "Uninstall";
-            if (style.button(@src(), label, .{}, .{ .style = .err })) {
-                if (!busy) actions.doUninstallMod(frame, game, &pm.recipe);
-            }
-        } else if (have_archive) {
-            const label: []const u8 = if (busy) "Installing\u{2026}" else "Install";
-            if (style.button(@src(), label, .{}, .{ .style = .highlight })) {
-                if (!busy) actions.doInstallMod(frame, game, &pm.recipe);
-            }
-        } else {
-            if (style.button(@src(), "Add modfile\u{2026}", .{}, .{ .style = .highlight })) {
-                pickAndRegisterModArchive(frame, game, &pm.recipe);
-            }
-        }
-
-        if (have_archive) {
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-            if (style.button(@src(), "Save as preset\u{2026}", .{}, .{})) {
-                actions.doSaveModRecipeAsPreset(frame, game, &pm.recipe);
-            }
-        }
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        const pending_slice = state.modfile_pending_delete_id_buf[0..state.modfile_pending_delete_id_len];
-        const armed = std.mem.eql(u8, pending_slice, pm.recipe.id);
-        const del_label: []const u8 = if (armed) "Confirm delete recipe" else "Delete recipe";
-        if (style.button(@src(), del_label, .{}, .{ .style = .err })) {
-            actions.doDeleteModRecipeArmed(frame, game, pm.recipe.id);
-        }
-    }
-
-    if (pm.recipe.post_url) |url| {
-        var url_row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
-        defer url_row.deinit();
-        dvui.label(@src(), "  source:", .{}, .{ .gravity_y = 0.5 });
-        if (style.button(@src(), url, .{}, .{
-            .gravity_y = 0.5,
-            .style = .control,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
-        })) {
-            actions.openExternalUrl(frame, url);
-        }
-    }
-    if (pm.recipe.for_game_version) |fgv| {
-        dvui.label(@src(), "  targets game version: {s}", .{fgv}, .{});
-    }
-    if (pm.recipe.files.len > 0) {
-        dvui.label(@src(), "  declares {d} file(s) — conflict-checked at install", .{pm.recipe.files.len}, .{});
-    }
-    if (pm.recipe.requires.len > 0) {
-        dvui.label(@src(), "  requires: {d} mod(s)", .{pm.recipe.requires.len}, .{});
-    }
-    if (pm.recipe.conflicts.len > 0) {
-        dvui.label(@src(), "  conflicts with: {d} mod(s)", .{pm.recipe.conflicts.len}, .{ .style = .err });
-    }
-}
-
-/// Open the NFDe picker scoped to .zon recipe files, then forward the
-/// pick to `doImportModRecipe`. Used from the Mods page action bar so
-/// users can pull in shared recipes that don't yet have a local archive.
 fn pickAndImportModRecipe(frame: *Frame) void {
     const filters = [_]file_picker.FilterItem{
         .{ .name = "Recipe (ZON)", .spec = "zon" },
@@ -581,13 +968,11 @@ fn pickAndImportModRecipe(frame: *Frame) void {
         const msg = std.fmt.bufPrint(&buf, "Picker failed: {s}", .{@errorName(e)}) catch "Picker failed";
         frame.state.pushToast(.err, msg);
         return;
-    } orelse return; // user cancelled
+    } orelse return;
     defer frame.lib.alloc.free(picked);
     actions.doImportModRecipe(frame, picked);
 }
 
-/// Open the NFDe picker, scoped to known archive extensions, and on
-/// selection hand the path to `doRegisterModArchive`.
 fn pickAndRegisterModArchive(frame: *Frame, game: *const library.Game, mod_recipe: *const recipe.ModRecipe) void {
     const filters = [_]file_picker.FilterItem{
         .{ .name = "Mod archives", .spec = "zip,7z,rar,tar,tar.gz,tar.bz2,tar.xz,tar.zst,tgz,tbz2,txz,gz,bz2,xz,zst" },
@@ -597,185 +982,11 @@ fn pickAndRegisterModArchive(frame: *Frame, game: *const library.Game, mod_recip
         const msg = std.fmt.bufPrint(&buf, "Picker failed: {s}", .{@errorName(e)}) catch "Picker failed";
         frame.state.setDownloadMsg(msg);
         return;
-    } orelse return; // user cancelled
+    } orelse return;
     defer frame.lib.alloc.free(picked);
     actions.doRegisterModArchive(frame, game, mod_recipe, picked);
 }
 
-// ============================================================
-//  Modfiles tab — per-game managed archives + recipe authoring
-// ============================================================
-
-/// Top action bar shared by the Mods tab — Add modfile / Scan + the
-/// scan-status message. Extracted so the merged Mods tab can compose
-/// it above both the orphan-archive list and the recipe list.
-fn renderModfileActionBar(frame: *Frame, game: *const library.Game) void {
-    const state = frame.state;
-    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .y = 0, .h = 8 } });
-    defer bar.deinit();
-
-    if (style.button(@src(), "Add modfile\u{2026}", .{}, .{ .style = .highlight })) {
-        actions.clearPendingDelete(frame);
-        pickAndAddModfile(frame, game);
-    }
-
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-
-    const scan_label: []const u8 = if (state.modfile_scan_busy) "Scanning\u{2026}" else "Scan mods folder";
-    if (style.button(@src(), scan_label, .{}, .{})) {
-        actions.clearPendingDelete(frame);
-        if (!state.modfile_scan_busy) actions.doScanModfiles(frame, game);
-    }
-
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-
-    if (style.button(@src(), "Import recipe...", .{}, .{})) {
-        actions.clearPendingDelete(frame);
-        pickAndImportModRecipe(frame);
-    }
-
-    if (!state.modfile_scan_msg.isEmpty()) {
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        const txt = state.modfile_scan_msg.read();
-        dvui.labelNoFmt(@src(), txt, .{}, .{ .gravity_y = 0.5 });
-    }
-}
-
-fn renderModfileRow(frame: *Frame, game: *const library.Game, m: anytype, presets: []const recipe.Preset) void {
-    const state = frame.state;
-    // Single horizontal row: info column on the left grows to fill,
-    // action buttons sit flush right. Two compact lines of info stack
-    // inside the left column so the row reads at the same height as
-    // a button.
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
-        .id_extra = std.hash.Wyhash.hash(0, m.id),
-    });
-    defer row.deinit();
-
-    // ---- left: info column ----
-    {
-        var info = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-            .gravity_y = 0.5,
-        });
-        defer info.deinit();
-
-        dvui.labelNoFmt(@src(), m.filename, .{}, .{ .style = .highlight });
-
-        // Second line — size · sha-prefix · recipe linkage, joined
-        // into one bufPrint so it always lays out on a single line
-        // even if the row gets narrow.
-        var sz_buf: [32]u8 = undefined;
-        const sz_txt = if (m.size_bytes >= 1024 * 1024)
-            std.fmt.bufPrint(&sz_buf, "{d:.1} MiB", .{@as(f64, @floatFromInt(m.size_bytes)) / (1024.0 * 1024.0)}) catch "?"
-        else
-            std.fmt.bufPrint(&sz_buf, "{d:.1} KiB", .{@as(f64, @floatFromInt(m.size_bytes)) / 1024.0}) catch "?";
-        const sha_prefix = m.id[0..@min(12, m.id.len)];
-        var meta_buf: [320]u8 = undefined;
-        const meta_txt = if (m.recipe_ids.len > 0) blk: {
-            // First-link-then-count summary keeps the meta line short
-            // even when many recipes share the archive.
-            const head = m.recipe_ids[0];
-            if (m.recipe_ids.len == 1) {
-                break :blk std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  linked: {s}", .{ sz_txt, sha_prefix, head }) catch sz_txt;
-            }
-            break :blk std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  linked: {s} (+{d} more)", .{ sz_txt, sha_prefix, head, m.recipe_ids.len - 1 }) catch sz_txt;
-        } else if (m.preset_id) |p|
-            std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  preset: {s}", .{ sz_txt, sha_prefix, p }) catch sz_txt
-        else
-            std.fmt.bufPrint(&meta_buf, "{s}  -  sha:{s}...  -  (no recipe)", .{ sz_txt, sha_prefix }) catch sz_txt;
-        dvui.labelNoFmt(@src(), meta_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
-    }
-
-    // ---- right: action buttons ----
-    {
-        var btns = dvui.box(@src(), .{ .dir = .horizontal }, .{ .gravity_y = 0.5 });
-        defer btns.deinit();
-
-        // Preset override — only meaningful while no recipe is bound.
-        // Once a recipe exists, its install steps supersede the
-        // preset attribution, and showing a dropdown would suggest
-        // an effect the click won't have.
-        if (m.recipe_ids.len == 0 and presets.len > 0) {
-            renderPresetOverrideDropdown(frame, game, m, presets);
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        }
-
-        if (m.recipe_ids.len > 0) {
-            // "Create another..." lets a single archive back multiple
-            // recipes (e.g. one per game-version target).
-            if (style.button(@src(), "Create another...", .{}, .{})) {
-                actions.clearPendingDelete(frame);
-                actions.openWizardForModfile(frame, game, m.id);
-            }
-        } else {
-            if (style.button(@src(), "Create recipe...", .{}, .{ .style = .highlight })) {
-                actions.clearPendingDelete(frame);
-                actions.openWizardForModfile(frame, game, m.id);
-            }
-        }
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-
-        const pending_slice = state.modfile_pending_delete_id_buf[0..state.modfile_pending_delete_id_len];
-        const armed = std.mem.eql(u8, pending_slice, m.id);
-        const del_label: []const u8 = if (armed) "Confirm delete from disk" else "Delete";
-        if (style.button(@src(), del_label, .{}, .{ .style = .err })) {
-            actions.doDeleteModfile(frame, game, m.id);
-        }
-    }
-}
-
-/// Per-row preset chooser. Index 0 is "None"; the rest map 1:1 onto
-/// `presets`. Strings live in the bundle's arena (loaded one level up
-/// in `renderModfiles`), so they stay valid for the entire dropdown
-/// call including the popup-menu render. On selection change, dispatches
-/// the new id (or null) to `setPresetId`.
-fn renderPresetOverrideDropdown(
-    frame: *Frame,
-    game: *const library.Game,
-    m: anytype,
-    presets: []const recipe.Preset,
-) void {
-    // Build a label slice on the frame heap. Capacity = presets + 1
-    // for the leading "None" row. Freed after the dropdown call —
-    // dvui doesn't retain label slices across frames.
-    const alloc = frame.lib.alloc;
-    const labels = alloc.alloc([]const u8, presets.len + 1) catch return;
-    defer alloc.free(labels);
-    labels[0] = "None";
-    for (presets, 0..) |p, i| labels[i + 1] = p.name;
-
-    // Pick = index of currently-applied preset, or 0 ("None") when
-    // `preset_id` is null or stale (id no longer in the merged set).
-    var pick: usize = 0;
-    if (m.preset_id) |pid| {
-        for (presets, 0..) |p, i| {
-            if (std.mem.eql(u8, p.id, pid)) {
-                pick = i + 1;
-                break;
-            }
-        }
-    }
-    const prev = pick;
-
-    if (style.dropdown(@src(), labels, .{ .choice = &pick }, .{}, .{
-        .id_extra = std.hash.Wyhash.hash(1, m.id),
-        .min_size_content = .{ .w = 140, .h = style.button_h },
-        .gravity_y = 0.5,
-    })) {
-        if (pick != prev) {
-            const new_id: ?[]const u8 = if (pick == 0) null else presets[pick - 1].id;
-            actions.doSetModfilePreset(frame, game, m.id, new_id);
-        }
-    }
-}
-
-/// Open the NFDe picker for "add to mod library" — same filter set as
-/// `pickAndRegisterModArchive` but without a target recipe; the file
-/// lands as an orphan modfile and the user creates a recipe from there.
 fn pickAndAddModfile(frame: *Frame, game: *const library.Game) void {
     const filters = [_]file_picker.FilterItem{
         .{ .name = "Mod archives", .spec = "zip,7z,rar,tar,tar.gz,tar.bz2,tar.xz,tar.zst,tgz,tbz2,txz,gz,bz2,xz,zst" },
@@ -785,7 +996,7 @@ fn pickAndAddModfile(frame: *Frame, game: *const library.Game) void {
         const msg = std.fmt.bufPrint(&buf, "Picker failed: {s}", .{@errorName(e)}) catch "Picker failed";
         frame.state.setDownloadMsg(msg);
         return;
-    } orelse return; // user cancelled
+    } orelse return;
     defer frame.lib.alloc.free(picked);
     actions.doAddModfile(frame, game, picked);
 }

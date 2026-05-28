@@ -93,19 +93,20 @@ pub const Cache = struct {
             .{ .name = "accept", .value = "application/gzip, application/octet-stream, */*" },
         };
 
+        // The `errdefer self.alloc.free(dest_dir)` above handles every
+        // error-return path below — DON'T also free explicitly, or the
+        // DebugAllocator's double-free guard fires.
         const resp = util_http.fetch(self.alloc, self.io, url, .{
             .extra_headers = &extra_headers,
             .max_response_bytes = MAX_SDK_BYTES,
         }) catch |e| {
             log.warn("SDK fetch network error: {s}", .{@errorName(e)});
-            self.alloc.free(dest_dir);
             return errs.Error.NetworkError;
         };
         defer self.alloc.free(resp.body);
 
         if (resp.status != 200) {
             log.warn("SDK fetch status {d} for {s}", .{ resp.status, url });
-            self.alloc.free(dest_dir);
             return switch (resp.status) {
                 404 => errs.Error.NotFound,
                 else => errs.Error.NetworkError,
@@ -117,11 +118,9 @@ pub const Cache = struct {
 
         // 2. Decompress (gzip) + extract tar into dest_dir.
         std.Io.Dir.cwd().createDirPath(self.io, dest_dir) catch {
-            self.alloc.free(dest_dir);
             return errs.Error.SdkLayoutInvalid;
         };
         var dest = std.Io.Dir.cwd().openDir(self.io, dest_dir, .{}) catch {
-            self.alloc.free(dest_dir);
             return errs.Error.SdkLayoutInvalid;
         };
         defer dest.close(self.io);
@@ -134,7 +133,6 @@ pub const Cache = struct {
         extract_result catch |e| {
             log.warn("SDK extract failed: {s}", .{@errorName(e)});
             std.Io.Dir.cwd().deleteTree(self.io, dest_dir) catch {};
-            self.alloc.free(dest_dir);
             return errs.Error.SdkLayoutInvalid;
         };
 

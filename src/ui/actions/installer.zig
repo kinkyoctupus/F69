@@ -80,10 +80,16 @@ pub fn isModInstalled(frame: *Frame, parent_game: *const library.Game, mod_recip
     var log_obj = installer_mod.Tracker.load(alloc, frame.io, layout.tracker_path) catch return false;
     defer log_obj.deinit(alloc);
 
-    var mod_id_buf: [32]u8 = undefined;
-    const mod_id_str = std.fmt.bufPrint(&mod_id_buf, "{d}", .{mod_recipe.f95_thread}) catch return false;
+    // Match either format the tracker may have written: the recipe
+    // slug (current code path — covers locally-imported mods where
+    // f95_thread is 0) OR the integer f95_thread (legacy format
+    // from older builds; still on disk for any mod the user
+    // installed before this fix shipped).
+    var legacy_buf: [32]u8 = undefined;
+    const legacy_id: []const u8 = std.fmt.bufPrint(&legacy_buf, "{d}", .{mod_recipe.f95_thread}) catch "";
     for (log_obj.entries) |e| {
-        if (std.mem.eql(u8, e.mod_id, mod_id_str)) return true;
+        if (std.mem.eql(u8, e.mod_id, mod_recipe.id)) return true;
+        if (legacy_id.len > 0 and std.mem.eql(u8, e.mod_id, legacy_id)) return true;
     }
     return false;
 }
@@ -162,11 +168,14 @@ fn runOneModJob(ctx: *RunnerCtx, job: *mod_job_queue.Job) !void {
     };
     defer mods_act.freeModTrackerLayout(alloc, layout);
 
-    var mod_id_buf: [32]u8 = undefined;
-    const mod_id_str = std.fmt.bufPrint(&mod_id_buf, "{d}", .{job.mod_thread_id}) catch {
-        setJobErr(job, "Mod id too long.") catch {};
-        return;
-    };
+    // Tracker writes / lookups use the recipe slug, not the integer
+    // f95_thread. Locally-imported mods all have f95_thread = 0, so
+    // formatting that as a string would collide every local mod onto
+    // the same tracker key — and the cache lookup that reads "are
+    // any tracker entries for THIS mod" would silently return all of
+    // them as one. `mod_recipe_id` is the slugified recipe id, which
+    // is unique per recipe on disk.
+    const mod_id_str = job.mod_recipe_id;
 
     switch (job.kind) {
         .install => try runInstall(ctx, job, layout, mod_id_str),
@@ -1595,6 +1604,7 @@ pub fn extractProgressForGame(frame: *Frame, thread_id: u64) ?u8 {
 /// compression ratio of Ren'Py / RPGM archive payloads. Capped at 99
 /// so the UI doesn't claim "done" before the worker actually returns.
 fn extractProgressPoller(job: *PostInstallJob) void {
+    job_mod.lowerWorkerPriority();
     const p = &job.payload;
     // ×2 is a coarse fit for Ren'Py / RPGM zips. Smaller for raw
     // 7z (already-compressed assets) → progress moves slower but
@@ -1608,7 +1618,7 @@ fn extractProgressPoller(job: *PostInstallJob) void {
         // Nudge dvui so the bar repaints even when no input event
         // arrives — without this the UI sits idle and the % only
         // updates when the user moves the mouse.
-        dvui.refresh(job.win, @src(), null);
+        job_mod.refreshDebounced(job.win, @src());
         std.Io.sleep(p.io, tick, .awake) catch break;
     }
 }
@@ -1907,6 +1917,14 @@ pub fn drainPostInstall(frame: *Frame) void {
             if (frame.state.auto_convert) {
                 maybeAutoConvert(frame, p.game_id, p.dest_dir);
             }
+            // Post-install diagnostics. Walk the extracted dir for
+            // a Linux launcher and run `ldd` against it. If unresolved
+            // libs are found, auto-open the launch-issue dialog so
+            // the user knows BEFORE they click Launch — and gets a
+            // one-click "Fix" if we recognise the issue. Skips when
+            // no Linux launcher exists yet (e.g. Windows-only build
+            // waiting for Convert).
+            runPostInstallDiagnostics(frame, p.game_id, p.dest_dir);
         } else if (phase == .failed) {
             log.warn("post-install game-job {d}: worker failed ({s})", .{ p.download_job_id, p.err_name orelse "?" });
         }
@@ -1918,6 +1936,29 @@ pub fn drainPostInstall(frame: *Frame) void {
         _ = list.swapRemove(i);
         // Don't bump i — swapRemove may have moved a fresh entry
         // into this slot that still needs checking.
+    }
+}
+
+/// Post-install diagnostics — finds a Linux launcher under the
+/// freshly-extracted install dir and runs the same static checks
+/// the pre-launch path uses. If anything actionable is detected the
+/// launch diag popup auto-opens so the user sees the issue (and any
+/// available fix) before they click Launch the first time.
+///
+/// No-op when no Linux launcher exists yet (Windows-only build, or
+/// the user installed without Convert and there's nothing to check).
+fn runPostInstallDiagnostics(frame: *Frame, game_id: u64, install_dir: []const u8) void {
+    const alloc = frame.lib.alloc;
+    var exe_buf: [512]u8 = undefined;
+    const launcher = launch_act.findLinuxLauncher(frame.io, alloc, install_dir, &exe_buf) orelse return;
+    if (launch_act.runPreLaunchDiagnostics(alloc, frame.io, launcher)) |diag| {
+        defer alloc.free(diag.summary);
+        defer alloc.free(diag.log);
+        log.info(
+            "post-install diagnostics tid={d}: {s}",
+            .{ game_id, diag.summary },
+        );
+        launch_act.stashLaunchDiagPub(frame.state, game_id, diag);
     }
 }
 
@@ -1940,7 +1981,31 @@ fn maybeAutoConvert(frame: *Frame, game_id: u64, install_dir: []const u8) void {
         state.setConvertMsg(msg);
         return;
     };
-    state.setConvertMsg("Auto-convert: done.");
+
+    // Chain auto-apply-compat when the toggle is on. Same rationale
+    // as the manual Convert button: the very next thing the user
+    // will try after a successful Convert is Launch, and Launch
+    // typically needs the compat env. Folding it into the post-install
+    // pipeline avoids the "Launch → fail → click Fix → Launch" loop.
+    var compat_tail: []const u8 = "";
+    var compat_buf: [128]u8 = undefined;
+    if (state.auto_apply_compat) {
+        if (frame.lib.latestInstallForGame(game_id) catch null) |inst| {
+            defer frame.lib.freeInstall(inst);
+            const res = launch_act.autoApplyCompatAfterConvert(frame, &inst.id, install_dir);
+            if (res.applied + res.reapplied + res.failed > 0) {
+                compat_tail = std.fmt.bufPrint(
+                    &compat_buf,
+                    " Compat: {d} applied, {d} re-applied, {d} failed.",
+                    .{ res.applied, res.reapplied, res.failed },
+                ) catch "";
+            }
+        }
+    }
+
+    var msg_buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "Auto-convert: done.{s}", .{compat_tail}) catch "Auto-convert: done.";
+    state.setConvertMsg(msg);
 }
 
 fn doInstallUpsert(
@@ -2226,6 +2291,7 @@ fn manualInstallWorker(job: *ManualInstallJob) void {
 /// compression ratio) and updates `progress_pct` so the UI can
 /// render a moving bar.
 fn manualExtractProgressPoller(job: *ManualInstallJob) void {
+    job_mod.lowerWorkerPriority();
     const p = &job.payload;
     const denom: u64 = @max(1, p.archive_size * 2);
     const tick = std.Io.Duration.fromMilliseconds(250);
@@ -2233,7 +2299,7 @@ fn manualExtractProgressPoller(job: *ManualInstallJob) void {
         const bytes = dirSizeBytes(p.io, p.dest_dir);
         const pct_u64: u64 = @min(99, @divTrunc(bytes * 100, denom));
         p.progress_pct.store(@intCast(pct_u64), .release);
-        dvui.refresh(job.win, @src(), null);
+        job_mod.refreshDebounced(job.win, @src());
         std.Io.sleep(p.io, tick, .awake) catch break;
     }
 }

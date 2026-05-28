@@ -274,11 +274,21 @@ pub fn modsPageCache(frame: *Frame, game: *const library.Game) ?*ModsPageCache {
                 if (layout_opt) |layout| {
                     var log_obj = installer_mod.Tracker.load(alloc, frame.io, layout.tracker_path) catch installer_mod.InstallLog{ .entries = &.{} };
                     defer log_obj.deinit(alloc);
+                    // Tracker writes use the recipe slug going
+                    // forward; older trackers stored the integer
+                    // f95_thread as a string. Match both so older
+                    // installs still light up "Installed" after the
+                    // upgrade without forcing a reinstall.
                     for (log_obj.entries) |e| {
                         if (e.mod_id.len == 0) continue;
-                        const tid = std.fmt.parseUnsigned(u64, e.mod_id, 10) catch continue;
                         for (cache.mods, 0..) |*pm, i| {
-                            if (pm.recipe.f95_thread == tid) {
+                            const slug_match = std.mem.eql(u8, pm.recipe.id, e.mod_id);
+                            const legacy_match = blk: {
+                                var lbuf: [32]u8 = undefined;
+                                const lid = std.fmt.bufPrint(&lbuf, "{d}", .{pm.recipe.f95_thread}) catch break :blk false;
+                                break :blk std.mem.eql(u8, lid, e.mod_id);
+                            };
+                            if (slug_match or legacy_match) {
                                 if (cache.installed.len == cache.mods.len and !cache.installed[i]) {
                                     cache.installed[i] = true;
                                     any_installed = true;
@@ -666,6 +676,122 @@ fn hasGameTelltale(io: std.Io, path: []const u8) bool {
         if (std.mem.endsWith(u8, entry.name, ".AppImage")) return true;
     }
     return false;
+}
+
+// ============================================================
+//  Bulk engine re-detection (Settings → Library)
+// ============================================================
+
+pub const EngineReanalyseStats = struct {
+    scanned: u32 = 0, // games with at least one install on disk
+    changed: u32 = 0, // games whose stored engine label was updated
+    skipped_no_install: u32 = 0,
+    skipped_detect_unknown: u32 = 0,
+
+    // Per-engine counts of `changed` (read off in the summary line).
+    to_renpy: u32 = 0,
+    to_rpgm_mv: u32 = 0,
+    to_rpgm_mz: u32 = 0,
+    to_rpgm_vx: u32 = 0,
+    to_unity: u32 = 0,
+};
+
+/// Walk every game in the library, peel the wrapper folder of its
+/// latest install, and run engine detection. When the detected engine
+/// differs from the stored `Game.engine`, persist the new value via
+/// `applyScrape`.
+///
+/// Synchronous. Each game costs at most ~9 cheap `access()` calls
+/// (resolveGameRoot's telltale probe + detectEngine's heuristics +
+/// fallback RGSS marker probe), so even a 200-game library on FUSE
+/// NTFS stays under ~10s. If profiling later shows this is too slow,
+/// promote to a background job + RefreshTagsJob-style status row.
+///
+/// Engine coverage: Ren'Py, RPGM MV/MZ, Unity (via convert/detect.zig);
+/// RPGM XP/VX/VX Ace (via convert/rpgm.detectRgssVariant — all roll up
+/// to library's `rpgm_vx` since the Engine enum doesn't carve XP out).
+/// Engines without a Linux fingerprint here (Unreal, HTML, GameMaker,
+/// Wolf RPG) are left alone — they need their own walker.
+pub fn doReanalyseAllEngines(frame: *Frame) EngineReanalyseStats {
+    var stats = EngineReanalyseStats{};
+    const alloc = frame.lib.alloc;
+
+    for (frame.games) |*game| {
+        const install_opt = frame.lib.latestInstallForGame(game.f95_thread_id) catch null;
+        defer if (install_opt) |i| frame.lib.freeInstall(i);
+        const install = install_opt orelse {
+            stats.skipped_no_install += 1;
+            continue;
+        };
+
+        const root = resolveGameRoot(frame.io, install.install_path, alloc) catch {
+            stats.skipped_no_install += 1;
+            continue;
+        };
+        defer alloc.free(root);
+
+        stats.scanned += 1;
+
+        var detected = convert_mod.detectEngine(frame.io, root);
+        if (detected == .unknown) {
+            const variant = convert_mod.rpgm.detectRgssVariant(frame.io, root);
+            if (variant != .unknown) detected = .rpgm_vx;
+        }
+        if (detected == .unknown) {
+            stats.skipped_detect_unknown += 1;
+            continue;
+        }
+        if (game.engine == detected) continue;
+
+        const old_engine = game.engine;
+        frame.lib.applyScrape(game, .{ .engine = detected }) catch |e| {
+            log.warn("reanalyseEngines: applyScrape failed for tid={d}: {s}", .{ game.f95_thread_id, @errorName(e) });
+            continue;
+        };
+        log.info("reanalyseEngines: tid={d} {s} → {s}  ({s})", .{
+            game.f95_thread_id, @tagName(old_engine), @tagName(detected), root,
+        });
+        stats.changed += 1;
+        switch (detected) {
+            .renpy => stats.to_renpy += 1,
+            .rpgm_mv => stats.to_rpgm_mv += 1,
+            .rpgm_mz => stats.to_rpgm_mz += 1,
+            .rpgm_vx => stats.to_rpgm_vx += 1,
+            .unity => stats.to_unity += 1,
+            else => {},
+        }
+    }
+
+    // Surface the result in the settings tab.
+    writeReanalyseSummary(frame.state, stats);
+
+    // Drop the library filter cache. Its signature doesn't hash
+    // per-game data, so a fresh engine label on a game caught by an
+    // active engine filter wouldn't otherwise re-evaluate inclusion
+    // until something else dirtied the signature.
+    if (stats.changed > 0) {
+        if (frame.state.lib_filter_cache_indices) |old| {
+            frame.lib.alloc.free(old);
+            frame.state.lib_filter_cache_indices = null;
+        }
+        frame.state.lib_filter_cache_sig = 0;
+    }
+
+    return stats;
+}
+
+fn writeReanalyseSummary(state: *State, stats: EngineReanalyseStats) void {
+    const written = std.fmt.bufPrint(&state.engine_reanalyse_msg_buf,
+        "Scanned {d}. Updated {d}: Ren'Py {d} \xC2\xB7 RPGM {d}/{d}/{d} \xC2\xB7 Unity {d}. Unknown: {d}. No install: {d}.",
+        .{
+            stats.scanned, stats.changed,
+            stats.to_renpy, stats.to_rpgm_mv, stats.to_rpgm_mz, stats.to_rpgm_vx,
+            stats.to_unity,
+            stats.skipped_detect_unknown,
+            stats.skipped_no_install,
+        },
+    ) catch state.engine_reanalyse_msg_buf[0..0];
+    state.engine_reanalyse_msg_len = written.len;
 }
 
 /// Resolved on-disk layout for the per-install mod tracker. `doInstallMod`
@@ -1428,7 +1554,19 @@ pub fn openWizardForModfile(frame: *Frame, parent_game: *const library.Game, mod
 
     // `return_screen` is captured up front so we never construct a
     // WizardState without a known origin (the field has no default).
-    var w = state_mod.WizardState{ .return_screen = state.screen };
+    // Open on the install-plan step so the user sees the wrapper-folder
+    // checkbox immediately. The new linear wizard treats `.install` as
+    // step 1 of 2 (it used to start on `.meta`, which buried the most
+    // important decision behind a Next click).
+    var w = state_mod.WizardState{ .step = .install, .return_screen = state.screen };
+
+    // Default version to "1.0" so the user doesn't have to type one
+    // before saving. They can edit on step 2 if they have a real
+    // version number from the modder.
+    {
+        const default_version = "1.0";
+        @memcpy(w.version_buf[0..default_version.len], default_version);
+    }
     w.game_thread_id = parent_game.f95_thread_id;
 
     const id_n = @min(modfile_id.len, w.modfile_id_buf.len);

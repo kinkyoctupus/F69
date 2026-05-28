@@ -1,0 +1,62 @@
+// mkxp-z (RGSS reimplementation, ports XP/VX/VX Ace to Linux+macOS)
+// fires `Error initializing SDL: wayland,x11 not available` on
+// host loaders without X11/Wayland libs on $LD_LIBRARY_PATH. mkxp-z
+// statically links SDL2 internally — but SDL2 itself dlopens its X11
+// + Wayland video backends, libGL, and the audio backends by soname
+// at runtime. On NixOS those .so files aren't on the standard loader
+// path, so SDL_Init fails before mkxp-z gets a window up.
+//
+// Same shape as `linux.renpy8.sdl-fhs`: bundle the SDL2 dlopen
+// surface as a Nix-built derivation (`mkxp-z-fhs-libs` in flake.nix),
+// prepend to LD_LIBRARY_PATH at launch time. No game files touched.
+//
+// Detector triggers when (a) the f69-written `run-mkxp-z.sh` launcher
+// exists in the install (= a Convert ran via the mkxp-z path) AND
+// (b) the host lacks libX11. The launcher-presence gate keeps the
+// recipe from firing on plain RGSS installs that the user hasn't
+// converted yet.
+.{
+    .id = "linux.mkxp-z.sdl-fhs",
+    .title = "mkxp-z: bundled SDL2 cannot find X11/Wayland on this host",
+    .explain =
+        \\f69 converted this RPG Maker XP / VX / VX Ace install to run
+        \\under the vendored mkxp-z runtime. mkxp-z's bundled SDL2
+        \\dlopens X11/Wayland video and ALSA/PulseAudio audio backends
+        \\at runtime, by soname. This host does not expose those
+        \\libraries through the standard dynamic-loader search path
+        \\(typical on NixOS and minimal containers).
+        \\
+        \\The fix prepends LD_LIBRARY_PATH with a curated bundle of
+        \\X11/Wayland/GL/audio libraries when the game launches. No
+        \\game files are modified. The fix can be undone at any time.
+    ,
+    .severity = .blocker,
+    .reversible = true,
+    .platforms = .{ .linux },
+    .detect = .{ .all = .{
+        .{ .file_exists = "run-mkxp-z.sh" },
+        .{ .host_lacks_soname = "libX11.so.6" },
+    } },
+    .apply = .{
+        .{ .env_prepend = .{
+            .name = "LD_LIBRARY_PATH",
+            .from_resource = "mkxp-z-fhs-libs",
+            .relpath = "lib",
+            .sep = ":",
+        } },
+        // NOTE: do NOT force SDL_VIDEODRIVER=x11 here. mkxp-z uses
+        // ANGLE on Vulkan as its GL backend, and on Wayland sessions
+        // forcing SDL onto XWayland makes ANGLE's Vulkan-XCB display
+        // init fail (`Assert failed: mXcbConnection != nullptr`).
+        // SDL2 auto-picks Wayland and ANGLE talks Vulkan→Wayland
+        // directly, which works. (Diverges from the renpy8 recipe
+        // because Ren'Py uses SDL2's GL renderer, not ANGLE.)
+    },
+    .required_resources = .{ "mkxp-z-fhs-libs" },
+    .hints = .{
+        .{ .via = "nix-ld", .command = "Enable `programs.nix-ld.enable = true;` and add the listed X11/Wayland/audio packages to `programs.nix-ld.libraries`." },
+        .{ .via = "pacman", .command = "Should not trigger on Arch — file an issue if it does." },
+        .{ .via = "apt",    .command = "Install `libsdl2-2.0-0 libgl1 libxcursor1 libxrandr2 libxi6 libpulse0 libasound2` if you see this on Debian/Ubuntu." },
+        .{ .via = "dnf",    .command = "Install `SDL2 libGL libXcursor libXrandr libXi pulseaudio-libs alsa-lib` if you see this on Fedora." },
+    },
+}

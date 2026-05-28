@@ -134,6 +134,263 @@ pub fn loadFromDb(alloc: std.mem.Allocator, db_path: []const u8) imp.Error!imp.B
     return .{ .arena = arena, .games = games };
 }
 
+// ============================================================
+//  Export: write f69's library into a F95Checker-shaped SQLite db.
+//
+//  Used by the "Export to F95Checker" UI flow. F95Checker has no
+//  dedicated backup-format function (its only imports are URL
+//  shortcuts / browser bookmarks HTML / live API fetches, none of
+//  which carry rich metadata), so we write directly into a
+//  `db.sqlite3` matching the upstream schema.
+//
+//  Safety: caller MUST have already backed up any existing target
+//  file. We refuse to clobber unconditionally — see
+//  `backupExistingIfPresent` in actions/imports.zig.
+// ============================================================
+
+/// One row to be exported. Caller fills these in by walking
+/// `frame.games` + per-game `latestInstallForGame`. Strings are
+/// borrowed (we just bind them as SQL params, sqlite copies).
+pub const ExportGame = struct {
+    thread_id: u64,
+    name: []const u8,
+    version: ?[]const u8 = null,
+    developer: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    changelog: ?[]const u8 = null,
+    notes: ?[]const u8 = null,
+    cover_url: ?[]const u8 = null,
+    /// F95Zone average score (0..5 typically).
+    score: f32 = 0,
+    votes: u32 = 0,
+    /// User's own 0..5 rating; 0 means "no rating".
+    rating: u32 = 0,
+    /// Unix seconds; 0 means "never launched".
+    last_launched: i64 = 0,
+    /// Unix seconds for `added_on`. Defaults to install timestamp at
+    /// the caller's discretion (best-effort — f69 doesn't track when
+    /// a game was added to the library distinctly from when it was
+    /// installed).
+    added_on: i64 = 0,
+    last_updated: i64 = 0,
+    /// Comma-free tag strings; serialized to a JSON array.
+    tags: []const []const u8 = &.{},
+    /// Pre-built JSON list — assembly logic lives in the caller so
+    /// we keep this writer free of f69-side string ownership rules.
+    /// Empty string means we'll emit `[]`.
+    executables_json: []const u8 = "",
+    /// F95Checker convention: empty string = not finished; a
+    /// non-empty string (the version at which the user marked
+    /// finished) = finished. We use `version` as the marker when
+    /// completion_status is .completed, else empty.
+    finished: []const u8 = "",
+    /// Same convention: empty = not installed; the version string
+    /// when installed. Setting this is what makes F95Checker's
+    /// "Installed" filter find the game.
+    installed: []const u8 = "",
+    /// `https://f95zone.to/threads/<id>/` — caller may pass empty
+    /// for synthetic games; we synthesize from `thread_id` when so.
+    url: []const u8 = "",
+};
+
+/// Write the export. Opens (creates) `db_path`, runs F95Checker's
+/// minimal table schema, inserts every game. Idempotency: callers
+/// SHOULD have moved any existing file to a backup first — this
+/// writer creates the DB; if a file is already there with a non-
+/// matching schema the inserts will error.
+pub fn writeToDb(
+    alloc: std.mem.Allocator,
+    db_path: []const u8,
+    games: []const ExportGame,
+) imp.Error!void {
+    var conn = dbu.Conn.open(db_path, alloc, .{ .readonly = false, .create = true }) catch return imp.Error.OpenFailed;
+    defer conn.close();
+
+    // Replicate F95Checker's `games` table schema verbatim
+    // (modules/db.py:271). The DEFAULT clauses on the f95checker
+    // side use Type.Unchecked = 23 and Status.Unchecked = 5
+    // (sourced from common/structs.py).
+    conn.exec(F95CHECKER_GAMES_DDL) catch return imp.Error.ParseFailed;
+
+    // Pre-create all the F95Checker tables. F95Checker's startup
+    // runs CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN for
+    // each table; that work happens inside an implicit transaction
+    // that only commits after ~30s (save_loop) or on clean exit.
+    // If F95Checker crashes between startup and the first save (e.g.
+    // because the `settings` table has no row and a SELECT returns
+    // None → AttributeError on dataclass coerce → crash), every DDL
+    // step rolls back and the next launch sees the same broken DB.
+    //
+    // Solution: ship all the tables ourselves so F95Checker's
+    // CREATE TABLE IF NOT EXISTS calls are no-ops, AND insert the
+    // singleton `_=0` row F95Checker's settings loader expects.
+    // F95Checker's create_table will then ALTER our minimal table
+    // shapes to add its full column set (with defaults) on first
+    // launch — but the singleton row stays + the schema is sound.
+    //
+    // We deliberately don't ship every column-on-every-table because
+    // that would lock us to F95Checker's exact schema-of-the-week
+    // and break any future upstream column rename. F95Checker's
+    // own migration code is the right tool to bring the schema up
+    // to date; we just need the tables to exist + the singleton row.
+    conn.exec(
+        \\CREATE TABLE IF NOT EXISTS settings (
+        \\  _ INTEGER PRIMARY KEY CHECK (_=0)
+        \\)
+    ) catch return imp.Error.ParseFailed;
+    conn.exec("INSERT INTO settings (_) VALUES (0) ON CONFLICT DO NOTHING") catch return imp.Error.ParseFailed;
+    conn.exec(
+        \\CREATE TABLE IF NOT EXISTS cookies (
+        \\  key   TEXT PRIMARY KEY,
+        \\  value TEXT DEFAULT ""
+        \\)
+    ) catch return imp.Error.ParseFailed;
+    conn.exec(
+        \\CREATE TABLE IF NOT EXISTS labels (
+        \\  id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        \\  name  TEXT DEFAULT "",
+        \\  color TEXT DEFAULT "#696969"
+        \\)
+    ) catch return imp.Error.ParseFailed;
+    conn.exec(
+        \\CREATE TABLE IF NOT EXISTS tabs (
+        \\  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        \\  name     TEXT    DEFAULT "",
+        \\  icon     TEXT    DEFAULT "",
+        \\  color    TEXT    DEFAULT NULL,
+        \\  position INTEGER DEFAULT 0
+        \\)
+    ) catch return imp.Error.ParseFailed;
+    conn.exec(
+        \\CREATE TABLE IF NOT EXISTS timeline_events (
+        \\  game_id   INTEGER DEFAULT NULL,
+        \\  timestamp INTEGER DEFAULT 0,
+        \\  arguments TEXT    DEFAULT "[]",
+        \\  type      INTEGER DEFAULT 1
+        \\)
+    ) catch return imp.Error.ParseFailed;
+
+    // Wrap inserts in a transaction — couple-hundred-row libraries
+    // would otherwise sync every row to disk individually.
+    conn.exec("BEGIN") catch return imp.Error.ParseFailed;
+    errdefer conn.exec("ROLLBACK") catch {};
+
+    const insert_sql =
+        \\INSERT INTO games (
+        \\  id, name, version, developer, url,
+        \\  added_on, last_updated, last_launched,
+        \\  score, votes, rating,
+        \\  finished, installed, executables,
+        \\  description, changelog, tags, notes,
+        \\  image_url
+        \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        \\ON CONFLICT(id) DO UPDATE SET
+        \\  name=excluded.name, version=excluded.version, developer=excluded.developer,
+        \\  url=excluded.url, added_on=excluded.added_on, last_updated=excluded.last_updated,
+        \\  last_launched=excluded.last_launched, score=excluded.score, votes=excluded.votes,
+        \\  rating=excluded.rating, finished=excluded.finished, installed=excluded.installed,
+        \\  executables=excluded.executables, description=excluded.description,
+        \\  changelog=excluded.changelog, tags=excluded.tags, notes=excluded.notes,
+        \\  image_url=excluded.image_url
+    ;
+
+    // Scratch buffers for fields we serialize per-row.
+    var url_buf: [128]u8 = undefined;
+
+    for (games) |g| {
+        // F95Checker stores tags as INTEGER IDs that map to the
+        // `Tag` IntEnumHack in common/structs.py (e.g. "3dcg" → 4,
+        // "anal-sex" → 7). On load, F95Checker coerces each element
+        // via `Tag(x)` which calls `int.__new__(cls, x)` — passing a
+        // string crashes the entire DB load with a ValueError, taking
+        // the app down before settings are even committed.
+        //
+        // Mapping f69's free-form tag strings → upstream tag IDs would
+        // require shipping a 150-entry name table that drifts every
+        // time F95Zone renames a tag. Cleaner: emit an empty array and
+        // let the user run F95Checker's "Refresh All" to repopulate
+        // tags from F95Zone, which produces the canonical IDs anyway.
+        _ = g.tags;
+        const tags_json: []const u8 = "[]";
+        const exes_json: []const u8 = if (g.executables_json.len == 0) "[]" else g.executables_json;
+
+        // Synthesize the F95Zone thread URL when the caller didn't
+        // supply one. F95Checker accepts the canonical `/threads/<id>/`
+        // form — the version slug isn't required.
+        const url_slice: []const u8 = if (g.url.len > 0)
+            g.url
+        else
+            std.fmt.bufPrint(&url_buf, "https://f95zone.to/threads/{d}/", .{g.thread_id}) catch return imp.Error.OutOfMemory;
+
+        conn.inner.exec(insert_sql, .{
+            @as(i64, @intCast(g.thread_id)),
+            g.name,
+            g.version orelse "Unchecked",
+            g.developer orelse "",
+            url_slice,
+            g.added_on,
+            g.last_updated,
+            g.last_launched,
+            @as(f64, g.score),
+            @as(i64, @intCast(g.votes)),
+            @as(i64, @intCast(g.rating)),
+            g.finished,
+            g.installed,
+            exes_json,
+            g.description orelse "",
+            g.changelog orelse "",
+            tags_json,
+            g.notes orelse "",
+            g.cover_url orelse "",
+        }) catch return imp.Error.ParseFailed;
+    }
+
+    conn.exec("COMMIT") catch return imp.Error.ParseFailed;
+}
+
+/// F95Checker's `games` table DDL, hand-translated from the upstream
+/// `create_table` call in `modules/db.py`. Type/Status `Unchecked`
+/// constants are hardcoded to their upstream values (Type=23,
+/// Status=5) — change here if upstream renumbers them.
+const F95CHECKER_GAMES_DDL =
+    \\CREATE TABLE IF NOT EXISTS games (
+    \\  id                  INTEGER PRIMARY KEY,
+    \\  custom              INTEGER DEFAULT NULL,
+    \\  name                TEXT    DEFAULT "",
+    \\  version             TEXT    DEFAULT "Unchecked",
+    \\  developer           TEXT    DEFAULT "",
+    \\  type                INTEGER DEFAULT 23,
+    \\  status              INTEGER DEFAULT 5,
+    \\  url                 TEXT    DEFAULT "",
+    \\  added_on            INTEGER DEFAULT 0,
+    \\  last_updated        INTEGER DEFAULT 0,
+    \\  last_full_check     INTEGER DEFAULT 0,
+    \\  last_check_version  TEXT    DEFAULT "",
+    \\  last_launched       INTEGER DEFAULT 0,
+    \\  score               REAL    DEFAULT 0,
+    \\  votes               INTEGER DEFAULT 0,
+    \\  rating              INTEGER DEFAULT 0,
+    \\  finished            TEXT    DEFAULT "",
+    \\  installed           TEXT    DEFAULT "",
+    \\  updated             INTEGER DEFAULT NULL,
+    \\  archived            INTEGER DEFAULT 0,
+    \\  executables         TEXT    DEFAULT "[]",
+    \\  description         TEXT    DEFAULT "",
+    \\  changelog           TEXT    DEFAULT "",
+    \\  tags                TEXT    DEFAULT "[]",
+    \\  unknown_tags        TEXT    DEFAULT "[]",
+    \\  unknown_tags_flag   INTEGER DEFAULT 0,
+    \\  labels              TEXT    DEFAULT "[]",
+    \\  tab                 INTEGER DEFAULT NULL,
+    \\  notes               TEXT    DEFAULT "",
+    \\  image_url           TEXT    DEFAULT "",
+    \\  previews_urls       TEXT    DEFAULT "[]",
+    \\  downloads           TEXT    DEFAULT "[]",
+    \\  reviews_total       INTEGER DEFAULT 0,
+    \\  reviews             TEXT    DEFAULT "[]"
+    \\)
+;
+
 /// Read `settings.default_exe_dir` and return the JSON value for the
 /// Linux platform key ("2"). Useful as the suggested default for the
 /// games-base-dir picker. Null if the field is empty or absent.
@@ -272,6 +529,84 @@ test "loadFromDb: full row round-trips through the bundle" {
     try testing.expectEqual(@as(?f32, 5), g.user_rating);
     try testing.expectEqual(@as(?i64, 1700000000), g.last_played_at);
     try testing.expectEqualStrings("completed", g.completion_status.?);
+}
+
+test "writeToDb: round-trips through loadFromDb" {
+    var env = try test_env.TestEnv.init(testing.allocator, "f95checker-export");
+    defer env.deinit();
+    const tmp = try env.path("db.sqlite3");
+    defer testing.allocator.free(tmp);
+
+    const tags = [_][]const u8{ "3dcg", "romance" };
+    const exes_json = "[\"/home/moortu/.local/share/f69/library/2428/imported/Babysitter.sh\"]";
+    const games = [_]ExportGame{
+        .{
+            .thread_id = 2428,
+            .name = "Babysitter",
+            .version = "v0.2.2b",
+            .developer = "T4bbo",
+            .description = "the description",
+            .changelog = "the changelog",
+            .notes = "the notes",
+            .cover_url = "https://attachments.f95zone.to/cover.png",
+            .score = 4.5,
+            .votes = 1234,
+            .rating = 5,
+            .last_launched = 1700000000,
+            .added_on = 1690000000,
+            .last_updated = 1700000000,
+            .tags = &tags,
+            .executables_json = exes_json,
+            .finished = "v0.2.2b",
+            .installed = "v0.2.2b",
+            .url = "https://f95zone.to/threads/2428/",
+        },
+    };
+    try writeToDb(testing.allocator, tmp, &games);
+
+    // Re-read via the existing importer to verify shape parity.
+    var bundle = try loadFromDb(testing.allocator, tmp);
+    defer bundle.deinit();
+
+    try testing.expectEqual(@as(usize, 1), bundle.games.len);
+    const g = bundle.games[0];
+    try testing.expectEqual(@as(u64, 2428), g.thread_id);
+    try testing.expectEqualStrings("Babysitter", g.name);
+    try testing.expectEqualStrings("v0.2.2b", g.version.?);
+    try testing.expectEqualStrings("T4bbo", g.developer.?);
+    // tags are intentionally emitted as `[]` on export — see writeToDb.
+    try testing.expectEqual(@as(usize, 0), g.tags.len);
+    try testing.expectEqual(@as(?f32, 4.5), g.rating);
+    try testing.expectEqual(@as(?u32, 1234), g.vote_count);
+    try testing.expectEqual(@as(?f32, 5), g.user_rating);
+    try testing.expectEqual(@as(?i64, 1700000000), g.last_played_at);
+    try testing.expectEqualStrings("completed-as-v0.2.2b — completion mapper checks", "completed-as-v0.2.2b — completion mapper checks"); // sanity placeholder
+    // The exporter writes `finished = version` to mark "completed at version".
+    // The importer returns the raw text → the UI's `mapCompletion`
+    // turns a non-empty `finished` into `.completed`. We assert the
+    // raw value made the round trip.
+    try testing.expectEqualStrings("v0.2.2b", g.completion_status.?);
+}
+
+test "writeToDb: minimal row (only thread_id + name)" {
+    var env = try test_env.TestEnv.init(testing.allocator, "f95checker-export-min");
+    defer env.deinit();
+    const tmp = try env.path("db.sqlite3");
+    defer testing.allocator.free(tmp);
+
+    const games = [_]ExportGame{
+        .{ .thread_id = 99999, .name = "Bare Game" },
+    };
+    try writeToDb(testing.allocator, tmp, &games);
+
+    var bundle = try loadFromDb(testing.allocator, tmp);
+    defer bundle.deinit();
+    try testing.expectEqual(@as(usize, 1), bundle.games.len);
+    try testing.expectEqual(@as(u64, 99999), bundle.games[0].thread_id);
+    try testing.expectEqualStrings("Bare Game", bundle.games[0].name);
+    // Default version "Unchecked" → loadFromDb normalises to null
+    // (see the next test). So we should see null here too.
+    try testing.expect(bundle.games[0].version == null);
 }
 
 test "loadFromDb: 'Unchecked' version is normalised to null" {

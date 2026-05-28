@@ -16,10 +16,24 @@ const std = @import("std");
 const library = @import("library");
 const importers = @import("importers");
 const dvui = @import("dvui");
+const job_mod = @import("job.zig");
 
 const log = std.log.scoped(.import_job);
 
 pub const Source = enum { f95checker, xlibrary };
+
+/// Per-import transfer mode. Mirrors `state.ImportMode` but lives
+/// here so the worker file doesn't need to reach into the UI
+/// namespace. Converted by the action layer at job creation time.
+pub const Mode = enum {
+    /// Cut + paste. Final disk = 1x.
+    move,
+    /// Copy + keep source. Final disk = 2x.
+    copy,
+    /// No filesystem mutation — install row points at the source.
+    /// Safest mode (default for DB-driven imports).
+    link,
+};
 
 pub const Phase = enum(u8) {
     queued = 0,
@@ -71,6 +85,12 @@ pub const Job = struct {
     /// f69's library root — where migrated installs land. Borrowed
     /// from `RuntimeInfo`; lives for the whole app run.
     library_root: []const u8,
+
+    /// Transfer mode picked by the user. `.link` is the default for
+    /// DB-driven imports because it's the safest — no source
+    /// mutation, no risk of repeating the 2026-05-28
+    /// `~/.config/f95checker/` data-loss incident.
+    mode: Mode = .link,
 
     /// Thread-ids the UI already had at start time, so the worker
     /// knows which games to skip without querying the DB. Alloc-owned
@@ -163,7 +183,7 @@ pub fn start(job: *Job) !void {
 /// SQLite access.
 fn workerMain(job: *Job) void {
     job.phase.store(@intFromEnum(Phase.reading), .release);
-    if (job.win) |w| dvui.refresh(w, @src(), null);
+    if (job.win) |w| job_mod.refreshDebounced(w, @src());
 
     var bundle = readBundle(job) catch |e| {
         setErr(job, e, "reading source data");
@@ -173,7 +193,7 @@ fn workerMain(job: *Job) void {
 
     job.progress_total.store(@intCast(bundle.games.len), .release);
     job.phase.store(@intFromEnum(Phase.migrating), .release);
-    if (job.win) |w| dvui.refresh(w, @src(), null);
+    if (job.win) |w| job_mod.refreshDebounced(w, @src());
 
     var done: u32 = 0;
     for (bundle.games) |*imp_g| {
@@ -185,7 +205,7 @@ fn workerMain(job: *Job) void {
         defer {
             done += 1;
             job.progress_done.store(done, .release);
-            if (job.win) |w| dvui.refresh(w, @src(), null);
+            if (job.win) |w| job_mod.refreshDebounced(w, @src());
         }
 
         setCurrent(job, imp_g.name);
@@ -201,7 +221,7 @@ fn workerMain(job: *Job) void {
     }
 
     job.phase.store(@intFromEnum(Phase.done), .release);
-    if (job.win) |w| dvui.refresh(w, @src(), null);
+    if (job.win) |w| job_mod.refreshDebounced(w, @src());
 }
 
 fn readBundle(job: *Job) !importers.Bundle {
@@ -221,38 +241,69 @@ fn processOne(job: *Job, imp_g: *const importers.ImportedGame) !void {
     // the game row so the user gets the library entry; the migration
     // error rides along as a per-row warning.
     if (imp_g.installDirRel()) |sub_dir| install_blk: {
+        // SAFETY: reject any sub_dir that's empty, absolute, or
+        // contains traversal. installDirRel already filters these
+        // but a second check costs nothing and stops a future bug
+        // in the parser from rolling into `migrate.copyVerifyDelete →
+        // deleteTree(games_base_dir)`. Lives next to the bufPrint to
+        // make the invariant obvious at the call site.
+        if (sub_dir.len == 0 or sub_dir[0] == '/' or
+            std.mem.eql(u8, sub_dir, "..") or std.mem.eql(u8, sub_dir, ".") or
+            std.mem.indexOf(u8, sub_dir, "/") != null or
+            std.mem.indexOf(u8, sub_dir, "..") != null)
+        {
+            staged.migrate_err = try std.fmt.allocPrint(job.alloc, "unsafe install sub-path rejected: '{s}'", .{sub_dir});
+            log.warn("import: refusing unsafe sub_dir='{s}' for tid={d} ({s})", .{ sub_dir, imp_g.thread_id, imp_g.name });
+            break :install_blk;
+        }
         var src_buf: [1024]u8 = undefined;
         const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ job.games_base_dir, sub_dir }) catch {
             staged.migrate_err = try job.alloc.dupe(u8, "install path too long");
             break :install_blk;
         };
-        var dst_buf: [1024]u8 = undefined;
-        const dst_dir_local = std.fmt.bufPrint(&dst_buf, "{s}/{d}/imported", .{ job.library_root, imp_g.thread_id }) catch {
-            staged.migrate_err = try job.alloc.dupe(u8, "destination path too long");
-            break :install_blk;
-        };
-        const dst_dir = try job.alloc.dupe(u8, dst_dir_local);
-        errdefer job.alloc.free(dst_dir);
-
         // Skip if source doesn't actually exist — the user's source
         // DB referenced a directory they've already moved/deleted.
         std.Io.Dir.cwd().access(job.io, src_dir, .{}) catch {
             staged.migrate_err = try std.fmt.allocPrint(job.alloc, "source missing: {s}", .{src_dir});
-            job.alloc.free(dst_dir);
             break :install_blk;
         };
 
-        _ = importers.migrate.copyVerifyDelete(job.alloc, job.io, src_dir, dst_dir, .{
-            .cancel = &job.cancel,
-        }) catch |e| {
-            staged.migrate_err = try std.fmt.allocPrint(job.alloc, "{s}: {s}", .{ src_dir, @errorName(e) });
-            job.alloc.free(dst_dir);
-            break :install_blk;
-        };
+        // Mode-dependent: link skips migrate entirely; move and copy
+        // both go through copyVerifyDelete with `keep_source = (mode
+        // == .copy)`. The destination is f69's library_root layout
+        // for move/copy; link records the source dir directly.
+        var dst_buf: [1024]u8 = undefined;
+        var install_dir_owned: []u8 = undefined;
+        switch (job.mode) {
+            .link => {
+                install_dir_owned = job.alloc.dupe(u8, src_dir) catch {
+                    staged.migrate_err = try job.alloc.dupe(u8, "out of memory");
+                    break :install_blk;
+                };
+            },
+            .move, .copy => {
+                const dst_dir_local = std.fmt.bufPrint(&dst_buf, "{s}/{d}/imported", .{ job.library_root, imp_g.thread_id }) catch {
+                    staged.migrate_err = try job.alloc.dupe(u8, "destination path too long");
+                    break :install_blk;
+                };
+                const dst_dir = try job.alloc.dupe(u8, dst_dir_local);
+                errdefer job.alloc.free(dst_dir);
 
-        // Build the Install row. Path = dst_dir, executable = full
-        // path to the launcher (which lived at <src_dir>/<exe_basename>
-        // and now lives at <dst_dir>/<exe_basename>).
+                _ = importers.migrate.copyVerifyDelete(job.alloc, job.io, src_dir, dst_dir, .{
+                    .cancel = &job.cancel,
+                    .keep_source = (job.mode == .copy),
+                }) catch |e| {
+                    staged.migrate_err = try std.fmt.allocPrint(job.alloc, "{s}: {s}", .{ src_dir, @errorName(e) });
+                    job.alloc.free(dst_dir);
+                    break :install_blk;
+                };
+                install_dir_owned = dst_dir;
+            },
+        }
+        errdefer job.alloc.free(install_dir_owned);
+
+        // Build the Install row. Path = install_dir_owned (dst for
+        // move/copy, src for link); executable = `<dir>/<exe_basename>`.
         const exe_rel = imp_g.install_executable_rel.?; // implied by installDirRel != null
         const exe_basename = if (std.mem.indexOfScalar(u8, exe_rel, '/')) |slash| exe_rel[slash + 1 ..] else exe_rel;
         const version_str = imp_g.version orelse "unversioned";
@@ -267,8 +318,8 @@ fn processOne(job: *Job, imp_g: *const importers.ImportedGame) !void {
             .id = inst_id,
             .game_thread_id = imp_g.thread_id,
             .version = try job.alloc.dupe(u8, version_str),
-            .install_path = dst_dir,
-            .executable = try std.fmt.allocPrint(job.alloc, "{s}/{s}", .{ dst_dir, exe_basename }),
+            .install_path = install_dir_owned,
+            .executable = try std.fmt.allocPrint(job.alloc, "{s}/{s}", .{ install_dir_owned, exe_basename }),
             .launch_args = null,
             .recipe_id = try job.alloc.dupe(u8, ""), // no recipe — imported
             .installed_at = now_s,
@@ -349,7 +400,7 @@ fn setErr(job: *Job, e: anyerror, ctx: []const u8) void {
     const msg = std.fmt.bufPrint(&job.err_buf, "{s}: {s}", .{ ctx, @errorName(e) }) catch ctx;
     job.err_len = @intCast(msg.len);
     job.phase.store(@intFromEnum(Phase.err), .release);
-    if (job.win) |w| dvui.refresh(w, @src(), null);
+    if (job.win) |w| job_mod.refreshDebounced(w, @src());
 }
 
 fn generateUuid(io: std.Io, out: *[36]u8) void {

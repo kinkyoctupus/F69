@@ -10,7 +10,7 @@
 //   mods.zig           — modsScreen + modfile rows
 //   recipe_editor.zig  — recipeEditorScreen + wizard panels
 //   settings.zig       — settingsScreen + tabs
-//   import.zig         — importUrlsScreen, importF95CheckerScreen, importFolderScreen
+//   import.zig         — importUrlsScreen, importFolderScreen
 //   downloads.zig      — downloadsScreen + job rows
 //   diagnostics.zig    — diagnosticsScreen
 //   components.zig     — iconButton/iconOnly/tabButton/settingsHelpText,
@@ -36,7 +36,6 @@ pub const modsScreen = mods_screen.modsScreen;
 pub const recipeEditorScreen = recipe_editor_screen.recipeEditorScreen;
 pub const settingsScreen = settings_screen.settingsScreen;
 pub const importUrlsScreen = import_screen.importUrlsScreen;
-pub const importF95CheckerScreen = import_screen.importF95CheckerScreen;
 pub const importFolderScreen = import_screen.importFolderScreen;
 pub const downloadsScreen = downloads_screen.downloadsScreen;
 pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
@@ -44,5 +43,6 @@ pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 // ---- Cross-screen overlay widgets (called by ui.zig) ----
 pub const renderSyncRecapPopup = components.renderSyncRecapPopup;
 pub const renderLoginPopup = components.renderLoginPopup;
+pub const renderLaunchDiagPopup = components.renderLaunchDiagPopup;
 pub const renderToasts = components.renderToasts;
 pub const renderSyncBanner = components.renderSyncBanner;

@@ -15,8 +15,6 @@ pub const Screen = enum {
     settings,
     /// Paste F95Zone thread URLs / IDs — bulk-create library rows.
     import_urls,
-    /// Scan an F95Checker / xLibrary games directory.
-    import_f95checker,
     /// Scan any flat directory of game subfolders.
     import_folder,
     downloads,
@@ -25,12 +23,103 @@ pub const Screen = enum {
     mods_for_game,
 };
 
-/// Folder-import transfer mode. `move` (default) cuts and pastes: cheap
-/// rename on same FS, or copy-verify-delete cross-FS — final disk use
-/// is 1x. `copy` leaves the source intact — final disk use is 2x. Move
-/// is the default because the typical 15GB+ game folder would blow up
-/// a small drive otherwise.
-pub const ImportMode = enum { move, copy };
+/// Per-import transfer mode. Applies to every import path: folder
+/// scan (main menu), F95Checker / xLibrary DB import (Settings →
+/// Library), etc.
+///
+/// `move`  — cut + paste. Cheap rename on same FS, or copy-verify-
+///           delete cross-FS. Final disk use is 1x.
+/// `copy`  — leaves source intact. Final disk use is 2x.
+/// `link`  — leaves source intact AND doesn't copy. f69 just records
+///           a library row whose install_path points at the source
+///           directory. Final disk use is 0 extra bytes; the safest
+///           mode (no file mutation, ever) but means f69's launcher
+///           reaches into the original location every time, so moving
+///           or deleting the source orphans the install.
+pub const ImportMode = enum { move, copy, link };
+
+/// Which target the import preview row's Link cell points at. The
+/// preview rebuilds the user's intent each frame from this enum +
+/// `link_thread_id`; the commit path branches on it.
+pub const FolderImportLinkState = enum(u8) {
+    /// User hasn't decided yet (or typed text doesn't resolve to a
+    /// known library game and isn't an F95 URL). Commit refuses.
+    unresolved,
+    /// `link_thread_id` is set and points at an existing
+    /// `library.Game.f95_thread_id`. Commit attaches the install to
+    /// that game.
+    linked_existing,
+    /// New library row with a random high-bit-set thread id
+    /// (`name_match.customNewThreadId`). Used for games without an
+    /// F95 thread.
+    custom_new,
+    /// `link_buf` holds an F95Zone thread URL. Commit resolves it
+    /// (scrape thread → upsert library row) before attaching install.
+    f95_url,
+};
+
+/// Max compat issues per preview row that we surface. Recipes
+/// matching the same install are rare (typically 0 or 1 — the
+/// renpy7 X11 fix on a NixOS host); cap at 4 so the row table stays
+/// readable even when something weird hits.
+pub const FOLDER_IMPORT_MAX_ISSUES: u8 = 4;
+pub const FOLDER_IMPORT_ISSUE_ID_LEN: usize = 64;
+
+/// One matched compat recipe surfaced on a preview row. Inlined
+/// (fixed-size buffers) so the row state doesn't carry an allocator
+/// reference. `id` is the recipe slug for caller lookups; `title`
+/// is the human-readable label rendered on the chip.
+pub const FolderImportIssue = struct {
+    id_buf: [FOLDER_IMPORT_ISSUE_ID_LEN]u8 = [_]u8{0} ** FOLDER_IMPORT_ISSUE_ID_LEN,
+    id_len: u8 = 0,
+    title_buf: [96]u8 = [_]u8{0} ** 96,
+    title_len: u8 = 0,
+
+    pub fn id(self: *const FolderImportIssue) []const u8 {
+        return self.id_buf[0..self.id_len];
+    }
+    pub fn title(self: *const FolderImportIssue) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+};
+
+/// Per-row editable state for the folder-import preview. One slot
+/// per `bundle.games[idx]`. Lives in a heap-allocated slice owned by
+/// `State` (see `folder_scan_row_states`). Reset on a fresh scan.
+pub const FolderImportRowState = struct {
+    /// Editable name. Used only when `link_state == .custom_new` —
+    /// for linked rows the library game's stored name wins. Prefilled
+    /// from `folder_scan.parseFolderName`.
+    name_buf: [128]u8 = [_]u8{0} ** 128,
+    /// Editable version. Becomes the install row's `version` (which
+    /// is also the install's user-facing name). Prefilled from the
+    /// folder name, or from the linked game's `latest_version` when
+    /// the folder name carried no version token.
+    version_buf: [64]u8 = [_]u8{0} ** 64,
+    /// What the user has typed (or what we prefilled from the best
+    /// library match) for the Link cell. Drives the typeahead.
+    link_buf: [256]u8 = [_]u8{0} ** 256,
+    /// User's committed state for this row. Determines the commit
+    /// path: linked_existing / custom_new / f95_url / unresolved.
+    link_state: FolderImportLinkState = .unresolved,
+    /// Resolved thread id for `linked_existing`; the resolved id
+    /// after F95-URL scrape for `f95_url`. Null otherwise.
+    link_thread_id: ?u64 = null,
+    /// True while the typeahead dropdown is open. Closes on row blur,
+    /// pick, or Escape.
+    typeahead_open: bool = false,
+    /// User include-in-commit toggle. Defaults true so the typical
+    /// "import everything in this folder" flow is one click.
+    checked: bool = true,
+    /// Pre-commit compat scan results. Populated by
+    /// `actions.doFolderScan` after the bundle is built — the host
+    /// probe is one-time at app start so per-install scans are
+    /// stat-only and cheap enough to run inline. The user sees the
+    /// matched recipes as chips on the row; after commit, the
+    /// Apply Fix dialog on the detail screen takes over.
+    issues: [FOLDER_IMPORT_MAX_ISSUES]FolderImportIssue = [_]FolderImportIssue{ .{} } ** FOLDER_IMPORT_MAX_ISSUES,
+    issue_count: u8 = 0,
+};
 /// Sort options. `weighted` uses Game.weightedRating against the
 /// library's mean rating + a fixed prior weight, so games with few
 /// votes don't unfairly dominate over well-rated games. `sync_state`
@@ -40,7 +129,7 @@ pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_
 pub const SortDir = enum { asc, desc };
 pub const LoginStatus = enum { unknown, logged_out, logged_in, logging_in, err };
 pub const View = enum { grid, list };
-pub const Tab = enum { overview, changelog, downloads, notes };
+pub const Tab = enum { overview, changelog, downloads, notes, guides };
 
 /// Filter tabs for the Mods page. Each filters the master list of
 /// (archive, recipe) pairs by state:
@@ -49,6 +138,31 @@ pub const Tab = enum { overview, changelog, downloads, notes };
 ///   needs_archive — recipe exists, no archive yet (imported)
 ///   needs_recipe  — archive exists, no recipe yet (orphan)
 pub const ModsTab = enum { installed, ready, needs_archive, needs_recipe };
+
+/// Checkbox filter for the two-pane Mods view's list pane. Mods
+/// matching any *unchecked* category are hidden. Default all-on so
+/// the user sees every modfile on first visit.
+pub const ModsViewFilter = struct {
+    installed: bool = true,
+    ready: bool = true,
+    needs_setup: bool = true,
+};
+
+/// Known classes of launch problems that the diagnostic engine can
+/// recognise and propose a "Fix issue" remedy for. `null` (in
+/// `state.launch_diag_fix_id`) means we surfaced the issue but don't
+/// have an automated fix — the dialog hides the Fix button.
+pub const LaunchFixId = enum {
+    /// Launcher's `ldd` reported missing shared libraries that look
+    /// like GPU stack / GL libs. Fix: re-launch with LD_LIBRARY_PATH
+    /// prepended with the host GPU driver dir + standard distro dirs.
+    host_gpu_paths,
+    /// A compat recipe matches the install and is currently unapplied.
+    /// Fix: apply the recipe (its `apply` ops mutate env / patch the
+    /// install) then relaunch. The recipe's id is stashed in
+    /// `state.launch_diag_compat_recipe_buf`.
+    compat_recipe,
+};
 pub const SettingsTab = enum { general, sync, accounts, library, downloads, mod_presets, convert_presets, about };
 
 /// Recipe-wizard modal phases. The wizard renders one page per step,
@@ -153,11 +267,60 @@ pub const WizardState = struct {
     /// where to return so the navigation can't silently drop the user
     /// in the wrong place.
     return_screen: Screen,
+    /// Live-filter text for the preview pane's file tree. Empty =
+    /// show everything. Non-empty = hide tree rows whose name (or any
+    /// descendant's name) doesn't contain the substring,
+    /// case-insensitive. The buffer is fixed-size so the wizard
+    /// stays alloc-free.
+    preview_search_buf: [128]u8 = [_]u8{0} ** 128,
 };
 
 /// Lifecycle of a single Sync click. Driven by the UI thread off
 /// observations of the worker thread's atomic flag.
 pub const SyncStatus = enum { idle, running, ok, err };
+
+/// Hard upper bound on the sync-slot array size. The runtime-tunable
+/// `state.max_parallel_sync` (Settings → Sync) clamps the *effective*
+/// parallelism to a value in `[1, MAX_PARALLEL_SYNC]`. Treat this
+/// constant as "ceiling Zig needs at compile time for the array",
+/// not "the actual concurrency". Mirrors F95Checker's
+/// `max_connections` knob — capped at 16 since beyond that we'd
+/// start to risk indexer-side rate-limits with no real wall-time win.
+pub const MAX_PARALLEL_SYNC: usize = 16;
+
+/// Hard ceiling on the screenshot ImageJob slot array. Same
+/// semantics as `MAX_PARALLEL_SYNC` — the effective concurrency is
+/// the runtime `state.max_parallel_image`. Image bytes come from
+/// `attachments.f95zone.to` (a CDN that bypasses the forum rate
+/// limit), so the ceiling can match the sync pool without risk.
+pub const MAX_PARALLEL_IMAGE: usize = 16;
+
+/// Default effective parallelism on first launch. 4 is the sweet
+/// spot for a typical home network and matches F95Checker's default.
+pub const DEFAULT_PARALLEL: u32 = 4;
+
+/// Source of game metadata during refresh.
+///   `.indexer` — F95Indexer cache API (`api.f95checker.dev`). Default.
+///                Two-call protocol (`/fast` then `/full/{id}?ts=`) used
+///                exactly the way F95Checker does. Auth-free.
+///   `.scraper` — direct HTML scrape of f95zone.to thread pages. The
+///                original path; kept as the alternative for users who
+///                don't want to rely on the third-party cache.
+pub const RefreshBackend = enum {
+    indexer,
+    scraper,
+
+    pub fn fromStr(s: []const u8) RefreshBackend {
+        return std.meta.stringToEnum(RefreshBackend, s) orelse .indexer;
+    }
+
+    pub fn label(self: RefreshBackend) []const u8 {
+        return switch (self) {
+            .indexer => "F95Indexer",
+            .scraper => "Direct F95 scraper",
+        };
+    }
+};
 
 /// Severity of a toast notification. Drives the leading glyph + how
 /// long the toast hangs around before auto-dismissing.
@@ -215,8 +378,18 @@ pub const ManageAction = enum { none, rename, delete };
 /// avg = ~20 MB peak. Eviction is FIFO via `cover_cache_next`.
 pub const COVER_CACHE_CAP: usize = 64;
 /// Capacity of the per-game thumbnail-strip cache. Cover (idx 0) +
-/// up to MAX_SCREENSHOTS (20) = 21 slots. One game's-worth.
-pub const THUMB_CACHE_CAP: usize = 21;
+/// up to ~127 screenshots. Some games (Max's Life: 23, popular RPGs:
+/// 27+) ship enough preview images that the old 21-slot cap silently
+/// returned null for thumbs past index 20, even though `.s<N>.t` was
+/// on disk. 128 slots costs 1 KB of pointers in State — trivial.
+pub const THUMB_CACHE_CAP: usize = 128;
+/// Capacity of the per-game full-resolution slide cache. Slot 0 holds
+/// the cover; 1..N hold screenshots. Capped at 32 — comfortably covers
+/// the typical 0..20-screenshot range with margin, and bounds the
+/// peak memory at ~32 × ~1 MB = ~32 MB per visited game (freed on
+/// game switch). Games with more screenshots fall through to a null
+/// read for indices >= 32.
+pub const SLIDE_CACHE_SLOTS: usize = 32;
 
 pub const CoverCacheEntry = struct {
     thread_id: u64,
@@ -440,14 +613,30 @@ pub const State = struct {
     /// window. dvui's `windowHeader` X-button writes false here when
     /// the user closes it.
     image_popup_open: bool = false,
-    /// Single-slot cache for the current carousel slide's on-disk
-    /// bytes (screenshots only — slide 0 reuses `cover_cache`). Without
-    /// this we'd realloc + re-read + bust dvui's texture cache every
-    /// frame, causing visible scroll/render lag. Stable while the slide
-    /// stays on the same (thread, idx); freed and refreshed on change.
+    /// Multi-slot cache for the carousel slides' on-disk bytes. Slot
+    /// 0 holds the full-resolution cover (path: `covers_dir/<tid>`);
+    /// slots 1..N hold screenshots (path: `covers_dir/<tid>.s<idx>`).
+    /// Slots are filled lazily on first paint per (thread, idx) and
+    /// freed wholesale by `freeSlideCache` on game switch. Per-slot
+    /// pointer stability across frames is what makes dvui's `.ptr`
+    /// texture-cache strategy safe — the previous single-slot design
+    /// freed + realloc'd on every slide change, and the
+    /// GeneralPurposeAllocator commonly handed back the same address
+    /// for the new content, causing dvui to serve the previous
+    /// slide's GPU texture for the new bytes (visible as
+    /// flickering/wrong images on rapid carousel navigation).
+    ///
+    /// Cap = 32, enough for the typical 0..20-screenshot range. Games
+    /// with more screenshots fall through to a null read (placeholder
+    /// renders) for indices >= 32 — `slideBytes` checks the bound.
     slide_cache_thread: ?u64 = null,
-    slide_cache_idx: usize = 0,
-    slide_cache_bytes: ?[]u8 = null,
+    slide_cache_bytes: [SLIDE_CACHE_SLOTS]?[]u8 = [_]?[]u8{null} ** SLIDE_CACHE_SLOTS,
+    /// In-flight off-thread loader for a slide_cache slot. Set when
+    /// `slideSlotBytes` encounters a miss; cleared by `drainSlideLoads`
+    /// once the worker finishes. Single-slot serialises misses — fine
+    /// for sequential carousel navigation, and keeps the UI thread off
+    /// the read syscall.
+    slide_load_job: ?*owned.SlideLoadJob = null,
     /// Thumb-strip cache. Holds bytes for every slide of the active
     /// game so the ribbon under the carousel doesn't re-read 21 files
     /// per frame. Fixed-size array keyed by slide idx (0 = cover,
@@ -460,7 +649,23 @@ pub const State = struct {
     /// Active tab inside the Mods page. Filters which lists render
     /// below the page header. Reset to `.installed` on game-change so
     /// new game opens to the "what's currently running" view.
+    ///
+    /// Legacy — kept while the tab-strip UI still exists in some flows.
+    /// The two-pane Mods view doesn't read this; it uses
+    /// `mods_view_filter` instead.
     mods_tab: ModsTab = .installed,
+    /// Currently-selected entry in the two-pane Mods view. Stores the
+    /// modfile sha-id (or recipe id, prefixed with `r:` for orphan
+    /// recipes that aren't yet linked to an archive). Buffer length is
+    /// chosen to fit both SHA-256 hex (64 chars) and recipe slugs.
+    /// Empty = nothing selected → detail pane shows the empty-state
+    /// hint.
+    mods_selected_id_buf: [80]u8 = [_]u8{0} ** 80,
+    mods_selected_id_len: usize = 0,
+    /// Filter checkboxes in the left pane of the Mods view. All three
+    /// default ON so the user sees every modfile on first visit.
+    /// Session-only — not persisted across restarts.
+    mods_view_filter: ModsViewFilter = .{},
     /// Active tab on the Settings screen.
     settings_tab: SettingsTab = .general,
     /// dvui ScrollInfo backing the detail-screen outer scrollArea.
@@ -542,9 +747,12 @@ pub const State = struct {
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).
     sync_msg: buf_mod.MessageBuf(128) = .{},
-    /// Heap-allocated SyncJob (defined in `ui.zig`); held as anyopaque
-    /// so `state.zig` doesn't pull in f95/library/std.Thread.
-    pending_sync: ?*owned.SyncJob = null,
+    /// In-flight sync workers — up to `MAX_PARALLEL_SYNC` simultaneous.
+    /// `null` slot = free. drainSync iterates the whole array; new
+    /// syncs go into the first empty slot via `findEmptySyncSlot`.
+    /// Mirrors F95Checker's `full_checks_sem`. Each slot is held as
+    /// anyopaque so `state.zig` doesn't pull in f95/library/std.Thread.
+    active_syncs: [MAX_PARALLEL_SYNC]?*owned.SyncJob = [_]?*owned.SyncJob{null} ** MAX_PARALLEL_SYNC,
     /// Sync-all queue: thread_ids waiting to be synced. drainSync pops
     /// the head and spawns the next job once the current one finishes.
     /// Heap-alloc'd via `lib.alloc`; null when no batch is in flight.
@@ -552,6 +760,12 @@ pub const State = struct {
     /// held as anyopaque to avoid the cyclic import. `drainUpdateCheck`
     /// reads phase via atomics and frees here on completion.
     pending_update_check: ?*owned.UpdateCheckJob = null,
+    /// In-flight batch `/fast` pre-flight (indexer-mode refresh-all).
+    /// Walks every queued thread_id in chunks of 10, accumulates
+    /// `last_change` per id. `onFastCheckDone` then builds sync_queue
+    /// (with `sync_queue_known_last_change` populated in parallel) so
+    /// the per-game indexer workers can skip their own `/fast` calls.
+    pending_fast_check: ?*owned.FastCheckJob = null,
     /// Heap-allocated RpdlDownloadJob (defined in `actions/downloads.zig`).
     /// Tracks the search → fetch-torrent → enqueue handoff for the
     /// per-game Tier-2 auto-download.
@@ -619,7 +833,54 @@ pub const State = struct {
     tags_master_fetched_at: i64 = 0,
     /// Quick-filter text for the sidebar tag checkbox lists.
     tags_filter_buf: [64]u8 = [_]u8{0} ** 64,
+    /// Cached library-list filter result. Without this, every frame
+    /// (including each frame that wakes for a mouse-motion event)
+    /// walks `frame.games` and runs `cardVisible` — three substring
+    /// searches per game over potentially long description text. For
+    /// any non-trivial library that's >16ms per frame and dvui logs
+    /// it as slow. The cache snapshots the filter inputs at the end
+    /// of a build; the next frame compares signatures and only
+    /// recomputes when something actually changed (filter typed, a
+    /// checkbox toggled, a sync added a game).
+    lib_filter_cache_indices: ?[]u32 = null,
+    /// Wyhash digest of (Filters bytes + query slice + games slice
+    /// identity). 0 = not yet computed.
+    lib_filter_cache_sig: u64 = 0,
+    /// Snapshot cache: per-game latest-install-version map. Rebuilt
+    /// only when `Library.install_generation` differs from
+    /// `snapshot_install_gen`; otherwise reused across frames.
+    /// Without this cache, `guiFrame` runs `latestInstallVersionMap`
+    /// (one full-table SELECT + N hydrations) every frame, including
+    /// idle frames where nothing has changed. Owned strings + map
+    /// allocate via `lib.alloc`; freed by `freeSnapshotCache` on
+    /// shutdown and on each cache miss before the rebuild.
+    snapshot_install_gen: u64 = 0,
+    snapshot_install_versions: ?std.AutoHashMap(u64, []const u8) = null,
+    /// Snapshot cache: `thread_id → *Game` lookup map. Invalidated
+    /// when the frame's `games` slice ptr or len changes (a fresh
+    /// `listGames` allocation invalidates every cached pointer).
+    /// Cheap to rebuild (single linear scan) but spared on idle
+    /// frames so library scrolling stays steady. Map storage owned
+    /// by `lib.alloc`.
+    snapshot_games_ptr: usize = 0,
+    snapshot_games_len: usize = 0,
+    /// Sort state at the time `snapshot_games_by_thread` was built.
+    /// `sortGames` mutates `games[]` IN PLACE (swap contents) without
+    /// changing ptr/len, so the cached `*Game` pointers point at the
+    /// SAME memory addresses but with NEW game data inside —
+    /// `map.get(tid)` then returns the wrong game. We invalidate the
+    /// map when sort changes by checking these alongside ptr/len.
+    snapshot_games_sort_column: u32 = 0,
+    snapshot_games_sort_dir: u32 = 0,
+    snapshot_games_by_thread: ?std.AutoHashMap(u64, *library.Game) = null,
     sync_queue: ?[]u64 = null,
+    /// Parallel slice to `sync_queue`, same length, same indexing.
+    /// Non-null only after a batch `/fast` pre-flight populated each
+    /// game's `last_change` timestamp; in scraper mode and for ad-hoc
+    /// single-game syncs the slice stays null. Element value 0 ⇒
+    /// "indexer returned no entry for this id" → worker will call
+    /// `/full` with `ts=0`.
+    sync_queue_known_last_change: ?[]i64 = null,
     /// 0-based pop offset into `sync_queue` — the next item to spawn
     /// once the current sync completes. Strictly an array index;
     /// progress display uses `sync_queue_started` instead.
@@ -649,9 +910,11 @@ pub const State = struct {
     image_queue_head: usize = 0,
     image_queue_len: usize = 0,
     image_queue_cap: usize = 0,
-    /// Currently-running ImageJob; opaque so `actions/sync.zig` owns
-    /// the definition. Null when idle between jobs.
-    image_active: ?*owned.ImageJob = null,
+    /// In-flight ImageJobs — up to `MAX_PARALLEL_IMAGE` simultaneous.
+    /// `null` slot = free. drainImageQueue iterates all slots; new
+    /// jobs go into the first empty slot. Mirrors the parallel sync
+    /// slot pool.
+    active_images: [MAX_PARALLEL_IMAGE]?*owned.ImageJob = [_]?*owned.ImageJob{null} ** MAX_PARALLEL_IMAGE,
     /// Name of the game whose ImageJob is in flight (for the second
     /// banner row). Sentinel-trimmed.
     image_active_name: buf_mod.MessageBuf(160) = .{},
@@ -666,6 +929,15 @@ pub const State = struct {
     /// between each image; drain clears the queue + resets to false
     /// once the active job exits.
     image_cancel: std.atomic.Value(bool) = .init(false),
+    /// Persistent "don't enqueue more image work" flag. Set by
+    /// `cancelSync` AND `cancelImageQueue`; cleared by any "start"
+    /// action (Refresh All / Check for updates / single-game sync).
+    /// Distinct from the transient `image_cancel` atomic: that one
+    /// drains in-flight workers and auto-resets every drain cycle,
+    /// whereas this flag PREVENTS new image jobs from being enqueued
+    /// at all — without it, a syncJob that finishes after cancel
+    /// would re-fill the queue via `enqueueImageFetch`.
+    image_fetch_suspended: bool = false,
     /// Round-robin cache of cover bytes, shared by detail screen and
     /// grid thumbs. Owned by `lib.alloc`; freed on quit and on entry
     /// eviction. Sync invalidates the entry for the synced thread.
@@ -686,12 +958,52 @@ pub const State = struct {
     /// downstream UI can iterate `bundle.games`. Freed on a fresh
     /// scan, on screen exit, and on shutdown.
     folder_scan_path_buf: [512]u8 = [_]u8{0} ** 512,
+    /// Live scan-in-progress session. Stays non-null while the UI
+    /// iterator is still walking the scan root; cleared when
+    /// finalized into `folder_scan_bundle` or when the user clears
+    /// the screen. See `actions/imports.zig:ScanSession`.
+    folder_scan_session: ?*anyopaque = null,
     folder_scan_bundle: ?*anyopaque = null,
+    /// Parallel to `folder_scan_bundle`: a `?[*]FolderImportRowState`
+    /// (cast through `?*anyopaque` because state.zig can't see the
+    /// concrete type without pulling in actions). One slot per row in
+    /// the bundle, holding the user's editable name/version + the
+    /// typeahead Link cell's resolved state. Allocated by
+    /// `actions.doFolderScan` after the bundle is built (so we can
+    /// pre-fill from the best library match) and freed by
+    /// `actions.freeFolderScan`.
+    folder_scan_row_states: ?*anyopaque = null,
+    /// Element count for `folder_scan_row_states`; matches
+    /// `bundle.games.len` at allocation time. Kept here (rather than
+    /// inferred from the bundle) so freeing doesn't need the bundle
+    /// to still be live.
+    folder_scan_row_count: usize = 0,
+    /// Cached library snapshot for the import-preview typeahead. The
+    /// preview re-renders at 30+ Hz; calling `lib.listGames()` per
+    /// frame caused 1200 ms render times when the user's library
+    /// grew to a few-hundred rows. Snapshot once at scan time, reuse
+    /// every frame, free with the bundle. Opaque-typed for the same
+    /// reason as `folder_scan_row_states` — state.zig can't import
+    /// `library`. Treated as `?[*]library.Game` of length
+    /// `folder_scan_lib_count`.
+    folder_scan_lib_snapshot: ?*anyopaque = null,
+    folder_scan_lib_count: usize = 0,
+    /// dvui ScrollInfo for the preview-rows scrollArea. Used to drive
+    /// viewport culling (only render visible rows + small overscan).
+    folder_scan_scroll_info: dvui.ScrollInfo = .{},
     folder_scan_msg: buf_mod.MessageBuf(192) = .{},
     /// Per-bundle transfer mode. Defaults to `.move` (cut+paste) so a
     /// user with limited disk doesn't double their footprint. The UI
     /// exposes a radio next to the scan results.
-    folder_scan_mode: ImportMode = .move,
+    /// `link` (the safest, no file mutation) is the default after the
+    /// 2026-05-28 data-loss incident. The user can opt into `move` /
+    /// `copy` via the mode picker.
+    folder_scan_mode: ImportMode = .link,
+    /// Bulk-edit affordance for the preview table: name suffix and
+    /// version values that the "Apply to selected" button writes
+    /// across all ticked rows.
+    folder_bulk_name_buf: [128]u8 = [_]u8{0} ** 128,
+    folder_bulk_version_buf: [64]u8 = [_]u8{0} ** 64,
     /// Per-row resolution-popup state. `null` = no popup. Otherwise
     /// the index into `bundle.games` whose F95 association the user
     /// is editing right now. The user can paste an F95 URL/id to
@@ -720,6 +1032,10 @@ pub const State = struct {
     aria2_seed_ratio_persisted: f32 = 5.0,
     aria2_seed_ratio_msg_buf: [80]u8 = [_]u8{0} ** 80,
     aria2_seed_ratio_msg_len: usize = 0,
+    /// Status from Settings → Library → "Re-detect engines from installs".
+    /// Cleared on next click. Sized for the summary line.
+    engine_reanalyse_msg_buf: [256]u8 = [_]u8{0} ** 256,
+    engine_reanalyse_msg_len: usize = 0,
     /// Browser path buffer (settings → "Browser"). Filled at startup
     /// from `RuntimeInfo.initial_browser_path`; the dropdown copies
     /// detected paths into it. `actions.openInBrowser` reads from here.
@@ -742,12 +1058,60 @@ pub const State = struct {
     /// is enabled optimistically while this is true so first-time
     /// users don't see a grayed button before the check finishes.
     donor_check_in_flight: bool = false,
+    /// Launch-diagnostic dialog. Opened when a pre-launch check (or,
+    /// future, a runtime stderr-capture worker) finds an actionable
+    /// issue with the picked launcher. `summary` is a single-line
+    /// reason ("Missing shared libraries: libGL.so.1, ..."); `log` is
+    /// the raw evidence we want the user to be able to copy
+    /// (multi-line stdout/stderr/ldd output). `fix_id` chooses which
+    /// "Fix issue" button — if any — appears alongside OK + Copy.
+    /// `thread_id` lets the Fix and Try Anyway buttons re-invoke
+    /// `doLaunchGame` for the same game.
+    launch_diag_open: bool = false,
+    launch_diag_summary_buf: [256]u8 = [_]u8{0} ** 256,
+    launch_diag_summary_len: usize = 0,
+    launch_diag_log_buf: [8192]u8 = [_]u8{0} ** 8192,
+    launch_diag_log_len: usize = 0,
+    launch_diag_fix_id: ?LaunchFixId = null,
+    launch_diag_thread_id: u64 = 0,
+    /// Recipe id to apply when the user clicks the `compat_recipe`
+    /// fix button. Empty when fix_id != `compat_recipe`. 64 bytes
+    /// covers the longest current recipe slug comfortably.
+    launch_diag_compat_recipe_buf: [64]u8 = [_]u8{0} ** 64,
+    launch_diag_compat_recipe_len: usize = 0,
+    /// install_id (UUID-style 36 char) the compat recipe should be
+    /// applied to. Set alongside `launch_diag_compat_recipe_buf`.
+    launch_diag_install_id_buf: [36]u8 = [_]u8{0} ** 36,
+    launch_diag_install_id_set: bool = false,
+    /// Flips true once the user clicks the Fix button and the fix
+    /// succeeds. Renders the dialog into "Fix applied — close + try
+    /// Launch again" mode. Reset every time the dialog opens fresh.
+    launch_diag_fix_applied: bool = false,
+    /// User accepted the "Retry with host GPU paths" fix on the
+    /// launch diag popup. Subsequent launches of the same install
+    /// reuse the override (LD_LIBRARY_PATH prepended with the host
+    /// GPU dirs). Session-only.
+    launch_force_host_gpu: bool = false,
+    /// User dismissed the popup ("Try anyway") for the current launch
+    /// attempt — proceed without the fix this once. Reset when the
+    /// popup opens with a fresh diagnosis.
+    launch_diag_acked: bool = false,
+
     /// Set once per login cycle when `checkDonorStatus` has run to
     /// completion (success OR transient failure). Without this flag
     /// the `guiFrame` gate would re-fire the probe every frame
     /// `is_donor` stayed null on a transient network error. Reset
     /// to false in `doLogout`.
     donor_check_attempted: bool = false,
+    /// In-flight donor-status probe worker job. Non-null while the
+    /// HTTP request is on a detached thread. Drained per-frame by
+    /// `drainDonorProbe`; final result lands in `is_donor`.
+    donor_probe_job: ?*owned.DonorProbeJob = null,
+    /// In-flight post-launch watcher. Spawned by `doLaunchGame` after a
+    /// successful spawn; polls `waitpid(pid, WNOHANG)` for ~4 s and
+    /// surfaces the diagnostic dialog if the child exits inside that
+    /// window. Drained per-frame by `drainLaunchWatcher`.
+    launch_watch_job: ?*owned.LaunchWatchJob = null,
     /// Startup login popup. Opened by `runMainLoop` when
     /// `login_status` resolves to `.logged_out`; the user dismisses
     /// it via Skip or by completing a login. `login_popup_skipped`
@@ -787,6 +1151,16 @@ pub const State = struct {
     /// the user opt in. Persisted under `<data_root>/auto_convert`.
     auto_convert: bool = false,
     auto_convert_persisted: bool = false,
+    /// Auto-apply unfixed compat recipes (and re-apply ones whose
+    /// recipe sha has moved on) immediately after a successful
+    /// Convert — both manual button clicks AND the post-install
+    /// auto-convert path. Default on. The cycle "Convert → Launch
+    /// → fail → Fix Compat → Launch" collapses into one Convert
+    /// click for ~every game. Compat fixes are reversible, so this
+    /// is safe-by-default. Persisted under
+    /// `<data_root>/auto_apply_compat`.
+    auto_apply_compat: bool = true,
+    auto_apply_compat_persisted: bool = true,
     /// Global default for "sandbox on launch". Each game's per-game
     /// `SandboxOverride` (always / never / use_default) wins over this;
     /// only `use_default` consults the value here. Default on — the
@@ -801,6 +1175,28 @@ pub const State = struct {
     /// under `<data_root>/auto_update_default`.
     auto_update_default: bool = false,
     auto_update_default_persisted: bool = false,
+    /// Source of game metadata during refresh. `.indexer` (default) hits
+    /// `api.f95checker.dev`; `.scraper` parses f95zone.to thread pages
+    /// directly. Toggle lives in Settings → Sync. Persisted under
+    /// `<data_root>/refresh_backend`. `_persisted` mirrors the on-disk
+    /// value so the settings panel can detect a dirty toggle (matches
+    /// the pattern used by `auto_update_default`).
+    refresh_backend: RefreshBackend = .indexer,
+    refresh_backend_persisted: RefreshBackend = .indexer,
+    /// Runtime cap on simultaneous in-flight `/full` workers (indexer)
+    /// / thread scrapes (scraper). Clamped to `[1, MAX_PARALLEL_SYNC]`.
+    /// Settings → Sync writes this. Default 4.
+    max_parallel_sync: u32 = DEFAULT_PARALLEL,
+    max_parallel_sync_persisted: u32 = DEFAULT_PARALLEL,
+    /// Runtime cap on simultaneous screenshot ImageJob workers.
+    /// Independent pool from `max_parallel_sync`. Clamped to
+    /// `[1, MAX_PARALLEL_IMAGE]`. Default 4.
+    max_parallel_image: u32 = DEFAULT_PARALLEL,
+    max_parallel_image_persisted: u32 = DEFAULT_PARALLEL,
+    /// Buffers for the Settings textEntry widgets (mutated live by
+    /// dvui). Parsed + clamped on Save.
+    max_parallel_sync_buf: [4]u8 = [_]u8{0} ** 4,
+    max_parallel_image_buf: [4]u8 = [_]u8{0} ** 4,
     /// Per-game F95-thread-id → host PID of the currently-launched
     /// game. Populated by `doLaunchGame`, consumed by `doStopGame` +
     /// the detail screen (Launch ↔ Stop button swap). Pruned each
@@ -928,6 +1324,80 @@ pub const State = struct {
     }
     pub fn setCurrentSyncName(self: *State, name: []const u8) void {
         self.active_sync_name.write(name);
+    }
+
+    /// True if any sync slot is occupied. Replaces the pre-parallel
+    /// `state.pending_sync != null` check.
+    pub fn anyActiveSync(self: *const State) bool {
+        for (self.active_syncs) |s| if (s != null) return true;
+        return false;
+    }
+
+    /// Number of currently-active sync slots. Used by progress display
+    /// and the spawn loop ("how many more can we spawn?").
+    pub fn countActiveSyncs(self: *const State) u32 {
+        var n: u32 = 0;
+        for (self.active_syncs) |s| {
+            if (s != null) n += 1;
+        }
+        return n;
+    }
+
+    /// Pointer to the first free slot within the runtime cap, or
+    /// `null` if every `[0..max_parallel_sync)` slot is busy. Caller
+    /// passes the result to `job_mod.spawnJob` as the `&slot` param.
+    pub fn findEmptySyncSlot(self: *State) ?*?*owned.SyncJob {
+        const limit = @min(@as(usize, self.max_parallel_sync), self.active_syncs.len);
+        for (self.active_syncs[0..limit]) |*slot| if (slot.* == null) return slot;
+        return null;
+    }
+
+    /// True iff there's room to spawn another sync within the
+    /// *runtime* `max_parallel_sync` cap. Slots beyond the cap that
+    /// happen to be empty don't count — they only matter for reaping
+    /// workers that were spawned before the cap was lowered.
+    pub fn hasFreeSyncSlot(self: *const State) bool {
+        const limit = @min(@as(usize, self.max_parallel_sync), self.active_syncs.len);
+        for (self.active_syncs[0..limit]) |s| if (s == null) return true;
+        return false;
+    }
+
+    /// First non-null sync slot. Used by the banner widgets that
+    /// want to surface a single representative job's step progress
+    /// and cancel-state when multiple are in flight.
+    pub fn firstActiveSync(self: *const State) ?*owned.SyncJob {
+        for (self.active_syncs) |s| if (s) |j| return j;
+        return null;
+    }
+
+    /// True iff cancel has been flagged on any active sync slot.
+    pub fn anySyncCancelling(self: *const State) bool {
+        for (self.active_syncs) |s| {
+            if (s) |j| if (j.cancel.load(.acquire)) return true;
+        }
+        return false;
+    }
+
+    /// True if any image slot is occupied.
+    pub fn anyActiveImage(self: *const State) bool {
+        for (self.active_images) |s| if (s != null) return true;
+        return false;
+    }
+
+    /// True iff there's room to spawn another image job within the
+    /// runtime cap. See `hasFreeSyncSlot` for the cap semantics.
+    pub fn hasFreeImageSlot(self: *const State) bool {
+        const limit = @min(@as(usize, self.max_parallel_image), self.active_images.len);
+        for (self.active_images[0..limit]) |s| if (s == null) return true;
+        return false;
+    }
+
+    /// First-empty image slot pointer within the runtime cap, for
+    /// handing to `job_mod.spawnJob`.
+    pub fn findEmptyImageSlot(self: *State) ?*?*owned.ImageJob {
+        const limit = @min(@as(usize, self.max_parallel_image), self.active_images.len);
+        for (self.active_images[0..limit]) |*slot| if (slot.* == null) return slot;
+        return null;
     }
 
     pub fn currentImageName(self: *const State) []const u8 {

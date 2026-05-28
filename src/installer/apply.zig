@@ -170,9 +170,11 @@ pub fn applyModRecipe(
     for (install_steps) |step| {
         switch (step) {
             .extract => |x| {
+                log.info("apply mod {s}: extract to='{s}' strip={d}", .{ mod_id, x.to, x.strip });
                 try extractAndOverlay(alloc, io, mod_id, archive_path, install_dir, x.to, x.strip, tracker, opts);
             },
             .extract_inner => |x| {
+                log.info("apply mod {s}: extract_inner archive='{s}' to='{s}' strip={d}", .{ mod_id, x.archive, x.to, x.strip });
                 if (!staged_main) {
                     std.Io.Dir.cwd().createDirPath(io, staging) catch return errs.Error.FileWriteFailed;
                     downloads.extract(alloc, io, archive_path, staging, .{ .strip = 0 }) catch return errs.Error.FileWriteFailed;

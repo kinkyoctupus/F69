@@ -9,6 +9,7 @@ const library = @import("library");
 const downloads = @import("downloads");
 const file_picker = @import("util_file_picker");
 const version_mod = @import("util_version");
+const convert_mod = @import("convert");
 
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
@@ -118,6 +119,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
         renderActionRow(frame, game);
+        renderMkxpZSettingsRow(frame, game);
 
         renderDetailStatusLine(frame, game);
 
@@ -151,6 +153,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         if (components.tabButton("Changelog", state.detail_tab == .changelog)) state.detail_tab = .changelog;
         if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Downloads", state.detail_tab == .downloads)) state.detail_tab = .downloads;
+        if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -167,6 +170,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             .changelog => renderChangelogTab(frame, game),
             .downloads => renderDownloadsTab(frame, game),
             .notes => renderNotesTab(frame, game),
+            .guides => renderGuidesTab(frame, game),
         }
     }
 
@@ -728,7 +732,14 @@ fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
 
     if (bytes_opt) |b| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = b, .name = "popup" } },
+            .source = .{ .imageFile = .{
+                .bytes = b,
+                .name = "popup",
+                // Multi-slot slide cache (one slot per idx) keeps each
+                // slide's bytes at a stable ptr while the user is on
+                // this game, so default `.ptr` invalidation is safe
+                // and avoids hashing several MB per frame.
+            } },
             .shrink = .ratio,
         }, .{
             .expand = .both,
@@ -925,7 +936,21 @@ fn renderWrappedText(text: ?[]const u8, placeholder: []const u8) void {
     // dvui re-runs line-break + glyph layout every frame — that's
     // what put `addTextEx` at 70 ms on `render detail` in the
     // earlier latency log.
-    var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{ .expand = .horizontal, .background = false });
+    //
+    // dvui's cache asserts that `bytes_seen` matches between frames
+    // when `cache_layout` is on. A re-sync that swaps `description_md`
+    // for a different-length string would trip that assertion and
+    // panic. Mixing the text-content hash into `id_extra` makes a
+    // different-content textLayout a different *widget identity* — the
+    // cache for the old widget is discarded, the new widget starts
+    // fresh. Same cost when the text doesn't change.
+    const payload: []const u8 = if (text) |md| md else placeholder;
+    const widget_id: u64 = std.hash.Wyhash.hash(0, payload);
+    var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{
+        .id_extra = widget_id,
+        .expand = .horizontal,
+        .background = false,
+    });
     defer tl.deinit();
     if (text) |md| {
         if (std.unicode.utf8ValidateSlice(md)) {
@@ -1016,13 +1041,22 @@ fn renderStructuredLines(frame: *Frame, text: []const u8, base_id: u64, depth: u
 }
 
 fn renderInlineLineWithLinks(frame: *Frame, line: []const u8, id: u64) void {
-    // cache_layout: line content is keyed by `id` (per-paragraph hash)
-    // and only changes when scraped text changes. The structured-text
-    // walker rebuilds one textLayout per line of changelog / downloads
-    // / overview — 30-200 textLayouts per Detail render. Without the
-    // cache every one re-runs line-break + glyph layout each frame.
+    // Same cache-layout invalidation trick as `renderWrappedText`:
+    // mix the line-content hash into the widget id so a line whose
+    // text changed (re-sync delivers different downloads / changelog
+    // content) becomes a fresh widget with no stale cache assertions.
+    // `id` alone is position-based — a line at the same position with
+    // different content would trip dvui's `bytes_seen` assert and
+    // panic in TextLayoutWidget.addTextDone.
+    const widget_id: u64 = id ^ std.hash.Wyhash.hash(0, line);
+    // cache_layout: line content is keyed by `widget_id` (position
+    // hash xor content hash) and only changes when scraped text
+    // changes. The structured-text walker rebuilds one textLayout
+    // per line of changelog / downloads / overview — 30-200
+    // textLayouts per Detail render. Without the cache every one
+    // re-runs line-break + glyph layout each frame.
     var tl = dvui.textLayout(@src(), .{ .cache_layout = true }, .{
-        .id_extra = id,
+        .id_extra = widget_id,
         .expand = .horizontal,
         .background = false,
     });
@@ -1086,6 +1120,82 @@ fn renderDownloadsTab(frame: *Frame, game: *const library.Game) void {
         return;
     }
     dvui.label(@src(), "No download links scraped yet. Sync this game to populate.", .{}, .{});
+}
+
+// ============================================================
+//  Guides tab — user-managed walkthroughs / PDFs / etc.
+// ============================================================
+//
+// Files live under `<library_root>/<thread_id>/guides/`. No DB row —
+// the directory IS the source of truth. Crud actions live in
+// `actions/common.zig` (`addGuideForGame`, `openGuide`, `removeGuide`,
+// `listGuides`). The tab lists every file in that dir each render
+// (small N, cheap walk) and lets the user open files in their own
+// PDF/EPUB/HTML viewer via xdg-open (reuses `openExternalUrl`).
+fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
+    const alloc = frame.lib.alloc;
+
+    // Header row: title blurb + "Add guide" button.
+    {
+        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer bar.deinit();
+        dvui.label(@src(), "Walkthroughs, guides, cheats, notes — managed copies in your library.", .{}, .{
+            .gravity_y = 0.5,
+            .color_text = HELP_TEXT_COLOR,
+        });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (components.iconButton(@src(), "Add guide", entypo.plus, .{ .style = .highlight })) {
+            actions.addGuideForGame(frame, game.f95_thread_id);
+        }
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    // List of guides — re-walked every frame. Cheap because guides
+    // dirs hold a handful of files at most.
+    const guides = actions.listGuides(frame, game.f95_thread_id) catch {
+        dvui.label(@src(), "Couldn't read the guides directory.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        return;
+    };
+    defer actions.freeGuides(alloc, guides);
+
+    if (guides.len == 0) {
+        dvui.label(
+            @src(),
+            "No guides yet. Click \"Add guide\" to pick a PDF / EPUB / HTML / TXT from anywhere — f69 will copy it into the game's library folder so it stays with the install.",
+            .{},
+            .{ .color_text = HELP_TEXT_COLOR },
+        );
+        return;
+    }
+
+    for (guides, 0..) |g, i| {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = @intCast(i),
+            .expand = .horizontal,
+            .padding = .{ .x = 8, .y = 4, .w = 8, .h = 4 },
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 4 },
+            .background = true,
+            .border = style.border_thin,
+            .corner_radius = style.corner_radius,
+            .color_fill = style.card_fill,
+            .color_border = style.border_color,
+        });
+        defer row.deinit();
+
+        dvui.labelNoFmt(@src(), g.name, .{}, .{
+            .id_extra = @intCast(i),
+            .gravity_y = 0.5,
+            .expand = .horizontal,
+        });
+
+        if (components.iconButton(@src(), "Open", entypo.eye, .{ .id_extra = @intCast(i), .style = .highlight })) {
+            actions.openGuide(frame, game.f95_thread_id, g.name);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        if (components.iconButton(@src(), "Remove", entypo.trash, .{ .id_extra = @intCast(i), .style = .err })) {
+            actions.removeGuide(frame, game.f95_thread_id, g.name);
+        }
+    }
 }
 
 fn renderNotesTab(frame: *Frame, game: *library.Game) void {
@@ -1354,6 +1464,79 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
 
     if (components.iconButton(@src(), "Fix Compat", entypo.tools, .{})) {
         doCompatFixForActiveInstall(frame, game);
+    }
+}
+
+/// 0.5×, 0.75×, … 4.0× — 15 entries in 0.25 steps. Default index = 6
+/// (the 2.0× slot). Labels include the literal `×` so the picker reads
+/// naturally without a separate suffix.
+const MKXP_ZOOM_STEPS: [15]f32 = .{
+    0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0,
+};
+const MKXP_ZOOM_LABELS: [15][]const u8 = .{
+    "0.50\xC3\x97", "0.75\xC3\x97", "1.00\xC3\x97", "1.25\xC3\x97", "1.50\xC3\x97",
+    "1.75\xC3\x97", "2.00\xC3\x97", "2.25\xC3\x97", "2.50\xC3\x97", "2.75\xC3\x97",
+    "3.00\xC3\x97", "3.25\xC3\x97", "3.50\xC3\x97", "3.75\xC3\x97", "4.00\xC3\x97",
+};
+
+fn zoomToStepIdx(zoom: f32) usize {
+    var best_idx: usize = 6; // default to 2.0×
+    var best_dist: f32 = std.math.floatMax(f32);
+    for (MKXP_ZOOM_STEPS, 0..) |step, i| {
+        const d = @abs(step - zoom);
+        if (d < best_dist) {
+            best_dist = d;
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
+/// Render the per-install mkxp-z window-zoom picker, but only when
+/// the game's latest install is mkxp-z-converted (i.e. has
+/// `run-mkxp-z.sh`). Changing the dropdown writes the new zoom to
+/// `<install>/.mkxp-zoom` AND triggers a re-Convert via the standard
+/// `doConvertGame` action — the convert step reads the file and
+/// regenerates `mkxp.json` with the new `defScreenW/H` values.
+fn renderMkxpZSettingsRow(frame: *Frame, game: *library.Game) void {
+    const inst_opt = frame.lib.latestInstallForGame(game.f95_thread_id) catch null;
+    defer if (inst_opt) |i| frame.lib.freeInstall(i);
+    const install = inst_opt orelse return;
+
+    // Probe for the launcher we write. No file → game isn't on the
+    // mkxp-z path → don't render the dropdown.
+    var probe_buf: [640]u8 = undefined;
+    const sh_path = std.fmt.bufPrint(&probe_buf, "{s}/run-mkxp-z.sh", .{install.install_path}) catch return;
+    std.Io.Dir.cwd().access(frame.io, sh_path, .{}) catch return;
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+    defer row.deinit();
+
+    dvui.label(@src(), "Window zoom (mkxp-z):", .{}, .{ .gravity_y = 0.5 });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+
+    const current_zoom = convert_mod.rpgm.readMkxpZoom(frame.io, install.install_path) orelse convert_mod.rpgm.MKXP_ZOOM_DEFAULT;
+    var picked: usize = zoomToStepIdx(current_zoom);
+    const before = picked;
+    if (style.dropdown(@src(), MKXP_ZOOM_LABELS[0..], .{ .choice = &picked }, .{}, .{
+        .min_size_content = .{ .w = 110, .h = style.button_h },
+        .gravity_y = 0.5,
+    })) {
+        if (picked != before) {
+            const new_zoom = MKXP_ZOOM_STEPS[picked];
+            convert_mod.rpgm.writeMkxpZoom(frame.io, install.install_path, new_zoom) catch |e| {
+                std.log.scoped(.ui_detail).warn("mkxp zoom: write .mkxp-zoom failed: {s}", .{@errorName(e)});
+            };
+            // Reuse the existing Convert dispatch — for mkxp-z that's
+            // a cheap operation (relinks, re-writes launcher/json) so
+            // doing the full Convert on a dropdown change is fine.
+            actions.doConvertGame(frame, game);
+        }
     }
 }
 
@@ -1838,7 +2021,14 @@ fn renderRibbonThumb(bytes_opt: ?[]const u8, idx: usize, is_active: bool, thread
         dvui.Color{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
 
     if (bytes_opt) |bytes| {
-        const source: dvui.ImageSource = .{ .imageFile = .{ .bytes = bytes, .name = "ribbon-thumb" } };
+        const source: dvui.ImageSource = .{ .imageFile = .{
+            .bytes = bytes,
+            .name = "ribbon-thumb",
+            // Thumb-strip slots are freed when switching games; the
+            // allocator may hand back the same pointer for the new
+            // game's thumbs. Hash bytes so dvui detects the change.
+            .invalidation = .bytes,
+        } };
         const natural = dvui.imageSize(source) catch dvui.Size{ .w = 16, .h = 9 };
         const aspect_min = scaleToAspectMin(natural);
         const wd = dvui.image(@src(), .{
@@ -1880,6 +2070,18 @@ fn renderCarousel(frame: *Frame, game: *const library.Game) void {
         state.carousel_index = 0;
         state.carousel_for_thread = game.f95_thread_id;
         actions.freeSlideCache(state, frame.lib.alloc);
+        // Warm the OS page cache for every thumbnail of this game so
+        // the ribbon-strip's first paint doesn't burn 20+ sync reads
+        // on the UI thread. The cover thumb itself goes through
+        // `cover_cache` and is already warm if the user came from the
+        // library grid.
+        actions.spawnThumbPrewarm(
+            frame.lib.alloc,
+            frame.io,
+            frame.info.covers_dir,
+            game.f95_thread_id,
+            game.screenshots.len,
+        );
     }
 
     const total: usize = 1 + game.screenshots.len;
@@ -1963,7 +2165,14 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
     _ = frame;
     const id_extra: usize = (@as(usize, @intCast(thread_id)) << 8) | (idx & 0xff);
     if (bytes_opt) |bytes| {
-        const source: dvui.ImageSource = .{ .imageFile = .{ .bytes = bytes, .name = "carousel" } };
+        const source: dvui.ImageSource = .{ .imageFile = .{
+            .bytes = bytes,
+            .name = "carousel",
+            // Multi-slot slide cache holds each idx in its own slot
+            // with a stable ptr across frames — default `.ptr`
+            // invalidation is safe and avoids hashing the full
+            // screenshot per frame.
+        } };
         const natural = dvui.imageSize(source) catch dvui.Size{ .w = 16, .h = 9 };
         const aspect_min = scaleToAspectMin(natural);
         const wd = dvui.image(@src(), .{
@@ -2000,7 +2209,16 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
 fn renderCover(bytes_opt: ?[]const u8) void {
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = "cover" } },
+            .source = .{ .imageFile = .{
+                .bytes = bytes,
+                .name = "cover",
+                // Multi-slot slide cache: slot 0 holds the full-size
+                // cover bytes at a stable ptr for the duration of
+                // this game's detail page. Default `.ptr`
+                // invalidation is safe — game-switch wipes the slot
+                // before the next allocation, evicting dvui's cache
+                // entry alongside.
+            } },
             .shrink = .ratio,
         }, .{
             .min_size_content = .{ .w = 220, .h = 320 },
@@ -2026,7 +2244,11 @@ fn renderCover(bytes_opt: ?[]const u8) void {
 fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = "thumb" } },
+            .source = .{ .imageFile = .{
+                .bytes = bytes,
+                .name = "thumb",
+                .invalidation = .bytes,
+            } },
             .shrink = .ratio,
         }, .{
             .id_extra = thread_id,

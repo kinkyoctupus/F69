@@ -35,3 +35,19 @@ pub fn installDir(alloc: std.mem.Allocator, library_root: []const u8, game_id: [
 pub fn sandboxHome(alloc: std.mem.Allocator, config_home: []const u8, game_id: []const u8) ![]u8 {
     return std.fmt.allocPrint(alloc, "{s}/f69/sandbox/{s}", .{ config_home, game_id });
 }
+
+/// `<exe_dir>/data/mkxp-z/`. The vendored RGSS runtime ships in the
+/// install tree (see `third_party/mkxp-z/`), so the path is always
+/// relative to the binary — never per-user / per-data-root. Caller
+/// frees.
+pub fn bundledMkxpZDir(alloc: std.mem.Allocator, exe_dir: []const u8) ![]u8 {
+    return std.fmt.allocPrint(alloc, "{s}/data/mkxp-z", .{exe_dir});
+}
+
+/// `<exe_dir>/data/compat-resources/mkxp-z-fhs-libs/lib/`. NixOS-only
+/// libstdc++ bundle the convert launcher prepends to LD_LIBRARY_PATH.
+/// Empty (returned as-is, caller must check existence) on non-Nix
+/// builds. Caller frees.
+pub fn bundledMkxpZLibsDir(alloc: std.mem.Allocator, exe_dir: []const u8) ![]u8 {
+    return std.fmt.allocPrint(alloc, "{s}/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir});
+}

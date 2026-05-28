@@ -171,7 +171,7 @@ pub const Service = struct {
         var outcome = apply_mod.Outcome.init(self.alloc);
         errdefer outcome.deinit();
         for (r.apply, 0..) |action, idx| {
-            apply_mod.applyAction(self.alloc, self.resources, action, &outcome) catch |e| {
+            apply_mod.applyAction(self.alloc, self.resources, self.io, install_root, action, &outcome) catch |e| {
                 log.warn("apply step {d} of recipe {s} failed: {s}", .{ idx, r.id, @errorName(e) });
                 // Restore snapshots (file-mutating future actions
                 // need this; env-only actions had no effect on disk).
@@ -248,7 +248,10 @@ pub const Service = struct {
                 continue;
             };
             for (entry.recipe().apply) |action| {
-                try apply_mod.applyAction(self.alloc, self.resources, action, &outcome);
+                // composeEnv only collects env pairs; pass null for
+                // install_root so file-mutating actions (symlink_create)
+                // no-op rather than re-running on every launch.
+                try apply_mod.applyAction(self.alloc, self.resources, self.io, null, action, &outcome);
             }
         }
         return outcome;
@@ -300,6 +303,10 @@ fn jsonAppendObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), b: dom.Ba
     if (b.symlink_target) |t| {
         buf.append(alloc, ',') catch return errs.Error.OutOfMemory;
         try jsonKvString(alloc, buf, "symlink_target", t);
+    }
+    if (b.was_absent) {
+        buf.append(alloc, ',') catch return errs.Error.OutOfMemory;
+        try jsonAppendRaw(alloc, buf, "\"was_absent\":true");
     }
     buf.append(alloc, '}') catch return errs.Error.OutOfMemory;
 }
@@ -391,6 +398,10 @@ pub fn deserializeBackups(alloc: std.mem.Allocator, json_bytes: []const u8) errs
         errdefer alloc.free(sha_owned);
         const rel_owned = alloc.dupe(u8, rel_str) catch return errs.Error.OutOfMemory;
         errdefer alloc.free(rel_owned);
+        const was_absent_bool: bool = if (obj.get("was_absent")) |v| switch (v) {
+            .bool => |b| b,
+            else => false,
+        } else false;
         out.append(alloc, .{
             .sha256 = sha_owned,
             .relpath = rel_owned,
@@ -398,6 +409,7 @@ pub fn deserializeBackups(alloc: std.mem.Allocator, json_bytes: []const u8) errs
             .mode = mode_int,
             .was_symlink = was_sym_bool,
             .symlink_target = sym_target_owned,
+            .was_absent = was_absent_bool,
         }) catch return errs.Error.OutOfMemory;
     }
     return out.toOwnedSlice(alloc) catch errs.Error.OutOfMemory;

@@ -74,7 +74,7 @@ fn bookmarksOnPage(ctx: ?*anyopaque, page_entries: []const f95.BookmarkEntry) vo
             };
         }
     }
-    dvui.refresh(job.win, @src(), null);
+    job_mod.refreshDebounced(job.win, @src());
 }
 
 /// Set the cancel flag on the in-flight bookmarks pull (if any).

@@ -51,6 +51,11 @@ pub const Stats = struct {
     files_copied: u32 = 0,
     bytes_copied: u64 = 0,
     files_verified: u32 = 0,
+    /// True when the post-verify delete of the source tree failed
+    /// (typically on FUSE NTFS / exFAT mounts that disallow delete
+    /// for the mount user). Destination copy is still good; caller
+    /// surfaces this to the user so they know to clean up by hand.
+    source_delete_failed: bool = false,
 };
 
 /// Migrate `src_dir` → `dst_dir`. Both are absolute. Empty `dst_dir`
@@ -152,11 +157,15 @@ pub fn copyVerifyDelete(
 
     // ---- Phase 4: delete source. ----
     if (opts.keep_source) return stats;
-    std.Io.Dir.cwd().deleteTree(io, src_dir) catch {
+    std.Io.Dir.cwd().deleteTree(io, src_dir) catch |delete_err| {
         // Verification already passed, so destination is good. Delete
-        // failure is a soft warning, not a rollback trigger — the user
-        // can clean it up later.
-        log.warn("migrate: post-verify deleteTree of {s} failed; destination is fine", .{src_dir});
+        // failure is a soft warning (not a rollback trigger) — but
+        // log the actual error so the user can see WHY the source
+        // stayed behind. Common cause: FUSE-mounted filesystems
+        // (NTFS, exFAT) that disallow delete or rename for the
+        // mount user.
+        log.warn("migrate: post-verify deleteTree of '{s}' failed: {s} — destination copy is fine, source stayed behind for you to clean up manually", .{ src_dir, @errorName(delete_err) });
+        stats.source_delete_failed = true;
         return stats;
     };
     return stats;

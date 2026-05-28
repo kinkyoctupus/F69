@@ -21,12 +21,69 @@
 //! standardises on `Job.Phase`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const dvui = @import("dvui");
+
+/// Nudge the calling thread to background-nice on Linux. UI thread
+/// stays at the default nice value (0); workers add +5 so the kernel
+/// preempts them in favour of UI work when CPU contention rises.
+/// Image decode / encode used to monopolise cores when 8+ workers
+/// ran in parallel; this is a cheap second line of defense beneath
+/// the explicit `image_cpu_limit` semaphore. No-op on non-Linux.
+pub fn lowerWorkerPriority() void {
+    if (builtin.os.tag != .linux) return;
+    // PRIO_PROCESS = 0. Linux interprets `who=0` as the calling
+    // task (kernel TID), so this affects only the current worker
+    // thread, not the UI thread or other workers. Errors ignored —
+    // losing the priority hint is non-fatal.
+    _ = std.os.linux.syscall3(.setpriority, 0, 0, 5);
+}
 
 /// Canonical job phase. Worker flips from `.pending` to either
 /// `.done` or `.failed` exactly once; UI thread only ever observes
 /// the terminal transition through the atomic.
 pub const Phase = enum(u8) { pending, done, failed };
+
+/// Floor on inter-refresh interval for worker → UI wake-ups, in ns.
+/// At ~30 Hz the user perceives the wake as instant but we drop the
+/// redundant intra-tick refreshes from N workers completing close in
+/// time. dvui's own event loop still wakes on input events at full
+/// rate; this only governs how often workers can force a re-render.
+const REFRESH_MIN_INTERVAL_NS: u64 = 33_000_000;
+
+var last_refresh_ns: std.atomic.Value(u64) = .init(0);
+
+/// Worker-side replacement for `dvui.refresh`. Drops calls that fall
+/// inside the global ~30 Hz interval window so a burst of N workers
+/// completing in the same tick triggers at most one redraw.
+///
+/// Safe to call from any thread. The atomic timestamp races
+/// benignly: two callers may both see "interval elapsed" and both
+/// fire — net cost is a couple extra refreshes per burst, still far
+/// fewer than the unconditional N. Callers that need a guaranteed
+/// wake (terminal phase transition, etc.) can still use
+/// `dvui.refresh` directly — but every `markDone` / `markFailed`
+/// already triggers a refresh, so they don't need to.
+pub fn refreshDebounced(win: *dvui.Window, src: std.builtin.SourceLocation) void {
+    const now = monotonicNanos();
+    const last = last_refresh_ns.load(.monotonic);
+    if (now -% last < REFRESH_MIN_INTERVAL_NS) return;
+    last_refresh_ns.store(now, .monotonic);
+    dvui.refresh(win, src, null);
+}
+
+/// Linux monotonic clock in nanoseconds via `clock_gettime` — no
+/// `io` context needed, which lets us call this from any worker
+/// thread without plumbing. Falls back to 0 on the (Linux-only)
+/// unlikely syscall failure so the next call still fires the
+/// refresh deterministically.
+fn monotonicNanos() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
+    const sec: u64 = @intCast(ts.sec);
+    const nsec: u64 = @intCast(ts.nsec);
+    return sec *% 1_000_000_000 +% nsec;
+}
 
 /// Heap-allocated job carrier. Behavior is in `actions/*.zig`
 /// workers; this struct is pure data plus the atomic phase + cancel
@@ -50,10 +107,13 @@ pub fn Job(comptime Payload: type) type {
         win: *dvui.Window,
         payload: Payload,
 
-        /// Worker → UI: flip to `.done`, refresh.
+        /// Worker → UI: flip to `.done`, refresh. The refresh goes
+        /// through `refreshDebounced` so a burst of N workers
+        /// completing in the same tick produces one redraw instead
+        /// of N.
         pub fn markDone(self: *Self) void {
             self.phase.store(@intFromEnum(Phase.done), .release);
-            dvui.refresh(self.win, @src(), null);
+            refreshDebounced(self.win, @src());
         }
 
         /// Worker → UI: flip to `.failed`, refresh. The payload's
@@ -62,7 +122,7 @@ pub fn Job(comptime Payload: type) type {
         /// any worker control path.
         pub fn markFailed(self: *Self) void {
             self.phase.store(@intFromEnum(Phase.failed), .release);
-            dvui.refresh(self.win, @src(), null);
+            refreshDebounced(self.win, @src());
         }
 
         /// UI thread snapshot of the current phase.
@@ -110,7 +170,17 @@ pub fn spawnJob(
         .win = win,
         .payload = payload,
     };
-    job.thr = try std.Thread.spawn(.{}, workerFn, .{job});
+    // Wrap the worker so every spawnJob-launched thread picks up the
+    // background nice value before user code runs. Centralising this
+    // means individual worker fns don't need to remember.
+    const J = Job(Payload);
+    const Wrapper = struct {
+        fn run(j: *J) void {
+            lowerWorkerPriority();
+            workerFn(j);
+        }
+    };
+    job.thr = try std.Thread.spawn(.{}, Wrapper.run, .{job});
     job.thr.detach();
     slot.* = job;
     return job;

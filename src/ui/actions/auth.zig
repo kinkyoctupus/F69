@@ -9,8 +9,11 @@ const log = std.log.scoped(.ui_actions);
 const f95 = @import("f95");
 const downloads = @import("downloads");
 const types = @import("../types.zig");
+const owned_types = @import("../owned.zig");
+const job_mod = @import("../job.zig");
 
 const Frame = types.Frame;
+const State = types.State;
 
 // ============================================================
 //  F95 login / logout
@@ -75,34 +78,72 @@ pub fn doLogin(frame: *Frame, username: []const u8, password: []const u8) void {
 // learn whether the current login has donor eligibility. The UI uses
 // the result to gate the Download button: non-donors see it grayed.
 //
-// Synchronous on the UI thread — same shape as `doLogin` until phase
-// 6+ moves these onto workers. Cost: one HTTP request, gated on the
-// F95 rate-limit mutex like every other call. Cheap; runs once at
-// startup (after login) and once after a fresh login.
+// Off-UI HTTP probe via a `DonorProbeJob`. The probe takes 1–2 s for
+// the GET-token + scrape dance — running it on the UI thread froze
+// the first post-login frame. Worker version: spawn detached, drain
+// next frame; UI thread stays responsive throughout.
+
+fn donorProbeWorker(job: *owned_types.DonorProbeJob) void {
+    const p = &job.payload;
+    const is_donor = f95.donor_ddl.checkDonorStatus(job.alloc, p.client) catch |e| {
+        p.err_name = @errorName(e);
+        job.markFailed();
+        return;
+    };
+    p.is_donor = is_donor;
+    job.markDone();
+}
+
+fn onDonorProbeDone(state: *State, job: *owned_types.DonorProbeJob) void {
+    if (job.payload.is_donor) |v| state.is_donor = v;
+    state.donor_check_in_flight = false;
+    state.donor_check_attempted = true;
+    log.info("donor probe: is_donor={?}", .{state.is_donor});
+}
+
+fn onDonorProbeFailed(state: *State, job: *owned_types.DonorProbeJob) void {
+    log.warn("donor probe failed: {s} — leaving is_donor unset", .{job.payload.err_name orelse "?"});
+    state.donor_check_in_flight = false;
+    state.donor_check_attempted = true;
+}
+
+/// Reap any completed donor-probe job and write its outcome into
+/// State. Called once per frame from `guiFrame`. Safe to call when
+/// the slot is null or the job is still pending — `drainBackgroundJob`
+/// short-circuits.
+pub fn drainDonorProbe(frame: *Frame) void {
+    job_mod.drainBackgroundJob(
+        owned_types.DonorProbePayload,
+        onDonorProbeDone,
+        onDonorProbeFailed,
+        frame.state,
+        &frame.state.donor_probe_job,
+    );
+}
 
 pub fn checkDonorStatus(frame: *Frame) void {
     const state = frame.state;
     if (state.donor_check_in_flight) return;
+    if (state.donor_probe_job != null) return;
     if (!frame.f95_svc.client.hasCookie()) {
         // No cookie = not logged in; can't probe. Leave is_donor null.
         return;
     }
     state.donor_check_in_flight = true;
-    defer {
+    _ = job_mod.spawnJob(
+        owned_types.DonorProbePayload,
+        donorProbeWorker,
+        frame.lib.alloc,
+        frame.win,
+        .{ .client = frame.f95_svc.client },
+        &state.donor_probe_job,
+    ) catch |e| {
+        // Spawn failure (alloc / thread create) — record as
+        // attempted so we don't churn re-firing every frame.
+        log.warn("donor probe spawn failed: {s}", .{@errorName(e)});
         state.donor_check_in_flight = false;
-        // Mark as attempted regardless of outcome so the per-frame
-        // gate in `guiFrame` doesn't re-fire the HTTP probe every
-        // tick when the result was a transient error.
         state.donor_check_attempted = true;
-    }
-    const is_donor = f95.donor_ddl.checkDonorStatus(frame.lib.alloc, frame.f95_svc.client) catch |e| {
-        log.warn("donor probe failed: {s} — leaving is_donor unset", .{@errorName(e)});
-        // Don't set is_donor on transient errors — UI stays optimistic
-        // (button enabled, error surfaces on first download attempt).
-        return;
     };
-    state.is_donor = is_donor;
-    log.info("donor probe: is_donor={}", .{is_donor});
 }
 
 pub fn doLogout(frame: *Frame) void {

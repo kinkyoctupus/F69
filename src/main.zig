@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 
 const library = @import("library");
 const f95 = @import("f95");
+const f95_indexer = @import("f95_indexer");
 const downloads = @import("downloads");
 const recipe = @import("recipe");
 const sandbox_mod = @import("sandbox");
@@ -17,6 +18,7 @@ const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const ui = @import("ui");
 const util_setting = @import("util_setting");
+const build_options = @import("build_options");
 
 /// Override the stdlib's default log level so `log.debug(...)` actually
 /// reaches stderr. While we're still in phase-1 alpha, debug-level
@@ -52,6 +54,37 @@ const log = std.log.scoped(.main);
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+
+    // CLI flags — handled before any setup so `f69 --version` works
+    // even if the data root can't be created (e.g. read-only mount).
+    {
+        var it = init.minimal.args.iterate();
+        _ = it.next(); // skip argv[0]
+        while (it.next()) |arg| {
+            if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+                std.debug.print("f69 v{s}\n", .{build_options.version});
+                return;
+            }
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                std.debug.print(
+                    \\f69 v{s} — F95Zone library manager
+                    \\
+                    \\Usage: f69 [options]
+                    \\
+                    \\Options:
+                    \\  -V, --version       Print version and exit
+                    \\  -h, --help          Print this help and exit
+                    \\
+                    \\Environment:
+                    \\  F69_DATA_DIR        Override data root (default: <exe_dir>/data/)
+                    \\  F95_INDEXER_URL     Override F95Indexer base URL
+                    \\                      (default: https://api.f95checker.dev)
+                    \\
+                , .{build_options.version});
+                return;
+            }
+        }
+    }
 
     // **Portable data layout.** Everything lives under a single
     // `data_root`. Default: `<dir-of-this-exe>/data/`. Override with
@@ -171,6 +204,8 @@ pub fn main(init: std.process.Init) !void {
     try std.Io.Dir.cwd().createDirPath(init.io, downloads_torrents_root);
     log.info("downloads direct={s} torrents={s}", .{ downloads_direct_root, downloads_torrents_root });
 
+    const aria2_path = try resolveAria2Path(gpa, init.io, init.minimal.environ);
+    defer gpa.free(aria2_path);
     var dl_mgr = downloads.Manager.init(
         gpa,
         init.io,
@@ -178,7 +213,7 @@ pub fn main(init: std.process.Init) !void {
         library_root,
         downloads_direct_root,
         downloads_torrents_root,
-        "aria2c",
+        aria2_path,
         initial_aria2_port,
         initial_aria2_seed_ratio,
     );
@@ -356,6 +391,14 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(auto_convert_path);
     const initial_auto_convert: bool = util_setting.loadBool(init.io, gpa, auto_convert_path, false);
 
+    // Auto-apply-compat toggle — `<data_root>/auto_apply_compat`.
+    // Default TRUE (safe — fixes are reversible, collapses the
+    // Convert → Launch-fail → Fix Compat → Launch cycle into one
+    // click).
+    const auto_apply_compat_path = try std.fmt.allocPrint(gpa, "{s}/auto_apply_compat", .{data_root});
+    defer gpa.free(auto_apply_compat_path);
+    const initial_auto_apply_compat: bool = util_setting.loadBool(init.io, gpa, auto_apply_compat_path, true);
+
     // Global sandbox-on-launch default — single-line `true` / `false`.
     // Default on (the safer choice). Per-game `SandboxOverride.use_default`
     // consults this value; `.always` / `.never` ignore it.
@@ -377,7 +420,61 @@ pub fn main(init: std.process.Init) !void {
     const tags_master_path = try std.fmt.allocPrint(gpa, "{s}/tags.txt", .{data_root});
     defer gpa.free(tags_master_path);
 
-    try ui.runMainLoop(init, &lib, &f95_service, &dl_mgr, &recipe_repo, &sandbox, &host_launcher, &convert_svc, &compat_svc, rpdl_token, .{
+    // CPU semaphore for image decode + JPEG encode. Capped at
+    // `min(cpu_count - 1, 4)` so even with 8+8 parallel workers the
+    // UI thread still has CPU time. Network fetches run unthrottled.
+    const cpu_count = std.Thread.getCpuCount() catch 4;
+    const cpu_for_images: usize = @max(@as(usize, 1), @min(cpu_count -| 1, @as(usize, 4)));
+    ui.setImageCpuLimit(cpu_for_images);
+    log.info("cpu_count={d} image-decode permits={d}", .{ cpu_count, cpu_for_images });
+
+    // Refresh-pool parallelism caps. Two independent knobs: one for
+    // /full + scrape workers, one for the screenshot ImageJob pool.
+    // Both clamped to [1, MAX_PARALLEL_*]; default 4.
+    const max_parallel_sync_path = try std.fmt.allocPrint(gpa, "{s}/max_parallel_sync", .{data_root});
+    defer gpa.free(max_parallel_sync_path);
+    const initial_max_parallel_sync: u32 = std.math.clamp(
+        util_setting.loadInt(u32, init.io, gpa, max_parallel_sync_path, ui.DEFAULT_PARALLEL),
+        @as(u32, 1),
+        @as(u32, @intCast(ui.MAX_PARALLEL_SYNC)),
+    );
+    const max_parallel_image_path = try std.fmt.allocPrint(gpa, "{s}/max_parallel_image", .{data_root});
+    defer gpa.free(max_parallel_image_path);
+    const initial_max_parallel_image: u32 = std.math.clamp(
+        util_setting.loadInt(u32, init.io, gpa, max_parallel_image_path, ui.DEFAULT_PARALLEL),
+        @as(u32, 1),
+        @as(u32, @intCast(ui.MAX_PARALLEL_IMAGE)),
+    );
+
+    // Refresh backend selector — single-line `indexer` / `scraper`.
+    // Default `indexer` (F95Indexer cache at api.f95checker.dev). The
+    // toggle lives in Settings → Sync; this file persists the user's
+    // pick across launches.
+    const refresh_backend_path = try std.fmt.allocPrint(gpa, "{s}/refresh_backend", .{data_root});
+    defer gpa.free(refresh_backend_path);
+    const initial_refresh_backend: ui.RefreshBackend = blk: {
+        const owned = util_setting.readSingleLine(init.io, gpa, refresh_backend_path) catch null;
+        if (owned) |s| {
+            defer gpa.free(s);
+            break :blk ui.RefreshBackend.fromStr(s);
+        }
+        break :blk .indexer;
+    };
+    log.info("refresh backend {s}", .{@tagName(initial_refresh_backend)});
+
+    // F95Indexer client. `F95_INDEXER_URL` env override lets users
+    // point at a self-hosted instance; absent → public cache.
+    const indexer_base_url_env = init.minimal.environ.getAlloc(gpa, "F95_INDEXER_URL") catch null;
+    defer if (indexer_base_url_env) |s| gpa.free(s);
+    const indexer_base_url: []const u8 = if (indexer_base_url_env) |s| s else f95_indexer.DEFAULT_BASE_URL;
+    var indexer_client = f95_indexer.Client.init(gpa, init.io, indexer_base_url);
+    log.info("indexer   base_url={s} ua={s}", .{ indexer_base_url, f95_indexer.USER_AGENT });
+
+    const ui_exe_dir = resolveExeDir(gpa, init.io, init.minimal.environ) catch try gpa.dupe(u8, ".");
+    defer gpa.free(ui_exe_dir);
+
+    try ui.runMainLoop(init, &lib, &f95_service, &indexer_client, &dl_mgr, &recipe_repo, &sandbox, &host_launcher, &convert_svc, &compat_svc, rpdl_token, .{
+        .exe_dir = ui_exe_dir,
         .data_root = data_root,
         .db_path = db_path,
         .covers_dir = covers_dir,
@@ -405,10 +502,18 @@ pub fn main(init: std.process.Init) !void {
         .initial_aria2_seed_ratio = initial_aria2_seed_ratio,
         .auto_convert_path = auto_convert_path,
         .initial_auto_convert = initial_auto_convert,
+        .auto_apply_compat_path = auto_apply_compat_path,
+        .initial_auto_apply_compat = initial_auto_apply_compat,
         .sandbox_default_path = sandbox_default_path,
         .initial_sandbox_default = initial_sandbox_default,
         .auto_update_default_path = auto_update_default_path,
         .initial_auto_update_default = initial_auto_update_default,
+        .refresh_backend_path = refresh_backend_path,
+        .initial_refresh_backend = initial_refresh_backend,
+        .max_parallel_sync_path = max_parallel_sync_path,
+        .initial_max_parallel_sync = initial_max_parallel_sync,
+        .max_parallel_image_path = max_parallel_image_path,
+        .initial_max_parallel_image = initial_max_parallel_image,
         .host = host,
     });
 }
@@ -519,6 +624,29 @@ fn freeBrowsers(gpa: std.mem.Allocator, browsers: []ui.Browser) void {
     if (browsers.len > 0) gpa.free(browsers);
 }
 
+/// Bundle root for every `<exe_dir>/<thing>` lookup (aria2c, data,
+/// future bundled binaries). Two tiers, in priority order:
+///
+///   1. `$F69_EXE_DIR` — set by `run.sh` to the bundle dir. This
+///      exists because `run.sh` execs the bundled loader directly
+///      (`exec lib/ld-linux-x86-64.so.2 ./f69 …`), which makes
+///      `/proc/self/exe` resolve to the loader inside `lib/` — not
+///      to the f69 binary. The env var sidesteps that ambiguity.
+///   2. `dirname(/proc/self/exe)` — for direct `./f69` launches
+///      (dev shells, `zig build run`, system installs where
+///      `f69` is symlinked from `/usr/bin`).
+///
+/// Caller frees.
+fn resolveExeDir(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) ![]u8 {
+    if (environ.getAlloc(gpa, "F69_EXE_DIR")) |x| return x else |_| {}
+
+    var link_buf: [4096]u8 = undefined;
+    const n = try std.Io.Dir.cwd().readLink(io, "/proc/self/exe", &link_buf);
+    const exe_path = link_buf[0..n];
+    const dir = std.fs.path.dirname(exe_path) orelse return error.NoExeDir;
+    return gpa.dupe(u8, dir);
+}
+
 /// **Portable mode** — resolve the directory where the f69 executable
 /// lives and put all our data under `<exe_dir>/data/`. Override the
 /// whole thing with the `F69_DATA_DIR` env var. Caller frees.
@@ -544,13 +672,11 @@ fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Envi
     // Tier 1: explicit override.
     if (environ.getAlloc(gpa, "F69_DATA_DIR")) |x| return x else |_| {}
 
-    var link_buf: [4096]u8 = undefined;
-    const n = std.Io.Dir.cwd().readLink(io, "/proc/self/exe", &link_buf) catch {
-        log.warn("resolveDataRoot: /proc/self/exe unreadable; falling back to ./data", .{});
+    const exe_dir = resolveExeDir(gpa, io, environ) catch {
+        log.warn("resolveDataRoot: exe dir undeterminable; falling back to ./data", .{});
         return gpa.dupe(u8, "./data");
     };
-    const exe_path = link_buf[0..n];
-    const exe_dir = std.fs.path.dirname(exe_path) orelse return gpa.dupe(u8, "./data");
+    defer gpa.free(exe_dir);
 
     // Tier 3 first (cheap test): system install → XDG user dir.
     const is_system_install = std.mem.startsWith(u8, exe_dir, "/usr/") or
@@ -571,6 +697,25 @@ fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Envi
 
     // Tier 2: portable install — keep data next to the binary.
     return std.fmt.allocPrint(gpa, "{s}/data", .{exe_dir});
+}
+
+/// Prefer `<exe_dir>/aria2c` (bundled into the portable build by
+/// `zig build portable`); fall back to bare `"aria2c"` so the OS does
+/// a `$PATH` lookup on system installs / dev shells. Caller frees.
+///
+/// Returns the literal `"aria2c"` (not a `<exe_dir>/aria2c` path) on
+/// every failure path so we never hand `Manager.init` a stale absolute
+/// path that doesn't resolve.
+fn resolveAria2Path(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) ![]u8 {
+    const exe_dir = resolveExeDir(gpa, io, environ) catch return gpa.dupe(u8, "aria2c");
+    defer gpa.free(exe_dir);
+    const candidate = try std.fmt.allocPrint(gpa, "{s}/aria2c", .{exe_dir});
+    std.Io.Dir.cwd().access(io, candidate, .{}) catch {
+        gpa.free(candidate);
+        return gpa.dupe(u8, "aria2c");
+    };
+    log.info("aria2c: using bundled binary at {s}", .{candidate});
+    return candidate;
 }
 
 /// Remove orphan `*.tmp` cover files left by a prior run that crashed
