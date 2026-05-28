@@ -1244,25 +1244,40 @@ fn installHasAny(io: std.Io, install_path: []const u8, names: []const []const u8
     return false;
 }
 
-/// Resolve `<exe_dir>/data/mkxp-z` and confirm the binary inside it
-/// exists. Returns the dir path (slice into `buf`) when the bundle
-/// is present, null otherwise. The bundle is checked into
-/// `third_party/mkxp-z/` and copied here by build.zig; this probe is
-/// the runtime confirmation that the install tree picked it up.
+/// Resolve the bundled mkxp-z directory. Two install layouts are
+/// supported:
+///   - Portable: `<exe_dir>/data/mkxp-z/`            (zig-out/bin layout)
+///   - FHS:      `<exe_dir>/../share/f69/data/mkxp-z/` (rpm/deb layout)
+/// The FHS path is checked first so a /usr/bin install picks up
+/// /usr/share/f69/... without falling back to a stale portable tree.
+/// Returns the dir slice (written into `buf`) when the binary inside
+/// it exists, null otherwise.
 fn mkxpZBundled(frame: *Frame, exe_dir: []const u8, buf: []u8) ?[]const u8 {
-    const mkxp_dir = std.fmt.bufPrint(buf, "{s}/data/mkxp-z", .{exe_dir}) catch return null;
+    // FHS path first — /usr/bin/f69 → /usr/share/f69/data/mkxp-z/.
+    if (std.fmt.bufPrint(buf, "{s}/../share/f69/data/mkxp-z", .{exe_dir})) |dir| {
+        var bin_buf: [640]u8 = undefined;
+        if (std.fmt.bufPrint(&bin_buf, "{s}/mkxp-z.x86_64", .{dir})) |bin| {
+            if (std.Io.Dir.cwd().access(frame.io, bin, .{})) |_| return dir else |_| {}
+        } else |_| {}
+    } else |_| {}
+    // Portable path — <exe_dir>/data/mkxp-z/.
+    const portable = std.fmt.bufPrint(buf, "{s}/data/mkxp-z", .{exe_dir}) catch return null;
     var bin_buf: [640]u8 = undefined;
-    const bin = std.fmt.bufPrint(&bin_buf, "{s}/mkxp-z.x86_64", .{mkxp_dir}) catch return null;
+    const bin = std.fmt.bufPrint(&bin_buf, "{s}/mkxp-z.x86_64", .{portable}) catch return null;
     std.Io.Dir.cwd().access(frame.io, bin, .{}) catch return null;
-    return mkxp_dir;
+    return portable;
 }
 
-/// Probe `<exe_dir>/data/compat-resources/mkxp-z-fhs-libs/lib/`. Empty
-/// (returns null) on non-NixOS builds where the bundle wasn't materialised.
+/// Probe the mkxp-z FHS-libs bundle dir. Same portable-vs-FHS dual
+/// check as `mkxpZBundled`. Empty (returns null) on non-NixOS builds
+/// where the bundle wasn't materialised.
 fn mkxpZExtraLibsDir(frame: *Frame, exe_dir: []const u8, buf: []u8) ?[]const u8 {
-    const dir = std.fmt.bufPrint(buf, "{s}/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir}) catch return null;
-    std.Io.Dir.cwd().access(frame.io, dir, .{}) catch return null;
-    return dir;
+    if (std.fmt.bufPrint(buf, "{s}/../share/f69/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir})) |dir| {
+        if (std.Io.Dir.cwd().access(frame.io, dir, .{})) |_| return dir else |_| {}
+    } else |_| {}
+    const portable = std.fmt.bufPrint(buf, "{s}/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir}) catch return null;
+    std.Io.Dir.cwd().access(frame.io, portable, .{}) catch return null;
+    return portable;
 }
 
 pub fn doConvertGame(frame: *Frame, game: *const library.Game) void {

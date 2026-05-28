@@ -354,14 +354,224 @@ fn persistInt64IfDirty(path: []const u8, io: std.Io, ts: i64) void {
 //  Import from F95Checker / xLibrary
 // ============================================================
 
-/// Click handler for Settings → "Import from F95Checker...". Opens a
-/// directory picker for the source's games-base-dir (where the
-/// relative paths in the source DB resolve against), then spawns the
-/// worker. Source data path is the upstream-default
-/// `~/.config/f95checker/db.sqlite3`. Mode comes from
-/// `state.import_mode` (`link` by default — safest).
+/// Click handler for Settings → "Import from F95Checker...". Routes
+/// through the review screen so the user picks Move/Copy/Link at the
+/// moment of import (and sees what's coming in) rather than relying
+/// on whichever Settings-page toggle was last selected.
 pub fn doImportFromF95Checker(frame: *Frame) void {
+    doStartF95CheckerReview(frame);
+}
+
+/// Direct (non-review) import path. Kept for tests / scripted entry
+/// points; the UI now always goes through the review screen.
+pub fn doImportFromF95CheckerDirect(frame: *Frame) void {
     startImport(frame, .f95checker, stateModeToJobMode(frame.state.folder_scan_mode));
+}
+
+/// Stage 1 of the F95Checker import: open the picker, read the DB
+/// READ-ONLY into a Bundle, populate review state, switch screen.
+/// No file mutation here — `~/.config/f95checker` is never touched
+/// by this path.
+pub fn doStartF95CheckerReview(frame: *Frame) void {
+    const state = frame.state;
+    if (state.import_job != null) {
+        state.notifyWarn("An import is already in flight — wait for it to finish.");
+        return;
+    }
+    const alloc = frame.lib.alloc;
+
+    const home = frame.info.host.home orelse {
+        state.notifyErr("Couldn't read $HOME; can't locate the F95Checker DB.");
+        return;
+    };
+    const data_path = buildConfigDataPath(alloc, .f95checker, home) catch {
+        state.notifyErr("Out of memory resolving F95Checker DB path.");
+        return;
+    };
+    errdefer alloc.free(data_path);
+
+    std.Io.Dir.cwd().access(frame.io, data_path, .{}) catch {
+        var buf: [320]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "F95Checker DB not found at {s}", .{data_path}) catch "F95Checker DB not found";
+        state.notifyErr(msg);
+        alloc.free(data_path);
+        return;
+    };
+
+    const games_base_dir = file_picker.openFolder(alloc, null) catch |e| {
+        alloc.free(data_path);
+        var buf: [192]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Folder picker failed: {s}", .{@errorName(e)}) catch "Folder picker failed";
+        state.notifyErr(msg);
+        return;
+    } orelse {
+        alloc.free(data_path);
+        return; // user cancelled
+    };
+    errdefer alloc.free(games_base_dir);
+
+    // Reuse the same safety gate that the direct-import path uses —
+    // games-base-dir must not be (or live under) any upstream tool's
+    // config dir. The review path never deletes, but Apply will,
+    // depending on mode; refusing here keeps the rule consistent.
+    if (importTargetUnsafe(frame.io, alloc, games_base_dir, home)) |reason| {
+        defer alloc.free(reason);
+        var buf: [320]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "Import refused: {s}. Pick your games folder, NOT your tool's config folder.", .{reason}) catch "Import refused: unsafe games-base-dir choice.";
+        state.notifyErr(m);
+        alloc.free(data_path);
+        alloc.free(games_base_dir);
+        return;
+    }
+
+    // Read the DB into a Bundle on the main thread. F95Checker DBs
+    // for typical libraries (a few hundred rows) finish in well under
+    // a frame; if a power-user complains we'll move this to a worker.
+    const bundle_ptr = alloc.create(importers_mod.Bundle) catch {
+        alloc.free(data_path);
+        alloc.free(games_base_dir);
+        state.notifyErr("Out of memory reading F95Checker DB.");
+        return;
+    };
+    bundle_ptr.* = importers_mod.f95checker.loadFromDb(alloc, data_path) catch |e| {
+        alloc.destroy(bundle_ptr);
+        alloc.free(data_path);
+        alloc.free(games_base_dir);
+        var buf: [192]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Couldn't read F95Checker DB: {s}", .{@errorName(e)}) catch "Couldn't read F95Checker DB";
+        state.notifyErr(msg);
+        return;
+    };
+
+    // Clear any prior review state before storing new pointers — a
+    // second click of "Import…" must not leak the previous bundle.
+    freeF95Review(state, alloc);
+
+    var installed_n: usize = 0;
+    for (bundle_ptr.games) |g| {
+        if (g.installDirRel() != null) installed_n += 1;
+    }
+
+    state.f95_review_bundle = bundle_ptr;
+    state.f95_review_game_count = bundle_ptr.games.len;
+    state.f95_review_installed_count = installed_n;
+    state.f95_review_games_base_dir = games_base_dir;
+    state.f95_review_data_path = data_path;
+    state.f95_review_msg = .{};
+    state.screen = .import_f95_review;
+}
+
+/// Apply the review: spawn the existing import worker. Worker re-
+/// reads the DB itself (cheap; few KB to few MB) but we hand it the
+/// games-base-dir + mode already picked here, so the user doesn't
+/// see a second folder prompt.
+pub fn doApplyF95CheckerReview(frame: *Frame) void {
+    const state = frame.state;
+    if (state.import_job != null) {
+        state.notifyWarn("An import is already in flight — wait for it to finish.");
+        return;
+    }
+    const alloc = frame.lib.alloc;
+
+    const data_path_src = state.f95_review_data_path orelse {
+        state.notifyErr("Review state missing DB path; cancel and re-open.");
+        return;
+    };
+    const games_base_dir_src = state.f95_review_games_base_dir orelse {
+        state.notifyErr("Review state missing games dir; cancel and re-open.");
+        return;
+    };
+
+    // Hand the worker its own copies — `freeF95Review` frees the
+    // review-state strings independently of the worker's lifecycle.
+    const data_path = alloc.dupe(u8, data_path_src) catch {
+        state.notifyErr("Out of memory starting import.");
+        return;
+    };
+    errdefer alloc.free(data_path);
+    const games_base_dir = alloc.dupe(u8, games_base_dir_src) catch {
+        alloc.free(data_path);
+        state.notifyErr("Out of memory starting import.");
+        return;
+    };
+    errdefer alloc.free(games_base_dir);
+
+    const existing_ids = collectExistingIds(frame) catch {
+        alloc.free(data_path);
+        alloc.free(games_base_dir);
+        state.notifyErr("Couldn't enumerate existing library.");
+        return;
+    };
+
+    const job = alloc.create(import_job.Job) catch {
+        alloc.free(data_path);
+        alloc.free(games_base_dir);
+        var ids_mut = existing_ids;
+        ids_mut.deinit();
+        state.notifyErr("Out of memory starting import.");
+        return;
+    };
+    job.* = .{
+        .alloc = alloc,
+        .io = frame.io,
+        .win = frame.win,
+        .source = .f95checker,
+        .data_path = data_path,
+        .games_base_dir = games_base_dir,
+        .library_root = frame.info.library_root,
+        .mode = stateModeToJobMode(frame.state.folder_scan_mode),
+        .existing_ids = existing_ids,
+    };
+
+    import_job.start(job) catch {
+        job.deinit(alloc);
+        alloc.destroy(job);
+        state.notifyErr("Failed to spawn import worker thread.");
+        return;
+    };
+
+    state.import_job = job;
+
+    // Free the review bundle now — worker re-reads the DB on its
+    // own thread, so we don't need to keep the in-memory copy.
+    freeF95Review(state, alloc);
+    state.screen = .settings;
+    state.notifyInfo("Import started. Banner shows progress.");
+}
+
+pub fn doCancelF95CheckerReview(frame: *Frame) void {
+    freeF95Review(frame.state, frame.lib.alloc);
+    frame.state.screen = .settings;
+}
+
+/// Release everything `doStartF95CheckerReview` allocated. Safe to
+/// call when nothing is set (all fields null-guarded).
+pub fn freeF95Review(state: *State, alloc: std.mem.Allocator) void {
+    if (state.f95_review_bundle) |p| {
+        const bundle: *importers_mod.Bundle = @ptrCast(@alignCast(p));
+        bundle.deinit();
+        alloc.destroy(bundle);
+        state.f95_review_bundle = null;
+    }
+    state.f95_review_game_count = 0;
+    state.f95_review_installed_count = 0;
+    if (state.f95_review_games_base_dir) |s| {
+        alloc.free(s);
+        state.f95_review_games_base_dir = null;
+    }
+    if (state.f95_review_data_path) |s| {
+        alloc.free(s);
+        state.f95_review_data_path = null;
+    }
+}
+
+/// Typed accessor for the review bundle. Returns null when no review
+/// is active.
+pub fn f95ReviewBundle(state: *const State) ?*const importers_mod.Bundle {
+    if (state.f95_review_bundle) |p| {
+        return @ptrCast(@alignCast(p));
+    }
+    return null;
 }
 
 /// Click handler for Settings → "Import from xLibrary...". Same flow,

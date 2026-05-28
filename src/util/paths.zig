@@ -36,18 +36,35 @@ pub fn sandboxHome(alloc: std.mem.Allocator, config_home: []const u8, game_id: [
     return std.fmt.allocPrint(alloc, "{s}/f69/sandbox/{s}", .{ config_home, game_id });
 }
 
-/// `<exe_dir>/data/mkxp-z/`. The vendored RGSS runtime ships in the
-/// install tree (see `third_party/mkxp-z/`), so the path is always
-/// relative to the binary — never per-user / per-data-root. Caller
-/// frees.
+/// Bundled mkxp-z dir. Two install layouts:
+///   - Portable: `<exe_dir>/data/mkxp-z/`
+///   - FHS:      `<exe_dir>/../share/f69/data/mkxp-z/` (rpm/deb)
+/// Probes the FHS path first; falls back to portable. Returns the
+/// path even if it doesn't exist (caller must verify) — matches the
+/// pre-refactor contract. Caller frees.
 pub fn bundledMkxpZDir(alloc: std.mem.Allocator, exe_dir: []const u8) ![]u8 {
-    return std.fmt.allocPrint(alloc, "{s}/data/mkxp-z", .{exe_dir});
+    return resolveBundledDataPath(alloc, exe_dir, "mkxp-z");
 }
 
-/// `<exe_dir>/data/compat-resources/mkxp-z-fhs-libs/lib/`. NixOS-only
-/// libstdc++ bundle the convert launcher prepends to LD_LIBRARY_PATH.
-/// Empty (returned as-is, caller must check existence) on non-Nix
-/// builds. Caller frees.
+/// Bundled mkxp-z FHS-libs dir (NixOS-only libstdc++ bundle the
+/// convert launcher prepends to LD_LIBRARY_PATH). Empty (returned as-
+/// is, caller must check existence) on non-Nix builds. Same
+/// portable-vs-FHS dual probe as `bundledMkxpZDir`. Caller frees.
 pub fn bundledMkxpZLibsDir(alloc: std.mem.Allocator, exe_dir: []const u8) ![]u8 {
-    return std.fmt.allocPrint(alloc, "{s}/data/compat-resources/mkxp-z-fhs-libs/lib", .{exe_dir});
+    return resolveBundledDataPath(alloc, exe_dir, "compat-resources/mkxp-z-fhs-libs/lib");
+}
+
+fn resolveBundledDataPath(alloc: std.mem.Allocator, exe_dir: []const u8, sub: []const u8) ![]u8 {
+    // FHS first — when exe_dir is /usr/bin, /usr/share/f69/data/... is
+    // where the .rpm / .deb packaging lands the bundle. `std.Io.Dir.cwd().access`
+    // would need an `io` handle here; this helper is hot on the convert
+    // path and used by stat-cheap callers, so we just return the first
+    // path that's a directory by checking on disk via std.fs.cwd.statFile
+    // — same allocator semantics, no io param plumbing required.
+    const fhs = try std.fmt.allocPrint(alloc, "{s}/../share/f69/data/{s}", .{ exe_dir, sub });
+    if (std.fs.cwd().statFile(fhs)) |st| {
+        if (st.kind == .directory) return fhs;
+    } else |_| {}
+    alloc.free(fhs);
+    return std.fmt.allocPrint(alloc, "{s}/data/{s}", .{ exe_dir, sub });
 }

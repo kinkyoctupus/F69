@@ -229,6 +229,7 @@ pub fn runMainLoop(
         actions.freePostInstallJobs(&state, lib.alloc);
         actions.freeManualInstallJobs(&state, lib.alloc);
         actions.freeFolderScan(&state, lib, io);
+        actions.freeF95Review(&state, lib.alloc);
         // Tear down NFDe if the user ever opened the file picker.
         // No-op when never used.
         @import("util_file_picker").deinit();
@@ -536,6 +537,7 @@ fn guiFrame(frame: *Frame) !bool {
         .settings => screens.settingsScreen(frame),
         .import_urls => screens.importUrlsScreen(frame),
         .import_folder => screens.importFolderScreen(frame),
+        .import_f95_review => screens.importF95CheckerReviewScreen(frame),
         .downloads => screens.downloadsScreen(frame),
         .diagnostics => screens.diagnosticsScreen(frame),
         .recipe_editor => screens.recipeEditorScreen(frame),
@@ -570,6 +572,7 @@ fn guiFrame(frame: *Frame) !bool {
         .settings => "render settings",
         .import_urls => "render import (urls)",
         .import_folder => "render import (folder)",
+        .import_f95_review => "render import (f95 review)",
         .downloads => "render downloads",
         .diagnostics => "render diagnostics",
         .recipe_editor => "render recipe editor",

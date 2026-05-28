@@ -17,6 +17,12 @@ pub const Screen = enum {
     import_urls,
     /// Scan any flat directory of game subfolders.
     import_folder,
+    /// Review F95Checker DB rows before committing. Mode picker
+    /// lives here so the user picks Move/Copy/Link at the moment
+    /// of import (instead of having to set it in Settings first).
+    /// Source DB is opened READ-ONLY; nothing in `~/.config/f95checker`
+    /// is mutated regardless of the chosen mode.
+    import_f95_review,
     downloads,
     diagnostics,
     recipe_editor,
@@ -999,6 +1005,33 @@ pub const State = struct {
     /// 2026-05-28 data-loss incident. The user can opt into `move` /
     /// `copy` via the mode picker.
     folder_scan_mode: ImportMode = .link,
+
+    // ---- F95Checker review state ----
+    //
+    // Populated by `doStartF95CheckerReview` when the user clicks
+    // "Import from F95Checker…" in Settings. The screen renders the
+    // game list straight out of `f95_review_bundle` (read-only).
+    // Apply spawns the existing import worker; Cancel frees and
+    // returns to Settings. Bundle is `?*importers.Bundle` opaqued so
+    // state.zig doesn't pull the importer module.
+    f95_review_bundle: ?*anyopaque = null,
+    /// Element count for the bundle's games slice (mirrors
+    /// `bundle.games.len`; kept here so callers don't have to
+    /// re-typecast just to render counts).
+    f95_review_game_count: usize = 0,
+    /// Number of games in the bundle whose `install_executable_rel`
+    /// is non-null — drives the "Installed: N" summary on the screen.
+    f95_review_installed_count: usize = 0,
+    /// Caller-owned absolute path to the games-base-dir picked at
+    /// review start. Re-used when Apply spawns the worker so the
+    /// user doesn't get prompted twice. Freed by `freeF95Review`.
+    f95_review_games_base_dir: ?[]u8 = null,
+    /// Alloc-owned source DB path. Reused on Apply for the same
+    /// reason as `f95_review_games_base_dir`.
+    f95_review_data_path: ?[]u8 = null,
+    f95_review_scroll_info: dvui.ScrollInfo = .{},
+    f95_review_msg: buf_mod.MessageBuf(192) = .{},
+
     /// Bulk-edit affordance for the preview table: name suffix and
     /// version values that the "Apply to selected" button writes
     /// across all ticked rows.
