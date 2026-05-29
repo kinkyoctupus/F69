@@ -2344,14 +2344,32 @@ fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
     for (seen.items) |ver| {
         var total_s: i64 = 0;
         var count: usize = 0;
+        var last_end: ?i64 = null;
         for (sessions) |s| {
             if (!std.mem.eql(u8, s.version, ver)) continue;
             count += 1;
             if (s.counts_as_played) total_s += s.durationSeconds();
+            if (s.ended_at) |e| {
+                if (last_end == null or e > last_end.?) last_end = e;
+            }
         }
 
         var header_buf: [256]u8 = undefined;
-        const header = std.fmt.bufPrint(
+        // Raw unix-seconds for `last_end` matches the per-session row
+        // rendering (v1 — no time-formatting helper yet). "no end" only
+        // happens when every session for this version is still open.
+        const header = if (last_end) |le| std.fmt.bufPrint(
+            &header_buf,
+            "{s}   {d} session{s} · {d}h {d}m · last {d}",
+            .{
+                ver,
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+                @divTrunc(total_s, 3600),
+                @mod(@divTrunc(total_s, 60), 60),
+                le,
+            },
+        ) catch ver else std.fmt.bufPrint(
             &header_buf,
             "{s}   {d} session{s} · {d}h {d}m",
             .{
