@@ -778,7 +778,10 @@ pub const Library = struct {
 
     pub fn freePlaySessions(self: *Library, sessions: []dom.PlaySession) void {
         _ = self;
-        _ = sessions;
+        // Stub matches the stub `listPlaySessions` returning `&.{}`.
+        // If a partial real impl ever returns non-empty slices through
+        // this stub it would leak — assert loudly instead.
+        std.debug.assert(sessions.len == 0);
     }
 };
 
@@ -1428,10 +1431,10 @@ test "library: migration 16 — play_sessions table exists" {
     var lib = try Library.open(std.testing.allocator, ":memory:");
     defer lib.close();
 
-    // The migration must succeed (this fires inside Library.open). To prove
-    // the table exists, we attempt an empty list and a guarded insert via
-    // the public API. The test fails before migration 16 lands because the
-    // table does not exist and insertSession will surface a DatabaseError.
+    // Compile-time guard for the stub API surface. The real assertion
+    // that the table exists arrives with Task 3 when `listPlaySessions`
+    // grows a real SELECT body — until then this test only proves
+    // `Library.open` (which runs the migrations) didn't error.
     const sessions = try lib.listPlaySessions(12345);
     defer lib.freePlaySessions(sessions);
     try std.testing.expectEqual(@as(usize, 0), sessions.len);
