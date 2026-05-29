@@ -254,24 +254,29 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         const now_s: i64 = _now_ts.sec;
 
         // One install lookup, reused for both install_id and version.
+        // `version_owned` stays null when we have nothing to dupe — that's
+        // the unambiguous "no version" sentinel; non-null is always a heap
+        // allocation owned by lib.alloc.
         var install_id_opt: ?[36]u8 = null;
-        var version_owned: []u8 = frame.lib.alloc.dupe(u8, "") catch &.{};
+        var version_owned: ?[]u8 = null;
         if (frame.lib.latestInstallForGame(game.f95_thread_id) catch null) |inst| {
             defer frame.lib.freeInstall(inst);
             var id: [36]u8 = undefined;
             @memcpy(&id, &inst.id);
             install_id_opt = id;
-            frame.lib.alloc.free(version_owned);
-            version_owned = frame.lib.alloc.dupe(u8, inst.version) catch &.{};
+            if (inst.version.len > 0) {
+                version_owned = frame.lib.alloc.dupe(u8, inst.version) catch null;
+            }
         } else if (game.latest_version) |lv| {
-            frame.lib.alloc.free(version_owned);
-            version_owned = frame.lib.alloc.dupe(u8, lv) catch &.{};
+            if (lv.len > 0) {
+                version_owned = frame.lib.alloc.dupe(u8, lv) catch null;
+            }
         }
 
         const sid = frame.lib.insertSession(.{
             .game_thread_id = game.f95_thread_id,
             .install_id = install_id_opt,
-            .version = version_owned,
+            .version = version_owned orelse "",
             .started_at = now_s,
         }) catch -1;
 
@@ -289,10 +294,10 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
                 // and accept that this launch isn't tracked in-memory
                 // (the DB row was already inserted; it stays open and
                 // gets the "incomplete" treatment).
-                frame.lib.alloc.free(version_owned);
+                if (version_owned) |v| frame.lib.alloc.free(v);
             };
         } else {
-            frame.lib.alloc.free(version_owned);
+            if (version_owned) |v| frame.lib.alloc.free(v);
         }
     }
     // Early-failure detection now flows through `drainRunningGames` →
@@ -1542,7 +1547,7 @@ pub fn drainRunningGames(frame: *Frame) void {
         pid: i32,
         session_id: i64,
         started_at: i64,
-        version: []const u8,
+        version: ?[]u8,
     }) = .empty;
     defer doomed.deinit(frame.lib.alloc);
     var it = m.iterator();
@@ -1593,9 +1598,11 @@ pub fn drainRunningGames(frame: *Frame) void {
 
             // last_played_version monotonic update (only when counted).
             const counts_as_played = !early_fail and duration_s >= @as(i64, frame.state.min_session_seconds);
-            if (counts_as_played and d.version.len > 0) {
-                frame.lib.setLastPlayedVersionIfNewer(d.tid, d.version, version_mod.compare)
-                    catch |e| log.warn("setLastPlayedVersionIfNewer failed: {s}", .{@errorName(e)});
+            if (counts_as_played) {
+                if (d.version) |v| {
+                    frame.lib.setLastPlayedVersionIfNewer(d.tid, v, version_mod.compare)
+                        catch |e| log.warn("setLastPlayedVersionIfNewer failed: {s}", .{@errorName(e)});
+                }
             }
         }
 
@@ -1606,7 +1613,7 @@ pub fn drainRunningGames(frame: *Frame) void {
         notifyOnAbnormalExit(frame, d.tid, d.status);
 
         // Free the version string we duped at launch time.
-        if (d.version.len > 0) frame.lib.alloc.free(d.version);
+        if (d.version) |v| frame.lib.alloc.free(v);
     }
 }
 
