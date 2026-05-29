@@ -398,6 +398,17 @@ const LIST_ROW_PITCH: f32 = 56.0;
 /// never reveals an unrendered row.
 const OVERSCAN_ROWS: usize = 2;
 
+/// Returns true when the game has a newer installed version than the
+/// last-played version, or when the game has been installed but never
+/// played. Both cases mean "there is something new the user hasn't seen".
+fn hasUnplayedUpdate(g: *const library.Game, install_v: ?[]const u8) bool {
+    const inst_v = install_v orelse return false;
+    if (g.last_played_version) |lpv| {
+        return version_mod.compare(inst_v, lpv) == .gt;
+    }
+    return true; // installed but never played → counts as unplayed update
+}
+
 /// Virtualize the library scroll: only emit cards/rows for the
 /// portion of the (filtered) list that's actually within the viewport
 /// (plus an overscan band). Off-screen rows collapse to a single
@@ -429,7 +440,7 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
         var fresh: std.ArrayList(u32) = .empty;
         fresh.ensureTotalCapacity(frame.lib.alloc, games.len) catch {};
         for (games, 0..) |*g, i| {
-            if (cardVisible(state, g, query)) {
+            if (cardVisible(state, g, query, frame.install_versions)) {
                 fresh.append(frame.lib.alloc, @intCast(i)) catch break;
             }
         }
@@ -527,6 +538,13 @@ fn sidebar(state: *State) void {
         if (style.dropdown(@src(), inst_labels, .{ .choice = &picked }, .{}, .{ .id_extra = 0xF11 })) {
             state.filters.installed = @enumFromInt(picked);
         }
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF22 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_unplayed_updates, "Unplayed updates", .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -1000,6 +1018,34 @@ fn renderListWindow(
             });
         }
 
+        {
+            const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(g.f95_thread_id) else null;
+            if (hasUnplayedUpdate(g, inst_v)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                // Accent colour: bright teal-green to stand out from
+                // the engine/status pills.
+                const new_fill: dvui.Color = .{ .r = 0x00, .g = 0xBF, .b = 0xA5 };
+                var new_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .id_extra = g.f95_thread_id ^ 0xBB22,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                    .background = true,
+                    .color_fill = new_fill,
+                    .color_border = new_fill,
+                    .border = style.border_thin,
+                });
+                defer new_pill.deinit();
+                const new_body = dvui.Font.theme(.body);
+                dvui.labelNoFmt(@src(), "NEW", .{}, .{
+                    .gravity_y = 0.5,
+                    .gravity_x = 0.5,
+                    .color_text = dvui.Color.white,
+                    .font = new_body.withSize(new_body.size * 0.75),
+                });
+            }
+        }
+
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
 
         dvui.labelNoFmt(@src(), g.name, .{}, .{
@@ -1135,10 +1181,19 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     // causes one stale frame; acceptable.
     const set_count: usize = if (state.installed_set) |s| s.count() else 0;
     hasher.update(std.mem.asBytes(&set_count));
+    // Unplayed-updates filter: hash both the toggle and the install-
+    // generation counter so a new install immediately re-evaluates.
+    hasher.update(std.mem.asBytes(&state.filter_unplayed_updates));
+    hasher.update(std.mem.asBytes(&state.snapshot_install_gen));
     return hasher.final();
 }
 
-fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) bool {
+fn cardVisible(
+    state: *const State,
+    g: *const library.Game,
+    query: []const u8,
+    install_versions: ?*const std.AutoHashMap(u64, []const u8),
+) bool {
     if (query.len > 0) {
         const name_match = types.asciiContainsIgnoreCase(g.name, query);
         const dev_match = if (g.developer) |d| types.asciiContainsIgnoreCase(d, query) else false;
@@ -1159,6 +1214,12 @@ fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) b
             }
         },
     }
+
+    if (state.filter_unplayed_updates) {
+        const inst_v: ?[]const u8 = if (install_versions) |m| m.get(g.f95_thread_id) else null;
+        if (!hasUnplayedUpdate(g, inst_v)) return false;
+    }
+
     return true;
 }
 
