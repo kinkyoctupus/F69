@@ -249,7 +249,51 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     };
 
     if (result.pid > 0) {
-        if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, .{ .pid = result.pid }) catch {};
+        var _now_ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
+        const now_s: i64 = _now_ts.sec;
+
+        // One install lookup, reused for both install_id and version.
+        var install_id_opt: ?[36]u8 = null;
+        var version_owned: []u8 = frame.lib.alloc.dupe(u8, "") catch &.{};
+        if (frame.lib.latestInstallForGame(game.f95_thread_id) catch null) |inst| {
+            defer frame.lib.freeInstall(inst);
+            var id: [36]u8 = undefined;
+            @memcpy(&id, &inst.id);
+            install_id_opt = id;
+            frame.lib.alloc.free(version_owned);
+            version_owned = frame.lib.alloc.dupe(u8, inst.version) catch &.{};
+        } else if (game.latest_version) |lv| {
+            frame.lib.alloc.free(version_owned);
+            version_owned = frame.lib.alloc.dupe(u8, lv) catch &.{};
+        }
+
+        const sid = frame.lib.insertSession(.{
+            .game_thread_id = game.f95_thread_id,
+            .install_id = install_id_opt,
+            .version = version_owned,
+            .started_at = now_s,
+        }) catch -1;
+
+        // Ownership of version_owned transfers to the map entry.
+        // It will be freed in drainRunningGames after reap (or in
+        // shutdown cleanup — see Task 9).
+        if (runningGamesMap(frame)) |rm| {
+            rm.put(game.f95_thread_id, .{
+                .pid = result.pid,
+                .session_id = sid,
+                .started_at = now_s,
+                .version = version_owned,
+            }) catch {
+                // put() failed — we still own version_owned. Free it
+                // and accept that this launch isn't tracked in-memory
+                // (the DB row was already inserted; it stays open and
+                // gets the "incomplete" treatment).
+                frame.lib.alloc.free(version_owned);
+            };
+        } else {
+            frame.lib.alloc.free(version_owned);
+        }
     }
     // Early-failure detection now flows through `drainRunningGames` →
     // `notifyOnAbnormalExit` which opens the launch diag dialog on a
@@ -1492,7 +1536,14 @@ pub fn drainRunningGames(frame: *Frame) void {
     if (frame.state.running_games == null) return;
     const m = runningGamesMap(frame) orelse return;
 
-    var doomed: std.ArrayList(struct { tid: u64, status: u32, pid: i32 }) = .empty;
+    var doomed: std.ArrayList(struct {
+        tid: u64,
+        status: u32,
+        pid: i32,
+        session_id: i64,
+        started_at: i64,
+        version: []const u8,
+    }) = .empty;
     defer doomed.deinit(frame.lib.alloc);
     var it = m.iterator();
     while (it.next()) |entry| {
@@ -1512,16 +1563,50 @@ pub fn drainRunningGames(frame: *Frame) void {
                 .tid = entry.key_ptr.*,
                 .status = @bitCast(status),
                 .pid = pid,
+                .session_id = entry.value_ptr.*.session_id,
+                .started_at = entry.value_ptr.*.started_at,
+                .version = entry.value_ptr.*.version,
             }) catch break;
         }
     }
     for (doomed.items) |d| {
         _ = m.remove(d.tid);
+        // Close the session row. Early-fail mirrors the dialog rule:
+        // exited cleanly with code 0 → !early_fail; anything else within
+        // EARLY_FAIL_S → early_fail.
+        const EARLY_FAIL_S: i64 = 5;
+        var _now_ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
+        const now_s: i64 = _now_ts.sec;
+        const duration_s: i64 = @max(0, now_s - d.started_at);
+        const W = std.posix.W;
+        const exited_clean: bool = W.IFEXITED(d.status) and W.EXITSTATUS(d.status) == 0;
+        const early_fail: bool = !exited_clean and duration_s < EARLY_FAIL_S;
+
+        if (d.session_id > 0) {
+            frame.lib.closeSession(.{
+                .session_id = d.session_id,
+                .ended_at = now_s,
+                .early_fail = early_fail,
+                .min_session_seconds = frame.state.min_session_seconds,
+            }) catch |e| log.warn("closeSession failed: {s}", .{@errorName(e)});
+
+            // last_played_version monotonic update (only when counted).
+            const counts_as_played = !early_fail and duration_s >= @as(i64, frame.state.min_session_seconds);
+            if (counts_as_played and d.version.len > 0) {
+                frame.lib.setLastPlayedVersionIfNewer(d.tid, d.version, version_mod.compare)
+                    catch |e| log.warn("setLastPlayedVersionIfNewer failed: {s}", .{@errorName(e)});
+            }
+        }
+
         // Only surface a notification when the exit code is non-zero
         // (a clean exit means the user quit the game normally). The
         // ECHILD case (rc == -1) collapses into status = 0 here so
         // it stays silent too — those are stale entries, not crashes.
         notifyOnAbnormalExit(frame, d.tid, d.status);
+
+        // Free the version string we duped at launch time.
+        if (d.version.len > 0) frame.lib.alloc.free(d.version);
     }
 }
 
