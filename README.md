@@ -17,17 +17,21 @@ f69 stands on the shoulders of two great projects:
 
 ## Features:
 
-- **F95Zone scraping** — sync thread metadata (rating, votes, version, dev status, last-updated, cover image), pull your bookmark list, watch for updates.
+- **F95Zone scraping** — sync thread metadata (rating, votes, version, dev status, last-updated, cover image), pull your bookmark list, watch for updates. Backed by an in-tree F95Indexer client (toggleable, default on) for faster bulk metadata.
 - **Multi-protocol downloads** — For automatic download and install you can use rpdl and donor ddls. Or you can manually download something through the downloads links.
 - **Recipe-based mod installs** — Through mod recipes, modding has never been easier. There are several default recipes for renpy and rpgm games. And for more involved mods you can make a custom recipe that you can save and reuse later, or share.(would be great if modders added this themselves)
 - **Sandboxed game launches** via `bwrap` — Optional sandbox. Safer, and keeps your saves in a single place.
-- **Engine fix-ups** — Not all games are released with linux support, but it's possible to add it most of the time, I've included several fix-ups that add native linux support to renpy and rpgm games that don't include it.
+- **Engine fix-ups** — Not all games are released with linux support, but it's possible to add it most of the time, I've included several fix-ups that add native linux support to Ren'Py and RPGM games that don't include it. RPG Maker XP/VX/VX Ace games run natively via a vendored mkxp-z runtime — no Wine, no win32.
 - **Portable data layout** — for the portable bundle, DB, library, covers, recipes and downloads all live in `<dir-of-binary>/data/` — drop the folder on a USB stick and the state travels with it. For system installs (`/usr/bin/f69` from a `.deb` / `.rpm` / AUR / Nix package), data falls back to `$XDG_DATA_HOME/f69` (default `~/.local/share/f69/`).
-- **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. Choose Move (frees source disk) or Copy per import.
+- **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. F95Checker imports go through a review screen showing every game from the upstream DB (opened read-only) with a Move / Copy / **Link in place** picker — link is the default and never mutates source files.
+- **F95Checker DB export** — write your f69 library back to a F95Checker-shaped `db.sqlite3` (backup-rename never overwrites).
+- **Per-version playtime journal** — every launch records a play session against the installed version; the library row flags an unplayed update when you install a newer release than you've played past the threshold.
 
 ## Download:
 
-No released binaries yet. Build from source:
+Tagged releases publish prebuilt artifacts on the [Releases page](https://github.com/Moordp/F69/releases/latest): portable + slim Linux x86_64 tarballs and (where the CI matrix succeeds) `.pkg.tar.zst` / `.deb` / `.rpm`.
+
+Or build from source:
 
 ```sh
 git clone git@github.com:Moordp/F69.git f69
@@ -106,7 +110,7 @@ Pass `-Dcontainer-build=true` to also invoke podman or docker against the target
 
 - **AUR** (`archlinux:latest`): working end-to-end. Produces `f69-<ver>-1-x86_64.pkg.tar.zst`.
 - **Debian** (`debian:bookworm-slim`): incomplete. Cross-distro static-libarchive symbol mismatch (xml2). Needs a Debian-host packager to wire the right `linkSystemLibrary` call.
-- **RPM** (`fedora:latest`): script written, not exercised. Same class of issue expected.
+- **RPM** (`fedora:latest`): working as of v0.9.1. Data trees install under `%{_datadir}/f69/` (FHS-correct) when invoked with `-Dfhs-layout=true`, which the spec template sets automatically.
 
 The deeper constraint: each distro builds its static libraries with different feature flags, so "one build script, every distro" hits a long tail of per-distro fixes. Run the build on the target distro itself (your dev box or a CI matrix) for the reliable path; the container shortcut from a NixOS dev host is a convenience, not a guarantee.
 
