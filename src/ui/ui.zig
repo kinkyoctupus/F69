@@ -173,6 +173,9 @@ pub fn runMainLoop(
     // values on first paint rather than empty fields.
     _ = std.fmt.bufPrint(&state.max_parallel_sync_buf, "{d}", .{state.max_parallel_sync}) catch state.max_parallel_sync_buf[0..0];
     _ = std.fmt.bufPrint(&state.max_parallel_image_buf, "{d}", .{state.max_parallel_image}) catch state.max_parallel_image_buf[0..0];
+    state.min_session_seconds = info.initial_min_session_seconds;
+    state.min_session_seconds_persisted = info.initial_min_session_seconds;
+    _ = std.fmt.bufPrint(&state.min_session_seconds_buf, "{d}", .{state.min_session_seconds}) catch state.min_session_seconds_buf[0..0];
     // Seed the textEntry buffer with the persisted port (or empty for
     // the "random ephemeral" sentinel). Leaving 0 blank reduces clutter.
     if (info.initial_aria2_port != 0) {
@@ -269,6 +272,7 @@ pub fn runMainLoop(
         actions.persistRefreshBackendIfDirty(&state, info.refresh_backend_path, io);
         actions.persistMaxParallelSyncIfDirty(&state, info.max_parallel_sync_path, io);
         actions.persistMaxParallelImageIfDirty(&state, info.max_parallel_image_path, io);
+        actions.persistMinSessionSecondsIfDirty(&state, info.min_session_seconds_path, io);
         // Age + evict expired toasts each frame. info/success fade
         // around 3s, warn around 6s, err sticks until clicked.
         state.ageToasts();

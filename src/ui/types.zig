@@ -232,6 +232,12 @@ pub const RuntimeInfo = struct {
     /// Default 4. Settings → Sync row writes here.
     max_parallel_image_path: []const u8,
     initial_max_parallel_image: u32,
+    /// `<data_root>/min_session_seconds` — single-line integer (0..1800).
+    /// Sessions shorter than this do not count as "played". Default 60.
+    /// Evaluated at session close; past counts_as_played values are not
+    /// retroactively updated when this setting changes.
+    min_session_seconds_path: []const u8,
+    initial_min_session_seconds: u32,
     /// `<data_root>/tags.txt` — cache of F95's master tag list.
     /// Newline-separated, first line `# fetched: <unix-secs>`.
     tags_master_path: []const u8,

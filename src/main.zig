@@ -446,6 +446,16 @@ pub fn main(init: std.process.Init) !void {
         @as(u32, @intCast(ui.MAX_PARALLEL_IMAGE)),
     );
 
+    // Minimum session duration (seconds) for counts_as_played.
+    // Range 0..1800; default 60. 0 = every successful launch counts.
+    const min_session_seconds_path = try std.fmt.allocPrint(gpa, "{s}/min_session_seconds", .{data_root});
+    defer gpa.free(min_session_seconds_path);
+    const initial_min_session_seconds: u32 = std.math.clamp(
+        util_setting.loadInt(u32, init.io, gpa, min_session_seconds_path, 60),
+        @as(u32, 0),
+        @as(u32, 1800),
+    );
+
     // Refresh backend selector — single-line `indexer` / `scraper`.
     // Default `indexer` (F95Indexer cache at api.f95checker.dev). The
     // toggle lives in Settings → Sync; this file persists the user's
@@ -514,6 +524,8 @@ pub fn main(init: std.process.Init) !void {
         .initial_max_parallel_sync = initial_max_parallel_sync,
         .max_parallel_image_path = max_parallel_image_path,
         .initial_max_parallel_image = initial_max_parallel_image,
+        .min_session_seconds_path = min_session_seconds_path,
+        .initial_min_session_seconds = initial_min_session_seconds,
         .host = host,
     });
 }

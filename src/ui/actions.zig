@@ -138,6 +138,7 @@ pub const persistAutoUpdateDefaultIfDirty = common.persistAutoUpdateDefaultIfDir
 pub const persistRefreshBackendIfDirty = common.persistRefreshBackendIfDirty;
 pub const persistMaxParallelSyncIfDirty = common.persistMaxParallelSyncIfDirty;
 pub const persistMaxParallelImageIfDirty = common.persistMaxParallelImageIfDirty;
+pub const persistMinSessionSecondsIfDirty = common.persistMinSessionSecondsIfDirty;
 pub const saveAria2Port = common.saveAria2Port;
 pub const saveAria2SeedRatio = common.saveAria2SeedRatio;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
