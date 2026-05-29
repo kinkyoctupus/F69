@@ -31,6 +31,7 @@ pub const DevStatus = dom.DevStatus;
 pub const CensoredState = dom.CensoredState;
 pub const SandboxOverride = dom.SandboxOverride;
 pub const SavesPaths = dom.SavesPaths;
+pub const PlaySession = dom.PlaySession;
 pub const errors = errs;
 
 pub const Library = struct {

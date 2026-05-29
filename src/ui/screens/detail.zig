@@ -154,6 +154,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Downloads", state.detail_tab == .downloads)) state.detail_tab = .downloads;
         if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
+        if (components.tabButton("Journal", state.detail_tab == .journal)) state.detail_tab = .journal;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -171,6 +172,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             .downloads => renderDownloadsTab(frame, game),
             .notes => renderNotesTab(frame, game),
             .guides => renderGuidesTab(frame, game),
+            .journal => renderJournalTab(frame, game),
         }
     }
 
@@ -2299,4 +2301,85 @@ fn renderTagChips(tags: []const []const u8) void {
 fn isPrintableTag(tag: []const u8) bool {
     if (tag.len == 0 or tag.len > 128) return false;
     return std.unicode.utf8ValidateSlice(tag);
+}
+
+// ============================================================
+//  Journal tab — per-version session history
+// ============================================================
+
+fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
+    const sessions = frame.lib.listPlaySessions(game.f95_thread_id) catch {
+        dvui.labelNoFmt(@src(), "Failed to load journal.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        return;
+    };
+    defer frame.lib.freePlaySessions(sessions);
+
+    if (sessions.len == 0) {
+        dvui.labelNoFmt(
+            @src(),
+            "No play sessions recorded yet. Sessions start counting from the first launch after this release.",
+            .{},
+            .{ .color_text = HELP_TEXT_COLOR },
+        );
+        return;
+    }
+
+    const alloc = frame.lib.alloc;
+    var seen: std.ArrayList([]const u8) = .empty;
+    defer seen.deinit(alloc);
+    for (sessions) |s| {
+        var found = false;
+        for (seen.items) |v| {
+            if (std.mem.eql(u8, v, s.version)) { found = true; break; }
+        }
+        if (!found) seen.append(alloc, s.version) catch break;
+    }
+    // Sort newest-first using util_version.compare.
+    std.sort.pdq([]const u8, seen.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return version_mod.compare(a, b) == .gt;
+        }
+    }.lt);
+
+    for (seen.items) |ver| {
+        var total_s: i64 = 0;
+        var count: usize = 0;
+        for (sessions) |s| {
+            if (!std.mem.eql(u8, s.version, ver)) continue;
+            count += 1;
+            if (s.counts_as_played) total_s += s.durationSeconds();
+        }
+
+        var header_buf: [256]u8 = undefined;
+        const header = std.fmt.bufPrint(
+            &header_buf,
+            "{s}   {d} session{s} · {d}h {d}m",
+            .{
+                ver,
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+                @divTrunc(total_s, 3600),
+                @mod(@divTrunc(total_s, 60), 60),
+            },
+        ) catch ver;
+        dvui.labelNoFmt(@src(), header, .{}, .{ .style = .highlight });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 2 } });
+
+        for (sessions) |s| {
+            if (!std.mem.eql(u8, s.version, ver)) continue;
+            var row_buf: [256]u8 = undefined;
+            const row = formatSessionRow(&row_buf, s);
+            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    }
+}
+
+fn formatSessionRow(buf: *[256]u8, s: library.PlaySession) []const u8 {
+    if (s.ended_at) |end| {
+        const dur_m = @divTrunc(s.durationSeconds(), 60);
+        const note: []const u8 = if (s.counts_as_played) "" else "  (below threshold)";
+        return std.fmt.bufPrint(buf, "  {d} → {d}   {d}m{s}", .{ s.started_at, end, dur_m, note }) catch "session";
+    }
+    return std.fmt.bufPrint(buf, "  {d} → in progress", .{s.started_at}) catch "session";
 }
