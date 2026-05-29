@@ -850,6 +850,64 @@ pub const Library = struct {
     fn freePlaySessionFields(alloc: std.mem.Allocator, s: *dom.PlaySession) void {
         alloc.free(s.version);
     }
+
+    pub const CloseSessionArgs = struct {
+        session_id: i64,
+        ended_at: i64,
+        early_fail: bool,
+        min_session_seconds: u32,
+    };
+
+    /// Close a play_sessions row. Computes duration_s and counts_as_played
+    /// from the args. If counts_as_played, bumps games.total_playtime_s
+    /// and games.last_played_at. (last_played_version is handled
+    /// separately by setLastPlayedVersionIfNewer — that needs the
+    /// util_version comparator which lives in the UI layer.)
+    pub fn closeSession(self: *Library, args: CloseSessionArgs) errs.Error!void {
+        // Read started_at + game_thread_id so we can compute duration
+        // and (conditionally) bump aggregates.
+        var rows = self.conn.inner.rows(
+            \\SELECT game_thread_id, started_at FROM play_sessions WHERE id = ?
+            ,
+            .{args.session_id},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        const r = rows.next() orelse return;
+        const game_thread_id: u64 = @intCast(r.int(0));
+        const started_at: i64 = r.int(1);
+
+        const duration_s: i64 = @max(0, args.ended_at - started_at);
+        const counts_as_played: bool =
+            !args.early_fail and duration_s >= @as(i64, args.min_session_seconds);
+
+        self.conn.inner.exec(
+            \\UPDATE play_sessions
+            \\SET ended_at = ?, duration_s = ?, counts_as_played = ?
+            \\WHERE id = ?
+            ,
+            .{
+                args.ended_at,
+                duration_s,
+                @as(i64, @intFromBool(counts_as_played)),
+                args.session_id,
+            },
+        ) catch return errs.Error.DatabaseError;
+
+        if (counts_as_played) {
+            self.conn.inner.exec(
+                \\UPDATE games
+                \\SET total_playtime_s = total_playtime_s + ?,
+                \\    last_played_at   = ?
+                \\WHERE f95_thread_id = ?
+                ,
+                .{
+                    duration_s,
+                    args.ended_at,
+                    @as(i64, @intCast(game_thread_id)),
+                },
+            ) catch return errs.Error.DatabaseError;
+        }
+    }
 };
 
 // ----- migrations -----
@@ -1546,5 +1604,113 @@ test "library: insertSession opens a row with NULL ended_at" {
     try std.testing.expectEqualStrings("0.1", sessions[0].version);
     try std.testing.expectEqual(@as(?i64, null), sessions[0].ended_at);
     try std.testing.expectEqual(false, sessions[0].counts_as_played);
+}
+
+test "library: closeSession sets ended_at, duration, counts_as_played" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1090,
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expectEqual(@as(?i64, 1090), sessions[0].ended_at);
+    try std.testing.expectEqual(@as(?i64, 90), sessions[0].duration_s);
+    try std.testing.expect(sessions[0].counts_as_played); // 90s > 60s threshold
+}
+
+test "library: closeSession — below threshold does not count" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1059, // 59s
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expect(!sessions[0].counts_as_played);
+}
+
+test "library: closeSession — early_fail forces counts_as_played=0" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    // Long duration but early_fail=true (e.g. game crashed at 5h)
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 19000,
+        .early_fail = true,
+        .min_session_seconds = 60,
+    });
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expect(!sessions[0].counts_as_played);
+}
+
+test "library: closeSession bumps total_playtime_s and last_played_at when counted" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1300, // 300s
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqual(@as(u64, 300), g.total_playtime_s);
+    try std.testing.expectEqual(@as(?i64, 1300), g.last_played_at);
+}
+
+test "library: closeSession does NOT bump aggregates when not counted" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1010, // 10s, below threshold
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqual(@as(u64, 0), g.total_playtime_s);
+    try std.testing.expectEqual(@as(?i64, null), g.last_played_at);
 }
 
