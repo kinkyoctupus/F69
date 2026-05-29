@@ -510,6 +510,19 @@ pub fn persistMaxParallelSyncIfDirty(state: *State, path: []const u8, io: std.Io
     state.max_parallel_sync_persisted = state.max_parallel_sync;
 }
 
+/// Mirror `state.min_session_seconds` to disk on change. Clamped to
+/// `[0, 1800]` by the settings panel before this runs.
+pub fn persistMinSessionSecondsIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.min_session_seconds == state.min_session_seconds_persisted) return;
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{state.min_session_seconds}) catch return;
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("min_session_seconds persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.min_session_seconds_persisted = state.min_session_seconds;
+}
+
 /// Mirror `state.max_parallel_image` to disk on change.
 pub fn persistMaxParallelImageIfDirty(state: *State, path: []const u8, io: std.Io) void {
     if (state.max_parallel_image == state.max_parallel_image_persisted) return;

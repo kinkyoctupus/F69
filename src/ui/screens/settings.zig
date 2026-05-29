@@ -91,6 +91,8 @@ fn renderSettingsGeneral(frame: *Frame) void {
     renderSandboxDefaultSection(frame);
     settingsSectionDivider(10);
     renderAutoUpdateDefaultSection(frame);
+    settingsSectionDivider(11);
+    renderMinSessionSecondsSection(frame);
 }
 
 /// "Auto-download updates" checkbox. When on, the batch sync /
@@ -108,6 +110,41 @@ fn renderAutoUpdateDefaultSection(frame: *Frame) void {
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     _ = dvui.checkbox(@src(), &state.auto_update_default, "Auto-download updates on batch sync", .{});
+}
+
+/// Minimum session duration (seconds) that counts as a "played" session.
+/// 0 = every successful launch counts, regardless of how briefly the
+/// game ran. Max 1800 (30 minutes). Evaluated at session close; already-
+/// recorded counts_as_played values are not retroactively recalculated.
+fn renderMinSessionSecondsSection(frame: *Frame) void {
+    const state = frame.state;
+    dvui.label(@src(), "Minimum play session length", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    components.settingsHelpText(
+        "A launch only counts as 'played' if the game ran for at least this many seconds. " ++
+            "Range: 0 (every launch counts) to 1800 (30 minutes). Default: 60.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        dvui.label(@src(), "Minimum session length to count as 'played' (seconds)", .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.min_session_seconds_buf },
+        }, .{
+            .min_size_content = .{ .w = 60, .h = 24 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        const typed = std.mem.sliceTo(&state.min_session_seconds_buf, 0);
+        if (std.fmt.parseInt(u32, typed, 10)) |n| {
+            const clamped: u32 = std.math.clamp(n, @as(u32, 0), @as(u32, 1800));
+            state.min_session_seconds = clamped;
+        } else |_| {}
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    dvui.label(@src(), "0 = every successful launch counts as played.", .{}, .{ .color_text = HELP_TEXT_COLOR });
 }
 
 /// "Sandbox on launch by default" checkbox. Each game's per-game

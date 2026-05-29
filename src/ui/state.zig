@@ -1230,6 +1230,14 @@ pub const State = struct {
     /// dvui). Parsed + clamped on Save.
     max_parallel_sync_buf: [4]u8 = [_]u8{0} ** 4,
     max_parallel_image_buf: [4]u8 = [_]u8{0} ** 4,
+    /// Minimum session duration in seconds for `counts_as_played` to
+    /// be true. 0 = any successful launch counts; max 1800 (30 min).
+    /// Evaluated at session close — past `counts_as_played` values
+    /// are not re-derived when this changes.
+    min_session_seconds: u32 = 60,
+    min_session_seconds_persisted: u32 = 60,
+    /// TextEntry buffer for the Settings → min_session_seconds widget.
+    min_session_seconds_buf: [8]u8 = [_]u8{0} ** 8,
     /// Per-game F95-thread-id → host PID of the currently-launched
     /// game. Populated by `doLaunchGame`, consumed by `doStopGame` +
     /// the detail screen (Launch ↔ Stop button swap). Pruned each
