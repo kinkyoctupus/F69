@@ -770,18 +770,80 @@ pub const Library = struct {
         if (list.len > 0) self.alloc.free(list);
     }
 
-    pub fn listPlaySessions(self: *Library, game_thread_id: u64) errs.Error![]dom.PlaySession {
-        _ = self;
-        _ = game_thread_id;
-        return &.{};
+    pub const InsertSessionArgs = struct {
+        game_thread_id: u64,
+        install_id: ?[36]u8 = null,
+        version: []const u8,
+        started_at: i64,
+    };
+
+    /// Open a play_sessions row. Returns the rowid (use it to close
+    /// the session later via closeSession).
+    pub fn insertSession(self: *Library, args: InsertSessionArgs) errs.Error!i64 {
+        const install_id_slice: ?[]const u8 = if (args.install_id) |*id| id[0..] else null;
+        self.conn.inner.exec(
+            \\INSERT INTO play_sessions
+            \\  (game_thread_id, install_id, version, started_at)
+            \\VALUES (?, ?, ?, ?)
+            ,
+            .{
+                @as(i64, @intCast(args.game_thread_id)),
+                install_id_slice,
+                args.version,
+                args.started_at,
+            },
+        ) catch return errs.Error.DatabaseError;
+        return self.conn.inner.lastInsertedRowId();
+    }
+
+    pub fn listPlaySessions(
+        self: *Library,
+        game_thread_id: u64,
+    ) errs.Error![]dom.PlaySession {
+        var rows = self.conn.inner.rows(
+            \\SELECT id, game_thread_id, install_id, version,
+            \\       started_at, ended_at, duration_s, counts_as_played
+            \\FROM play_sessions
+            \\WHERE game_thread_id = ?
+            \\ORDER BY started_at DESC
+            ,
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+
+        var out: std.ArrayList(dom.PlaySession) = .empty;
+        errdefer {
+            for (out.items) |*s| freePlaySessionFields(self.alloc, s);
+            out.deinit(self.alloc);
+        }
+        while (rows.next()) |r| {
+            var s: dom.PlaySession = undefined;
+            s.id = r.int(0);
+            s.game_thread_id = @intCast(r.int(1));
+            if (r.nullableText(2)) |t| {
+                if (t.len == 36) {
+                    var id: [36]u8 = undefined;
+                    @memcpy(&id, t);
+                    s.install_id = id;
+                } else s.install_id = null;
+            } else s.install_id = null;
+            s.version = self.alloc.dupe(u8, r.text(3)) catch return errs.Error.OutOfMemory;
+            s.started_at = r.int(4);
+            s.ended_at = r.nullableInt(5);
+            s.duration_s = r.nullableInt(6);
+            s.counts_as_played = r.int(7) != 0;
+            out.append(self.alloc, s) catch return errs.Error.OutOfMemory;
+        }
+        return out.toOwnedSlice(self.alloc) catch return errs.Error.OutOfMemory;
     }
 
     pub fn freePlaySessions(self: *Library, sessions: []dom.PlaySession) void {
-        _ = self;
-        // Stub matches the stub `listPlaySessions` returning `&.{}`.
-        // If a partial real impl ever returns non-empty slices through
-        // this stub it would leak — assert loudly instead.
-        std.debug.assert(sessions.len == 0);
+        for (sessions) |*s| freePlaySessionFields(self.alloc, s);
+        self.alloc.free(sessions);
+    }
+
+    fn freePlaySessionFields(alloc: std.mem.Allocator, s: *dom.PlaySession) void {
+        alloc.free(s.version);
     }
 };
 
@@ -1448,5 +1510,36 @@ test "library: migration 16 — games.last_played_version column exists" {
     const g = (try lib.getGame(1)).?;
     defer lib.freeGame(g);
     try std.testing.expectEqual(@as(?[]const u8, null), g.last_played_version);
+}
+
+test "library: insertSession opens a row with NULL ended_at" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    try lib.upsertGame(&.{ .f95_thread_id = 7, .name = "G" });
+    const install_id: [36]u8 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".*;
+    try lib.upsertInstall(&.{
+        .id = install_id,
+        .game_thread_id = 7,
+        .version = "0.1",
+        .install_path = "/games/7/0.1",
+        .recipe_id = "x",
+        .installed_at = 1,
+    });
+
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 7,
+        .install_id = install_id,
+        .version = "0.1",
+        .started_at = 1700000000,
+    });
+    try std.testing.expect(sid > 0);
+
+    const sessions = try lib.listPlaySessions(7);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("0.1", sessions[0].version);
+    try std.testing.expectEqual(@as(?i64, null), sessions[0].ended_at);
+    try std.testing.expectEqual(false, sessions[0].counts_as_played);
 }
 
