@@ -1577,10 +1577,13 @@ fn gameLessThan(ctx: SortCtx, a: library.Game, b: library.Game) bool {
         .last_played_version => blk: {
             const va = a.last_played_version;
             const vb = b.last_played_version;
-            // Nulls always sort to the bottom (treated as "never played").
+            // Nulls always sort to the bottom (treated as "never played"),
+            // regardless of asc/desc. Treat null as "greater than everything"
+            // in the natural ascending order so desc reversal also lands
+            // them at the bottom of the visible list.
             if (va == null and vb == null) break :blk a.f95_thread_id < b.f95_thread_id;
-            if (va == null) break :blk !asc; // a is null → a > b in both dirs
-            if (vb == null) break :blk asc;  // b is null → a < b in both dirs
+            if (va == null) break :blk false; // a is null → a is "max", sinks
+            if (vb == null) break :blk true;  // b is null → a beats it
             const ord = version_mod.compare(va.?, vb.?);
             if (ord == .eq) break :blk a.f95_thread_id < b.f95_thread_id;
             break :blk if (asc) ord == .lt else ord == .gt;
