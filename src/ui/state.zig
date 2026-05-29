@@ -862,6 +862,11 @@ pub const State = struct {
     /// shutdown and on each cache miss before the rebuild.
     snapshot_install_gen: u64 = 0,
     snapshot_install_versions: ?std.AutoHashMap(u64, []const u8) = null,
+    /// When true the library list only shows games where the latest
+    /// installed version is newer than the last-played version (or where
+    /// the game has been installed but never played). Bound to the
+    /// "Unplayed updates" sidebar checkbox.
+    filter_unplayed_updates: bool = false,
     /// Snapshot cache: `thread_id → *Game` lookup map. Invalidated
     /// when the frame's `games` slice ptr or len changes (a fresh
     /// `listGames` allocation invalidates every cached pointer).
