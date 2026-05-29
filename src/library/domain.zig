@@ -247,6 +247,11 @@ pub const Game = struct {
     /// "force full refresh" click. Null = never indexer-synced (or
     /// synced before this column existed) → also forces /full.
     last_indexer_parser_version: ?u32 = null,
+    /// Highest version string for which a session with
+    /// `counts_as_played = 1` was recorded. Drives the "NEW" chip.
+    /// Compared with `util_version.compare`. NULL means the user
+    /// has never logged a played session against this game.
+    last_played_version: ?[]const u8 = null,
 
     pub fn weightedRating(self: *const Game, library_mean: f32, prior_weight: f32) ?f32 {
         const r = self.rating orelse return null;
@@ -323,6 +328,17 @@ pub const ModInstall = struct {
     /// recipes' load_after / load_before by the resolver.
     load_index: u32,
     applied_at: i64 = 0,
+};
+
+pub const PlaySession = struct {
+    id: i64,
+    game_thread_id: u64,
+    install_id: ?[36]u8 = null,
+    version: []const u8,
+    started_at: i64,
+    ended_at: ?i64 = null,
+    duration_s: ?i64 = null,
+    counts_as_played: bool = false,
 };
 
 test "Engine.fromBracket variants" {
