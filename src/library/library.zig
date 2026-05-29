@@ -908,6 +908,37 @@ pub const Library = struct {
             ) catch return errs.Error.DatabaseError;
         }
     }
+
+    pub const CompareFn = *const fn (a: []const u8, b: []const u8) std.math.Order;
+
+    /// Set games.last_played_version = version iff the existing value
+    /// is NULL or compare(version, existing) == .gt. Comparator is
+    /// passed in so library/ stays independent of util_version.
+    pub fn setLastPlayedVersionIfNewer(
+        self: *Library,
+        game_thread_id: u64,
+        version: []const u8,
+        compare: CompareFn,
+    ) errs.Error!void {
+        // Read current value.
+        var rows = self.conn.inner.rows(
+            \\SELECT last_played_version FROM games WHERE f95_thread_id = ?
+            ,
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        const row = rows.next() orelse return;
+        const existing: ?[]const u8 = row.nullableText(0);
+
+        const should_update = existing == null or compare(version, existing.?) == .gt;
+        if (!should_update) return;
+
+        self.conn.inner.exec(
+            \\UPDATE games SET last_played_version = ? WHERE f95_thread_id = ?
+            ,
+            .{ version, @as(i64, @intCast(game_thread_id)) },
+        ) catch return errs.Error.DatabaseError;
+    }
 };
 
 // ----- migrations -----
@@ -1714,3 +1745,55 @@ test "library: closeSession does NOT bump aggregates when not counted" {
     try std.testing.expectEqual(@as(?i64, null), g.last_played_at);
 }
 
+test "library: setLastPlayedVersionIfNewer — null replaced unconditionally" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.1", g.last_played_version.?);
+}
+
+test "library: setLastPlayedVersionIfNewer — newer wins" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+    try lib.setLastPlayedVersionIfNewer(1, "0.2", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.2", g.last_played_version.?);
+}
+
+test "library: setLastPlayedVersionIfNewer — older does NOT regress" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.2", cmp);
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.2", g.last_played_version.?);
+}
