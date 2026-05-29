@@ -1802,6 +1802,10 @@ fn readFilePrefix(io: std.Io, path: []const u8, out: []u8) ![]const u8 {
 
 pub fn freeRunningGames(state: *State, alloc: std.mem.Allocator) void {
     if (state.running_games) |map_ptr| {
+        var it = map_ptr.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.version) |v| alloc.free(v);
+        }
         map_ptr.deinit();
         alloc.destroy(map_ptr);
         state.running_games = null;
