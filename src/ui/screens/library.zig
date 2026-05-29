@@ -6,6 +6,8 @@ const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
 
+const version_mod = @import("util_version");
+
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
@@ -122,7 +124,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
         // Sort: column dropdown + asc/desc toggle. Pretty labels so
         // the user sees "Sync state" rather than `sync_state`.
         dvui.label(@src(), "sort:", .{}, .{ .gravity_y = 0.5 });
-        const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state" };
+        const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state", "Last played version" };
         var sort_picked: usize = @intFromEnum(state.sort_column);
         if (style.dropdown(@src(), sort_labels, .{ .choice = &sort_picked }, .{}, .{
             .min_size_content = .{ .w = 130, .h = style.button_h },
@@ -1571,6 +1573,17 @@ fn gameLessThan(ctx: SortCtx, a: library.Game, b: library.Game) bool {
             const ub: i64 = b.last_updated_at orelse std.math.minInt(i64);
             if (ua == ub) return a.f95_thread_id < b.f95_thread_id;
             return if (asc) ua < ub else ua > ub;
+        },
+        .last_played_version => blk: {
+            const va = a.last_played_version;
+            const vb = b.last_played_version;
+            // Nulls always sort to the bottom (treated as "never played").
+            if (va == null and vb == null) break :blk a.f95_thread_id < b.f95_thread_id;
+            if (va == null) break :blk !asc; // a is null → a > b in both dirs
+            if (vb == null) break :blk asc;  // b is null → a < b in both dirs
+            const ord = version_mod.compare(va.?, vb.?);
+            if (ord == .eq) break :blk a.f95_thread_id < b.f95_thread_id;
+            break :blk if (asc) ord == .lt else ord == .gt;
         },
     };
 }

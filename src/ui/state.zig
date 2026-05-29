@@ -131,7 +131,7 @@ pub const FolderImportRowState = struct {
 /// votes don't unfairly dominate over well-rated games. `sync_state`
 /// promotes already-synced rows above placeholder "(unsynced)" ones —
 /// previously this was implicit, now it's an explicit pick.
-pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_state };
+pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_state, last_played_version };
 pub const SortDir = enum { asc, desc };
 pub const LoginStatus = enum { unknown, logged_out, logged_in, logging_in, err };
 pub const View = enum { grid, list };
