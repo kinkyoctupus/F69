@@ -832,7 +832,12 @@ pub const Library = struct {
             s.ended_at = r.nullableInt(5);
             s.duration_s = r.nullableInt(6);
             s.counts_as_played = r.int(7) != 0;
-            out.append(self.alloc, s) catch return errs.Error.OutOfMemory;
+            out.append(self.alloc, s) catch {
+                // append failed before `s` reached `out.items`, so the
+                // errdefer cleanup above won't see this row's dupe.
+                self.alloc.free(s.version);
+                return errs.Error.OutOfMemory;
+            };
         }
         return out.toOwnedSlice(self.alloc) catch return errs.Error.OutOfMemory;
     }
