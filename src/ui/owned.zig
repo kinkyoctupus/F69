@@ -56,13 +56,15 @@ pub const PostInstalledSet = std.AutoHashMap(u64, void);
 pub const AttemptsMap = std.AutoHashMap(u64, u32);
 
 /// Metadata carried per running game entry.
-/// `version` is empty until Task 8 wires real launches; from Task 8 on it is
-/// duped via `lib.alloc` on insert and freed on map removal.
+/// `version` is `null` until a launch records a real install version; when
+/// non-null it owns a `lib.alloc`-duped string that must be freed on map
+/// removal. The optional disambiguates "no version recorded" from "heap-
+/// allocated empty string" so the free path is unambiguous.
 pub const RunningGameEntry = struct {
     pid: i32,
     session_id: i64 = -1,
     started_at: i64 = 0,
-    version: []const u8 = "",
+    version: ?[]u8 = null,
 };
 
 /// Map of f95_thread_id → RunningGameEntry. Populated when "Run" launches
