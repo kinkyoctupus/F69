@@ -339,7 +339,36 @@ pub const PlaySession = struct {
     ended_at: ?i64 = null,
     duration_s: ?i64 = null,
     counts_as_played: bool = false,
+
+    /// Best-effort duration in seconds. Prefers the stored
+    /// `duration_s` (set on close); returns 0 for still-open or
+    /// abandoned rows so journal aggregates don't NaN.
+    pub fn durationSeconds(self: PlaySession) i64 {
+        return self.duration_s orelse 0;
+    }
 };
+
+test "PlaySession: durationSeconds derives from started_at/ended_at" {
+    const s: PlaySession = .{
+        .id = 1,
+        .game_thread_id = 1,
+        .version = "1.0",
+        .started_at = 100,
+        .ended_at = 250,
+        .duration_s = 150,
+    };
+    try std.testing.expectEqual(@as(i64, 150), s.durationSeconds());
+
+    const open: PlaySession = .{
+        .id = 2,
+        .game_thread_id = 1,
+        .version = "1.0",
+        .started_at = 100,
+        .ended_at = null,
+        .duration_s = null,
+    };
+    try std.testing.expectEqual(@as(i64, 0), open.durationSeconds());
+}
 
 test "Engine.fromBracket variants" {
     try std.testing.expectEqual(Engine.renpy, Engine.fromBracket("Ren'Py"));
