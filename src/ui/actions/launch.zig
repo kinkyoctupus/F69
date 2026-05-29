@@ -249,7 +249,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     };
 
     if (result.pid > 0) {
-        if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, result.pid) catch {};
+        if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, .{ .pid = result.pid }) catch {};
     }
     // Early-failure detection now flows through `drainRunningGames` →
     // `notifyOnAbnormalExit` which opens the launch diag dialog on a
@@ -1457,10 +1457,11 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
         state.setLaunchMsg("Game is not tracked as running.");
         return;
     };
-    const pid = m.get(game.f95_thread_id) orelse {
+    const entry = m.get(game.f95_thread_id) orelse {
         state.setLaunchMsg("Game is not tracked as running.");
         return;
     };
+    const pid = entry.pid;
     std.posix.kill(@intCast(pid), .TERM) catch |e| switch (e) {
         error.ProcessNotFound => {
             // Already dead; just clean up state.
@@ -1495,7 +1496,7 @@ pub fn drainRunningGames(frame: *Frame) void {
     defer doomed.deinit(frame.lib.alloc);
     var it = m.iterator();
     while (it.next()) |entry| {
-        const pid: std.c.pid_t = @intCast(entry.value_ptr.*);
+        const pid: std.c.pid_t = @intCast(entry.value_ptr.*.pid);
         // libc waitpid(WNOHANG) returns:
         //   >0  → child exited; we just reaped it.
         //    0  → child still running.

@@ -55,9 +55,19 @@ pub const PostInstalledSet = std.AutoHashMap(u64, void);
 /// repeatedly-failing extract doesn't loop forever.
 pub const AttemptsMap = std.AutoHashMap(u64, u32);
 
-/// Map of f95_thread_id → child PID. Populated when "Run" launches
+/// Metadata carried per running game entry.
+/// `version` is empty until Task 8 wires real launches; from Task 8 on it is
+/// duped via `lib.alloc` on insert and freed on map removal.
+pub const RunningGameEntry = struct {
+    pid: i32,
+    session_id: i64 = -1,
+    started_at: i64 = 0,
+    version: []const u8 = "",
+};
+
+/// Map of f95_thread_id → RunningGameEntry. Populated when "Run" launches
 /// a game and consulted to grey-out the row and offer "Stop".
-pub const RunningGamesMap = std.AutoHashMap(u64, i32);
+pub const RunningGamesMap = std.AutoHashMap(u64, RunningGameEntry);
 
 /// Map of donor download_job_id → f95_thread_id. Used to correlate
 /// `downloads.Manager` events back to the game whose donor flow
