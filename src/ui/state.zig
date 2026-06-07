@@ -134,7 +134,7 @@ pub const FolderImportRowState = struct {
 pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_state, last_played_version };
 pub const SortDir = enum { asc, desc };
 pub const LoginStatus = enum { unknown, logged_out, logged_in, logging_in, err };
-pub const View = enum { grid, list };
+pub const View = enum { grid, list, kanban };
 pub const Tab = enum { overview, changelog, downloads, notes, guides, journal };
 
 /// Filter tabs for the Mods page. Each filters the master list of
@@ -754,6 +754,10 @@ pub const State = struct {
     /// Columns: Name, Engine, Rating, Version, Updated.
     lib_col_widths: [5]f32 = .{ 360, 120, 90, 130, 120 },
     lib_grid_scroll: dvui.ScrollInfo = .{},
+    /// Kanban view: one independent scroll per status column so each
+    /// column scrolls on its own (and to its own height). Indexed by
+    /// `@intFromEnum(DevStatus)` — 6 variants.
+    lib_kanban_scroll: [6]dvui.ScrollInfo = [_]dvui.ScrollInfo{.{}} ** 6,
     /// Last Sync action's status. Reset to `.idle` when entering detail.
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).
