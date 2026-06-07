@@ -8,6 +8,7 @@ const entypo = dvui.entypo;
 const library = @import("library");
 
 const tokens = @import("ui_tokens");
+const comp = @import("ui_comp");
 const theme_store = @import("ui_theme_store");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
@@ -145,6 +146,25 @@ fn renderSettingsAppearance(frame: *Frame) void {
             }
         }
     }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    dvui.labelNoFmt(@src(), "Preview", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer row.deinit();
+        _ = comp.button(@src(), "Play", .primary, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        comp.engineChip(@src(), "Ren'Py", .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        comp.statusChip(@src(), "Ongoing", .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        comp.newChip(@src(), .{ .gravity_y = 0.5 });
+    }
+    {
+        var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 0 } });
+        defer row2.deinit();
+        comp.progressBar(@src(), 0.62, 220, .{ .gravity_y = 0.5 });
+    }
+
     if (changed) theme_store.save(frame.io);
 }
 
