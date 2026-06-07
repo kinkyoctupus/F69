@@ -113,6 +113,10 @@ pub fn universalModsScreen(frame: *Frame) !bool {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
         dvui.label(@src(), "{s}", .{m.name}, .{ .gravity_y = 0.5, .style = .highlight });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (components.iconButton(@src(), "Apply to games", entypo.cycle, .{ .id_extra = @as(u64, @bitCast(m.id)), .style = .highlight })) {
+            actions.applyUniversalMod(frame, m.id, m.engine, m.modfile_path);
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .id_extra = @as(u64, @bitCast(m.id)), .style = .err })) {
             pending_delete = .{ .id = m.id, .path = m.modfile_path };
         }

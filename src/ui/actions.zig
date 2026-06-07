@@ -157,6 +157,7 @@ pub const extractRpaArchives = @import("actions/renpy_tools.zig").extractRpaArch
 const universal_mods_actions = @import("actions/universal_mods.zig");
 pub const doAddUniversalMod = universal_mods_actions.doAddUniversalMod;
 pub const doDeleteUniversalMod = universal_mods_actions.doDeleteUniversalMod;
+pub const applyUniversalMod = universal_mods_actions.applyUniversalMod;
 pub const universalModEngines = universal_mods_actions.ENGINES;
 pub const universalModEngineForIndex = universal_mods_actions.engineForIndex;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
