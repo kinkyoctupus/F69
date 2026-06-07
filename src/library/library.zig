@@ -116,8 +116,9 @@ pub const Library = struct {
             \\  last_scraped_at, created_at, notes, screenshots_json,
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
-            \\  last_indexer_change, last_indexer_parser_version, last_played_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  last_indexer_change, last_indexer_parser_version, last_played_version,
+            \\  pinned_version
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -156,6 +157,7 @@ pub const Library = struct {
             g.last_indexer_change,
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
             g.last_played_version,
+            g.pinned_version,
         }) catch return errs.Error.DatabaseError;
         return self.conn.inner.changes() > 0;
     }
@@ -172,8 +174,8 @@ pub const Library = struct {
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
             \\  auto_update, mod_backup_mode, last_indexer_change,
-            \\  last_indexer_parser_version, last_played_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  last_indexer_parser_version, last_played_version, pinned_version
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -215,12 +217,23 @@ pub const Library = struct {
             g.last_indexer_change,
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
             g.last_played_version,
+            g.pinned_version,
         }) catch return errs.Error.DatabaseError;
     }
 
     /// Single-column write — used by the Mods page dropdown so we
     /// don't have to re-`upsertGame` (which would clobber every
     /// other column the user might have edited concurrently).
+    /// Pin a game to (or unpin from) a specific version. `version = null`
+    /// clears the pin (track latest again). Single-column write so it
+    /// doesn't clobber concurrent edits to other columns.
+    pub fn setPinnedVersion(self: *Library, thread_id: u64, version: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec(
+            "UPDATE games SET pinned_version = ? WHERE f95_thread_id = ?",
+            .{ version, @as(i64, @intCast(thread_id)) },
+        ) catch return errs.Error.DatabaseError;
+    }
+
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
@@ -237,7 +250,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version, last_played_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version
             \\FROM games WHERE f95_thread_id = ?
         , .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -261,7 +274,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version, last_played_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version
             \\FROM games ORDER BY name COLLATE NOCASE
         , .{}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -284,6 +297,7 @@ pub const Library = struct {
         if (g.downloads_md) |s| self.alloc.free(s);
         if (g.thread_info_md) |s| self.alloc.free(s);
         if (g.last_played_version) |s| self.alloc.free(s);
+        if (g.pinned_version) |s| self.alloc.free(s);
         self.freeTags(g.tags);
         self.freeTags(g.screenshots);
         self.freeTags(g.download_links);
@@ -1206,6 +1220,12 @@ const migrations = [_]Migration{
         \\ALTER TABLE games ADD COLUMN last_played_version TEXT;
         ,
     },
+    .{
+        .id = 17,
+        .sql =
+        \\ALTER TABLE games ADD COLUMN pinned_version TEXT;
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1421,6 +1441,9 @@ fn hydrateGame(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Game {
     if (r.nullableInt(28)) |v| g.last_indexer_parser_version = @intCast(v);
     if (r.nullableText(29)) |s| {
         g.last_played_version = alloc.dupe(u8, s) catch return errs.Error.OutOfMemory;
+    }
+    if (r.nullableText(30)) |s| {
+        g.pinned_version = alloc.dupe(u8, s) catch return errs.Error.OutOfMemory;
     }
 
     return g;
@@ -1645,6 +1668,32 @@ test "library: migration 16 — games.last_played_version column exists" {
     const g = (try lib.getGame(1)).?;
     defer lib.freeGame(g);
     try std.testing.expectEqual(@as(?[]const u8, null), g.last_played_version);
+}
+
+test "library: setPinnedVersion round-trips and clears" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqual(@as(?[]const u8, null), g.pinned_version);
+    }
+
+    try lib.setPinnedVersion(1, "1.2.3");
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqualStrings("1.2.3", g.pinned_version.?);
+    }
+
+    try lib.setPinnedVersion(1, null);
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqual(@as(?[]const u8, null), g.pinned_version);
+    }
 }
 
 test "library: insertSession opens a row with NULL ended_at" {

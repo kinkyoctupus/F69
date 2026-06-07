@@ -411,6 +411,44 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         }
     }
 
+    // Version pin — hold the game on its current version (suppresses
+    // auto-update). Pin/unpin writes a single column; we mirror the change
+    // in the in-memory snapshot so the row updates without a reload.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Version pin", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+        if (game.pinned_version) |pv| {
+            var pbuf: [80]u8 = undefined;
+            const lbl = std.fmt.bufPrint(&pbuf, "Pinned to v{s}", .{pv}) catch "Pinned";
+            dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+            if (components.iconButton(@src(), "Unpin", entypo.cross, .{ .gravity_y = 0.5 })) {
+                saveOrToast(frame, "pin", frame.lib.setPinnedVersion(game.f95_thread_id, null));
+                frame.lib.alloc.free(pv);
+                game.pinned_version = null;
+            }
+        } else if (game.latest_version) |lv| {
+            var pbuf: [80]u8 = undefined;
+            const lbl = std.fmt.bufPrint(&pbuf, "Pin to v{s}", .{lv}) catch "Pin";
+            if (components.iconButton(@src(), lbl, entypo.bookmark, .{ .gravity_y = 0.5 })) {
+                saveOrToast(frame, "pin", frame.lib.setPinnedVersion(game.f95_thread_id, lv));
+                game.pinned_version = frame.lib.alloc.dupe(u8, lv) catch null;
+            }
+        } else {
+            dvui.label(@src(), "no version known yet", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
+    }
+
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
