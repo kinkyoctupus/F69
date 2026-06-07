@@ -27,6 +27,9 @@ pub const Screen = enum {
     diagnostics,
     recipe_editor,
     mods_for_game,
+    /// Engine-wide ("universal") mods registry — add/list/delete mods that
+    /// apply across all games of an engine. Reached from the library top bar.
+    universal_mods,
 };
 
 /// Per-import transfer mode. Applies to every import path: folder
@@ -1097,6 +1100,10 @@ pub const State = struct {
     /// Detail-page "add label" text entry. Typing an existing name re-uses
     /// it (createLabel is idempotent); a new name creates it.
     label_input_buf: [48]u8 = [_]u8{0} ** 48,
+    /// Universal-mods screen add-form: name + selected engine (index into
+    /// the screen's engine list).
+    universal_mod_name_buf: [80]u8 = [_]u8{0} ** 80,
+    universal_mod_engine_idx: usize = 0,
     /// Library label filter — selected label ids (union/OR semantics). Fixed
     /// cap; toggled by the sidebar checkboxes. Empty = no label filtering.
     label_filter: [64]i64 = undefined,

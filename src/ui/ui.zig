@@ -569,6 +569,7 @@ fn guiFrame(frame: *Frame) !bool {
         .diagnostics => screens.diagnosticsScreen(frame),
         .recipe_editor => screens.recipeEditorScreen(frame),
         .mods_for_game => screens.modsScreen(frame),
+        .universal_mods => screens.universalModsScreen(frame),
     };
     // End-of-batch sync recap popup. Sits on top of whichever screen
     // is active so the user always sees the "what changed" list,
@@ -604,6 +605,7 @@ fn guiFrame(frame: *Frame) !bool {
         .diagnostics => "render diagnostics",
         .recipe_editor => "render recipe editor",
         .mods_for_game => "render mods page",
+        .universal_mods => "render universal mods",
     });
     return result;
 }

@@ -157,6 +157,12 @@ pub fn libraryScreen(frame: *Frame) !bool {
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 16, .h = 1 } });
 
+        // Global (engine-wide) mods registry.
+        if (components.iconButton(@src(), "Global Mods", entypo.tools, .{ .gravity_y = 0.5 })) {
+            state.screen = .universal_mods;
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+
         // View toggle on the right — interacted with rarely once
         // you've picked a layout.
         const grid_opts: dvui.Options = if (state.view == .grid)
