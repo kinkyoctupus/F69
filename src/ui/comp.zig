@@ -93,6 +93,34 @@ pub fn button(src: std.builtin.SourceLocation, label: []const u8, variant: Varia
     return dvui.button(src, label, .{}, layout.override(skin).override(opts));
 }
 
+// ----- progress + section header -----
+
+/// Horizontal progress bar. `frac` 0..1; `width` is the track width in px.
+pub fn progressBar(src: std.builtin.SourceLocation, frac: f32, width: f32, opts: dvui.Options) void {
+    const t = tokens.active;
+    const f = std.math.clamp(frac, 0, 1);
+    const defaults: dvui.Options = .{
+        .background = true,
+        .color_fill = c(t.bg3),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = width, .h = 7 },
+    };
+    var outer = dvui.box(src, .{ .dir = .horizontal }, defaults.override(opts));
+    defer outer.deinit();
+    var inner = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = c(t.acc),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = width * f, .h = 7 },
+    });
+    inner.deinit();
+}
+
+/// Mono, dimmed, uppercase-style section label (e.g. "PLAN SUMMARY").
+pub fn sectionHeader(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options) void {
+    dvui.labelNoFmt(src, label, .{}, (dvui.Options{ .color_text = c(tokens.active.ink3) }).override(opts));
+}
+
 test "comp compiles against dvui + tokens" {
     std.testing.refAllDecls(@This());
 }
