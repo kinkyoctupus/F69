@@ -67,6 +67,7 @@ const image = @import("image");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const owned_types = @import("../owned.zig");
+const notify = @import("util_notify");
 const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const downloads_mod = @import("downloads.zig");
@@ -1688,8 +1689,18 @@ pub fn advanceSyncQueue(frame: *Frame) void {
         state.setSyncMsg(m);
         state.sync_queue_total = 0;
         state.sync_queue_started = 0;
-        if (syncRecapEntries(state).len > 0) {
+        const recap = syncRecapEntries(state);
+        if (recap.len > 0) {
             state.sync_recap_show = true;
+            if (state.desktop_notifications) {
+                var sbuf: [64]u8 = undefined;
+                var bbuf: [192]u8 = undefined;
+                notify.send(
+                    frame.io,
+                    notify.updateSummary(&sbuf, recap.len),
+                    notify.updateBody(&bbuf, recap[0].name, recap.len),
+                );
+            }
         }
     }
 }

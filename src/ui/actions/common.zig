@@ -484,6 +484,16 @@ pub fn persistAutoUpdateDefaultIfDirty(state: *State, path: []const u8, io: std.
     state.auto_update_default_persisted = state.auto_update_default;
 }
 
+pub fn persistDesktopNotificationsIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.desktop_notifications == state.desktop_notifications_persisted) return;
+    const text: []const u8 = if (state.desktop_notifications) "true" else "false";
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("desktop_notifications persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.desktop_notifications_persisted = state.desktop_notifications;
+}
+
 /// Mirror `state.refresh_backend` to disk on toggle. Same shape as
 /// `persistAutoUpdateDefaultIfDirty`. Writes the enum tag name
 /// (`indexer` / `scraper`) so the file is human-readable.

@@ -217,6 +217,9 @@ pub const RuntimeInfo = struct {
     /// Default false.
     auto_update_default_path: []const u8,
     initial_auto_update_default: bool,
+    /// `<data_root>/desktop_notifications` — single-line `true`/`false`.
+    desktop_notifications_path: []const u8,
+    initial_desktop_notifications: bool,
     /// `<data_root>/refresh_backend` — single-line `indexer` / `scraper`.
     /// Picks which backend the refresh worker uses. Default `.indexer`
     /// (F95Indexer cache at `api.f95checker.dev`). Settings → Sync row

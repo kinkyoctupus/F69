@@ -158,6 +158,8 @@ pub fn runMainLoop(
     state.sandbox_default_persisted = info.initial_sandbox_default;
     state.auto_update_default = info.initial_auto_update_default;
     state.auto_update_default_persisted = info.initial_auto_update_default;
+    state.desktop_notifications = info.initial_desktop_notifications;
+    state.desktop_notifications_persisted = info.initial_desktop_notifications;
     state.refresh_backend = info.initial_refresh_backend;
     state.refresh_backend_persisted = info.initial_refresh_backend;
     state.max_parallel_sync = info.initial_max_parallel_sync;
@@ -269,6 +271,7 @@ pub fn runMainLoop(
         actions.persistAutoApplyCompatIfDirty(&state, info.auto_apply_compat_path, io);
         actions.persistSandboxDefaultIfDirty(&state, info.sandbox_default_path, io);
         actions.persistAutoUpdateDefaultIfDirty(&state, info.auto_update_default_path, io);
+        actions.persistDesktopNotificationsIfDirty(&state, info.desktop_notifications_path, io);
         actions.persistRefreshBackendIfDirty(&state, info.refresh_backend_path, io);
         actions.persistMaxParallelSyncIfDirty(&state, info.max_parallel_sync_path, io);
         actions.persistMaxParallelImageIfDirty(&state, info.max_parallel_image_path, io);

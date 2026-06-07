@@ -464,6 +464,8 @@ pub fn build(b: *std.Build) void {
     const ui_columns_mod = mod(b, "ui_columns", "src/ui/columns.zig", target, optimize);
     const util_argv_mod = mod(b, "util_argv", "src/util/argv.zig", target, optimize);
     const util_reltime_mod = mod(b, "util_reltime", "src/util/reltime.zig", target, optimize);
+    const util_notify_mod = mod(b, "util_notify", "src/util/notify.zig", target, optimize);
+    ui_mod.addImport("util_notify", util_notify_mod);
     const util_ratelimit_mod = mod(b, "util_ratelimit", "src/util/ratelimit.zig", target, optimize);
     // One-shot HTTP helper consults the per-host limiter to space external requests.
     util_http_mod.addImport("util_ratelimit", util_ratelimit_mod);
@@ -512,7 +514,7 @@ pub fn build(b: *std.Build) void {
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
         util_reltime_mod,  ui_comp_mod,       ui_theme_store_mod,  util_ratelimit_mod,
         ui_engine_palette_mod, dl_aria2_args_mod, dl_rpc_mod, dl_jobs_mod, dl_ws_mod,
-        dl_transport_mod, dl_http_mod,
+        dl_transport_mod, dl_http_mod, util_notify_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
