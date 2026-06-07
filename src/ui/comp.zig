@@ -21,6 +21,8 @@ pub const ChipSpec = struct {
     fill: tokens.Color,
     text: tokens.Color,
     border: tokens.Color,
+    /// Label font size as a fraction of the theme body font (1 = full size).
+    scale: f32 = 1,
 };
 
 /// The one pill renderer. All badges below are thin theme-driven wrappers.
@@ -36,7 +38,13 @@ pub fn chip(src: std.builtin.SourceLocation, spec: ChipSpec, opts: dvui.Options)
     };
     var box = dvui.box(src, .{ .dir = .horizontal }, defaults.override(opts));
     defer box.deinit();
-    dvui.labelNoFmt(@src(), spec.label, .{}, .{ .color_text = c(spec.text), .gravity_y = 0.5 });
+    const body = dvui.Font.theme(.body);
+    dvui.labelNoFmt(@src(), spec.label, .{}, .{
+        .color_text = c(spec.text),
+        .gravity_y = 0.5,
+        .gravity_x = 0.5,
+        .font = body.withSize(body.size * spec.scale),
+    });
 }
 
 pub fn engineChip(src: std.builtin.SourceLocation, label: []const u8, opts: dvui.Options) void {

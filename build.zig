@@ -472,18 +472,20 @@ pub fn build(b: *std.Build) void {
     // The main UI module uses the runtime theme too (consoleTheme).
     ui_mod.addImport("ui_tokens", ui_tokens_mod);
     ui_mod.addImport("util_argv", util_argv_mod);
+    if (dvui_dep_opt != null) ui_mod.addImport("ui_comp", ui_comp_mod);
 
     // Theme persistence module — used by both main (load at startup) and the
     // settings screen (save on change).
     const ui_theme_store_mod = mod(b, "ui_theme_store", "src/ui/theme_store.zig", target, optimize);
     ui_theme_store_mod.addImport("ui_tokens", ui_tokens_mod);
     ui_theme_store_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    ui_theme_store_mod.addImport("util_test_env", util_test_env_mod);
     ui_mod.addImport("ui_theme_store", ui_theme_store_mod);
     exe_mod.addImport("ui_theme_store", ui_theme_store_mod);
 
     const test_targets = [_]*std.Build.Module{
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
-        util_reltime_mod,  ui_comp_mod,
+        util_reltime_mod,  ui_comp_mod,       ui_theme_store_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,

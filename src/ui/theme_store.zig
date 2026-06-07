@@ -6,6 +6,7 @@
 const std = @import("std");
 const tokens = @import("ui_tokens");
 const atomic_io = @import("util_atomic_io");
+const TestEnv = @import("util_test_env").TestEnv;
 
 var path_buf: [1024]u8 = undefined;
 var path: []const u8 = "";
@@ -32,4 +33,19 @@ pub fn save(io: std.Io) void {
     var buf: [2048]u8 = undefined;
     const text = tokens.formatTheme(tokens.active, &buf);
     atomic_io.writeFileAtomic(io, path, text) catch {};
+}
+
+test "theme_store round-trips the active theme through disk" {
+    defer tokens.active = tokens.presets.console; // don't leak state to other tests
+    var env = try TestEnv.init(std.testing.allocator, "theme-store");
+    defer env.deinit();
+    const p = try env.path("theme.zon");
+    defer std.testing.allocator.free(p);
+
+    setPath(p);
+    tokens.active = tokens.presets.obsidian;
+    save(env.io);
+    tokens.active = tokens.presets.console; // clobber, then reload from disk
+    load(env.io, std.testing.allocator);
+    try std.testing.expectEqual(tokens.presets.obsidian, tokens.active);
 }
