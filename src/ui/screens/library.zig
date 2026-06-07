@@ -540,15 +540,6 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
         });
     }
 
-    // DIAG: attribute library-scroll cost. `misses` = cover-cache
-    // thumbs re-read from disk this frame. If it tracks the rendered
-    // window size during scroll, the 64-slot cover cache is thrashing
-    // (visible cards > cap). If it stays ~0 while frames are slow, the
-    // cost is elsewhere (first-decode / layout). Remove once pinned.
-    std.log.scoped(.latency).info(
-        "lib window: view={s} cols={d} rendered={d} visible={d} cover_misses={d}",
-        .{ @tagName(state.view), cols, end_idx -| start_idx, total_visible, actions.dbgCoverMisses() },
-    );
 }
 
 fn sidebar(frame: *Frame) void {
