@@ -331,6 +331,20 @@ pub const Library = struct {
         return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
     }
 
+    /// Game thread ids carrying `label_id`. Caller frees via `alloc.free`.
+    /// Used by the library label filter (union across selected labels).
+    pub fn gamesForLabel(self: *Library, label_id: i64) errs.Error![]u64 {
+        var out: std.ArrayList(u64) = .empty;
+        errdefer out.deinit(self.alloc);
+        var rows = self.conn.inner.rows(
+            "SELECT game_thread_id FROM game_labels WHERE label_id = ?",
+            .{label_id},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| out.append(self.alloc, @intCast(r.int(0))) catch return errs.Error.OutOfMemory;
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
@@ -1815,6 +1829,12 @@ test "library: user labels create/assign/list/delete" {
         try std.testing.expectEqualStrings("Favorites", labels[0].name);
         try std.testing.expectEqualStrings("#1FA39A", labels[0].color.?);
         try std.testing.expectEqual(@as(?[]const u8, null), labels[1].color);
+    }
+
+    {
+        const games = try lib.gamesForLabel(fav);
+        defer alloc.free(games);
+        try std.testing.expectEqual(@as(usize, 2), games.len); // games 1 and 2
     }
 
     try lib.removeGameLabel(1, todo);

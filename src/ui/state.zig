@@ -1094,6 +1094,10 @@ pub const State = struct {
     /// Detail-page "add label" text entry. Typing an existing name re-uses
     /// it (createLabel is idempotent); a new name creates it.
     label_input_buf: [48]u8 = [_]u8{0} ** 48,
+    /// Library label filter — selected label ids (union/OR semantics). Fixed
+    /// cap; toggled by the sidebar checkboxes. Empty = no label filtering.
+    label_filter: [64]i64 = undefined,
+    label_filter_len: usize = 0,
     /// Editable seed-time cap (minutes) text buffer + last-saved value.
     aria2_seed_time_buf: [16]u8 = [_]u8{0} ** 16,
     aria2_seed_time_persisted: u32 = 0,
@@ -1486,6 +1490,29 @@ pub const State = struct {
     pub fn searchSlice(self: *const State) []const u8 {
         const end = std.mem.indexOfScalar(u8, &self.search_buf, 0) orelse self.search_buf.len;
         return std.mem.trim(u8, self.search_buf[0..end], " \t");
+    }
+
+    pub fn labelFilterActive(self: *const State, id: i64) bool {
+        for (self.label_filter[0..self.label_filter_len]) |x| {
+            if (x == id) return true;
+        }
+        return false;
+    }
+
+    /// Toggle a label id in the library filter set (OR semantics). No-op
+    /// when adding past the fixed cap.
+    pub fn toggleLabelFilter(self: *State, id: i64) void {
+        for (self.label_filter[0..self.label_filter_len], 0..) |x, i| {
+            if (x == id) {
+                self.label_filter[i] = self.label_filter[self.label_filter_len - 1];
+                self.label_filter_len -= 1;
+                return;
+            }
+        }
+        if (self.label_filter_len < self.label_filter.len) {
+            self.label_filter[self.label_filter_len] = id;
+            self.label_filter_len += 1;
+        }
     }
 
     pub fn dlUrlSlice(self: *State) []u8 {

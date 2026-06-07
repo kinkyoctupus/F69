@@ -101,7 +101,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
     });
     defer body.deinit();
 
-    sidebar(state);
+    sidebar(frame);
 
     _ = dvui.separator(@src(), .{
         .min_size_content = .{ .w = 1, .h = 1 },
@@ -446,9 +446,26 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     // search box / toggling a filter checkbox / adding a game does.
     const sig = filterSignature(state, query, games);
     if (sig != state.lib_filter_cache_sig) {
+        // Label filter: build the union of games carrying any selected label
+        // once per refilter (not per frame). null = no label gating.
+        var label_set: ?std.AutoHashMap(u64, void) = null;
+        defer if (label_set) |*s| s.deinit();
+        if (state.label_filter_len > 0) {
+            var set = std.AutoHashMap(u64, void).init(frame.lib.alloc);
+            for (state.label_filter[0..state.label_filter_len]) |lid| {
+                const gids = frame.lib.gamesForLabel(lid) catch continue;
+                defer frame.lib.alloc.free(gids);
+                for (gids) |gid| set.put(gid, {}) catch {};
+            }
+            label_set = set;
+        }
+
         var fresh: std.ArrayList(u32) = .empty;
         fresh.ensureTotalCapacity(frame.lib.alloc, games.len) catch {};
         for (games, 0..) |*g, i| {
+            if (label_set) |s| {
+                if (!s.contains(g.f95_thread_id)) continue;
+            }
             if (cardVisible(state, g, query, frame.install_versions)) {
                 fresh.append(frame.lib.alloc, @intCast(i)) catch break;
             }
@@ -533,7 +550,8 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     );
 }
 
-fn sidebar(state: *State) void {
+fn sidebar(frame: *Frame) void {
+    const state = frame.state;
     var side = dvui.box(@src(), .{ .dir = .vertical }, .{
         .min_size_content = .{ .w = 200, .h = 100 },
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
@@ -724,6 +742,29 @@ fn sidebar(state: *State) void {
                 );
             } else {
                 renderTagCheckboxFilter(state);
+            }
+        }
+    }
+
+    // ----- user labels filter -----
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    {
+        const labels_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
+        defer if (labels_opt) |l| frame.lib.freeLabels(l);
+        const labels: []const library.UserLabel = labels_opt orelse &.{};
+        if (labels.len > 0) {
+            var lbl_buf: [48]u8 = undefined;
+            const hdr = if (state.label_filter_len == 0)
+                @as([]const u8, "Labels")
+            else
+                std.fmt.bufPrint(&lbl_buf, "Labels ({d})", .{state.label_filter_len}) catch "Labels";
+            if (dvui.expander(@src(), hdr, .{}, .{ .expand = .horizontal })) {
+                for (labels) |l| {
+                    var checked = state.labelFilterActive(l.id);
+                    if (dvui.checkbox(@src(), &checked, l.name, .{ .id_extra = @as(u64, @bitCast(l.id)) })) {
+                        state.toggleLabelFilter(l.id);
+                    }
+                }
             }
         }
     }
@@ -1522,6 +1563,11 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     // generation counter so a new install immediately re-evaluates.
     hasher.update(std.mem.asBytes(&state.filter_unplayed_updates));
     hasher.update(std.mem.asBytes(&state.snapshot_install_gen));
+    // Label filter — selected ids. (Re-assigning a label to a game while the
+    // filter is active needs a manual refresh; the common case of toggling
+    // the selection is covered here.)
+    hasher.update(std.mem.asBytes(&state.label_filter_len));
+    hasher.update(std.mem.sliceAsBytes(state.label_filter[0..state.label_filter_len]));
     return hasher.final();
 }
 
