@@ -1,0 +1,80 @@
+//! Per-engine accent colors — pure (`library.Engine` → `tokens.Color`).
+//!
+//! Extracted from `components.zig` so the *distinctness* property is
+//! unit-testable without dragging in dvui. Each engine must be visually
+//! separable at chip scale: the test at the bottom enforces a minimum
+//! pairwise perceptual ("redmean") distance across every real engine, so
+//! a future palette edit can't silently make two engines look alike.
+
+const std = @import("std");
+const library = @import("library");
+const tokens = @import("ui_tokens");
+
+const Color = tokens.Color;
+
+inline fn rgb(r: u8, g: u8, b: u8) Color {
+    return .{ .r = r, .g = g, .b = b, .a = 0xff };
+}
+
+/// Accent color for an engine's badge/chip. Hues are spread around the
+/// wheel for separability while keeping a loose nod to each engine's
+/// branding (Ren'Py teal, HTML5 orange, Java amber, Unity graphite…).
+pub fn badgeColor(e: library.Engine) Color {
+    return switch (e) {
+        .renpy => rgb(0x1F, 0xA3, 0x9A), // teal
+        .rpgm_mv => rgb(0xD6, 0x3A, 0x2F), // red
+        .rpgm_mz => rgb(0xE0, 0x6E, 0xB0), // pink
+        .rpgm_vx => rgb(0x7E, 0x4F, 0xC0), // violet
+        .unity => rgb(0x33, 0x33, 0x33), // graphite
+        .unreal => rgb(0x2A, 0x4F, 0xB0), // royal blue
+        .html => rgb(0xE8, 0x73, 0x1F), // HTML5 orange
+        .flash => rgb(0x8E, 0x20, 0x20), // maroon
+        .java => rgb(0xA8, 0x6B, 0x12), // amber-brown
+        .wolf_rpg => rgb(0x2F, 0x9E, 0x4F), // green
+        .qsp => rgb(0x9E, 0x2E, 0x8A), // magenta
+        .tyranobuilder => rgb(0xD4, 0xC0, 0x17), // gold
+        .twine => rgb(0x8F, 0xC7, 0x3E), // lime
+        .other => rgb(0x8A, 0x8A, 0x8A), // grey
+        .unknown => rgb(0x6F, 0x6F, 0x6F), // grey (gated off in UI)
+    };
+}
+
+// ---------------------------------------------------------------------------
+
+/// Perceptual color distance (Thiadmer Riemersma's "redmean" — a cheap
+/// approximation of CIE76 that weights channels by how red the pair is).
+fn redmean(a: Color, b: Color) f64 {
+    const af = struct {
+        fn f(v: u8) f64 {
+            return @floatFromInt(v);
+        }
+    }.f;
+    const rmean = (af(a.r) + af(b.r)) / 2.0;
+    const dr = af(a.r) - af(b.r);
+    const dg = af(a.g) - af(b.g);
+    const db = af(a.b) - af(b.b);
+    return @sqrt((2.0 + rmean / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - rmean) / 256.0) * db * db);
+}
+
+test "every engine badge color is perceptually distinct" {
+    // All real engines (`unknown` is gated off in the UI, so skip it).
+    const engines = [_]library.Engine{
+        .renpy,  .rpgm_mv, .rpgm_mz, .rpgm_vx,        .unity,
+        .unreal, .html,    .flash,   .java,           .wolf_rpg,
+        .qsp,    .tyranobuilder,     .twine,          .other,
+    };
+    // Empirically, ~13 = the old palette's tightest pair (mv vs html);
+    // a comfortable "tell them apart at chip scale" floor sits near 80.
+    const MIN: f64 = 80.0;
+    var ok = true;
+    for (engines, 0..) |e1, i| {
+        for (engines[i + 1 ..]) |e2| {
+            const d = redmean(badgeColor(e1), badgeColor(e2));
+            if (d < MIN) {
+                std.debug.print("too close: {s} <> {s} = {d:.1}\n", .{ @tagName(e1), @tagName(e2), d });
+                ok = false;
+            }
+        }
+    }
+    try std.testing.expect(ok);
+}
