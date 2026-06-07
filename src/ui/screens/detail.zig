@@ -566,6 +566,37 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         }
     }
 
+    // Per-game universal-mod opt-outs — list the engine's universal mods with
+    // a checkbox each (checked = applied to this game).
+    {
+        const umods_opt: ?[]library.UniversalMod = frame.lib.listUniversalMods(game.engine) catch null;
+        defer if (umods_opt) |m| frame.lib.freeUniversalMods(m);
+        const umods = umods_opt orelse &.{};
+        if (umods.len > 0) {
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .id_extra = row_id,
+                .expand = .horizontal,
+                .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+            });
+            defer row.deinit();
+            row_id += 1;
+            dvui.label(@src(), "Universal mods", .{}, .{
+                .min_size_content = .{ .w = 120, .h = 20 },
+                .gravity_y = 0.5,
+                .color_text = style.labelDim(),
+            });
+            var col = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
+            defer col.deinit();
+            for (umods) |m| {
+                const disabled = frame.lib.isUniversalModDisabled(game.f95_thread_id, m.id) catch false;
+                var enabled = !disabled;
+                if (dvui.checkbox(@src(), &enabled, m.name, .{ .id_extra = @as(u64, @bitCast(m.id)) })) {
+                    frame.lib.setUniversalModDisabled(game.f95_thread_id, m.id, !enabled) catch {};
+                }
+            }
+        }
+    }
+
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
