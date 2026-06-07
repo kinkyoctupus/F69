@@ -23,8 +23,85 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const ratelimit = @import("util_ratelimit");
+
+const Io = std.Io;
 
 pub const USER_AGENT = "f69/" ++ build_options.version;
+
+// ----- per-host throttle -----
+//
+// Every one-shot fetch (rpdl, sdk_cache, f95 indexer) shares one process-
+// global limiter so we don't hammer an external host from multiple worker
+// threads. The F95 client and the aria2 RPC client use their own
+// std.http.Client and do NOT go through here, so their cadence is unchanged.
+
+/// Minimum spacing between requests to the same host, in ms. `0` disables
+/// throttling entirely (used by tests). Tunable at runtime.
+pub var min_interval_ms: u64 = 800;
+
+var g_limiter: ratelimit.PerHostLimiter = .{};
+var g_limiter_lock: Io.Mutex = .init;
+
+/// Host component of an http(s) URL — scheme/userinfo/port/path stripped.
+/// Pure + testable. Returns "" when no authority is present (the limiter
+/// then keys everything under one bucket, which is harmless).
+pub fn hostOf(url: []const u8) []const u8 {
+    const after_scheme = if (std.mem.indexOf(u8, url, "://")) |i| url[i + 3 ..] else url;
+    var auth_end: usize = after_scheme.len;
+    for (after_scheme, 0..) |ch, i| {
+        if (ch == '/' or ch == '?' or ch == '#') {
+            auth_end = i;
+            break;
+        }
+    }
+    var authority = after_scheme[0..auth_end];
+    if (std.mem.indexOfScalar(u8, authority, '@')) |at| authority = authority[at + 1 ..];
+    if (std.mem.indexOfScalar(u8, authority, ':')) |c| authority = authority[0..c];
+    return authority;
+}
+
+fn isLocal(host: []const u8) bool {
+    return std.mem.eql(u8, host, "localhost") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.mem.eql(u8, host, "::1");
+}
+
+/// Block until this host's next request slot is due, then return. Sleeps
+/// outside the lock so concurrent callers each wait their own assigned slot
+/// (PerHostLimiter spaces a burst into evenly-staggered slots) rather than
+/// serializing on the mutex.
+fn throttle(io: Io, url: []const u8) void {
+    if (min_interval_ms == 0) return;
+    const host = hostOf(url);
+    if (isLocal(host)) return;
+
+    // Units cancel in reserve(); work in ms throughout.
+    const interval_ms: i128 = @intCast(min_interval_ms);
+    g_limiter_lock.lockUncancelable(io);
+    const now_ms: i128 = Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
+    const wait_ms = g_limiter.reserve(host, now_ms, interval_ms);
+    g_limiter_lock.unlock(io);
+
+    if (wait_ms > 0) {
+        io.sleep(Io.Duration.fromMilliseconds(@intCast(wait_ms)), .real) catch {};
+    }
+}
+
+test "hostOf strips scheme, path, port and userinfo" {
+    try std.testing.expectEqualStrings("dl.rpdl.net", hostOf("https://dl.rpdl.net/api/login"));
+    try std.testing.expectEqualStrings("api.f95checker.dev", hostOf("https://api.f95checker.dev/"));
+    try std.testing.expectEqualStrings("example.com", hostOf("http://example.com:8080/path?q=1"));
+    try std.testing.expectEqualStrings("host.tld", hostOf("https://user:pass@host.tld/x"));
+    try std.testing.expectEqualStrings("bare.host", hostOf("bare.host/no-scheme"));
+    try std.testing.expectEqualStrings("a.b", hostOf("https://a.b"));
+}
+
+test "isLocal recognises loopback" {
+    try std.testing.expect(isLocal("127.0.0.1"));
+    try std.testing.expect(isLocal("localhost"));
+    try std.testing.expect(!isLocal("dl.rpdl.net"));
+}
 
 pub const Error = error{
     NetworkError,
@@ -66,6 +143,10 @@ pub fn fetch(
     url: []const u8,
     opts: Options,
 ) Error!Response {
+    // Space requests to the same external host (no-op for localhost / when
+    // min_interval_ms == 0). Blocks the calling worker, never the UI thread.
+    throttle(io, url);
+
     var http: std.http.Client = .{ .allocator = alloc, .io = io };
     defer http.deinit();
 
