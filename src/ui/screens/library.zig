@@ -988,46 +988,34 @@ fn renderListWindow(
 
         if (g.engine != .unknown) {
             const fill = components.engineBadgeColor(g.engine);
-            var eng_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            comp.chip(@src(), .{
+                .label = components.engineShortLabel(g.engine),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .scale = 0.75,
+            }, .{
                 .id_extra = g.f95_thread_id,
                 .gravity_y = 0.5,
                 .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                 .corner_radius = .all(2),
-                .background = true,
-                .color_fill = fill,
-                .color_border = fill,
-                .border = style.border_thin,
-            });
-            defer eng_pill.deinit();
-            const body = dvui.Font.theme(.body);
-            dvui.labelNoFmt(@src(), components.engineShortLabel(g.engine), .{}, .{
-                .gravity_y = 0.5,
-                .gravity_x = 0.5,
-                .color_text = dvui.Color.white,
-                .font = body.withSize(body.size * 0.75),
             });
         }
 
         if (g.dev_status != .unknown) {
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
             const fill = components.devStatusColor(g.dev_status);
-            var st_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            comp.chip(@src(), .{
+                .label = components.devStatusShortLabel(g.dev_status),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .scale = 0.75,
+            }, .{
                 .id_extra = g.f95_thread_id ^ 0xD5,
                 .gravity_y = 0.5,
                 .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                 .corner_radius = .all(2),
-                .background = true,
-                .color_fill = fill,
-                .color_border = fill,
-                .border = style.border_thin,
-            });
-            defer st_pill.deinit();
-            const body = dvui.Font.theme(.body);
-            dvui.labelNoFmt(@src(), components.devStatusShortLabel(g.dev_status), .{}, .{
-                .gravity_y = 0.5,
-                .gravity_x = 0.5,
-                .color_text = dvui.Color.white,
-                .font = body.withSize(body.size * 0.75),
             });
         }
 
