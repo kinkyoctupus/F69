@@ -479,6 +479,8 @@ pub fn build(b: *std.Build) void {
     const websocket_dep = b.dependency("websocket", .{ .target = target, .optimize = optimize });
     const dl_ws_mod = mod(b, "dl_ws", "src/downloads/ws.zig", target, optimize);
     dl_ws_mod.addImport("websocket", websocket_dep.module("websocket"));
+    // The real downloads module pulls ws.zig (via aria2_rpc.zig) → needs the dep too.
+    downloads_mod.addImport("websocket", websocket_dep.module("websocket"));
 
     // Theme-driven dvui component layer (Design B). Imports dvui (gui builds) + tokens.
     const ui_comp_mod = mod(b, "ui_comp", "src/ui/comp.zig", target, optimize);
