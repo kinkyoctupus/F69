@@ -124,6 +124,12 @@ pub fn fromBase(base: Base) Theme {
     };
 }
 
+/// Convert to a structurally-identical color type (e.g. `dvui.Color`) without
+/// coupling this pure module to dvui. Caller: `tokens.toDvui(c, dvui.Color)`.
+pub fn toDvui(c: Color, comptime D: type) D {
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
+}
+
 // ----- persistence (theme.zon-style: one `slot #hex` line per slot) -----
 
 /// Write `#rrggbb` (or `#rrggbbaa` when alpha < 0xff) into `buf`; returns the slice.
@@ -214,6 +220,11 @@ test "formatTheme then parseTheme round-trips a theme" {
 
 test "active theme defaults to the console preset" {
     try std.testing.expectEqual(presets.console, active);
+}
+
+test "toDvui copies channels into any compatible color struct" {
+    const D = struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
+    try std.testing.expectEqual(D{ .r = 1, .g = 2, .b = 3, .a = 4 }, toDvui(Color{ .r = 1, .g = 2, .b = 3, .a = 4 }, D));
 }
 
 test "fromBase keeps the chosen colors and derives the ramps" {
