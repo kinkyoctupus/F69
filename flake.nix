@@ -63,6 +63,14 @@
         # expects a `libarchive.la` from autotools.
         libarchive-static = pkgs.libarchive;
 
+        # bzip2 — static archive. The shared lib's SONAME differs across
+        # distros (libbz2.so.1 on Fedora/Bazzite, libbz2.so.1.0 on
+        # Debian/Ubuntu), so a dynamic link bakes a soname into f69's
+        # DT_NEEDED that the slim bundle's host may not provide. Build
+        # the static .a and link it in (see `util_archive` in build.zig,
+        # `preferred_link_mode = .static` on the `bz2` lib).
+        bzip2-static = pkgs.bzip2.override { enableStatic = true; };
+
         # Compat resource: FHS-style bundle of X11/Wayland/GL/audio/
         # font client libraries. Materialised at app build time and
         # copied to `<data_root>/compat-resources/<id>/lib/`. The
@@ -230,7 +238,7 @@
             libarchive-static
             libarchive-static.dev
             zlib zlib.dev
-            bzip2 bzip2.dev
+            bzip2-static bzip2-static.dev
             xz xz.dev
             zstd zstd.dev
             lz4 lz4.dev
@@ -338,8 +346,8 @@
             libarchive-static.dev
             zlib
             zlib.dev
-            bzip2
-            bzip2.dev
+            bzip2-static
+            bzip2-static.dev
             xz
             xz.dev
             # libarchive's full-feature build pulls in every codec
@@ -369,7 +377,7 @@
           # Make sure pkg-config sees the .dev outputs + SDL3 dlopens
           # libwayland-client/libxkbcommon/libX11 etc. at runtime.
           shellHook = ''
-            export PKG_CONFIG_PATH="${pkgs.sdl3}/lib/pkgconfig:${pkgs.SDL2.dev}/lib/pkgconfig:${pkgs.sqlite.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig:${libavif-static.dev}/lib/pkgconfig:${dav1d-static.dev}/lib/pkgconfig:${libarchive-static.dev}/lib/pkgconfig:${pkgs.zlib.dev}/share/pkgconfig:${pkgs.bzip2.dev}/lib/pkgconfig:${pkgs.xz.dev}/lib/pkgconfig:${pkgs.dbus.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export PKG_CONFIG_PATH="${pkgs.sdl3}/lib/pkgconfig:${pkgs.SDL2.dev}/lib/pkgconfig:${pkgs.sqlite.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig:${libavif-static.dev}/lib/pkgconfig:${dav1d-static.dev}/lib/pkgconfig:${libarchive-static.dev}/lib/pkgconfig:${pkgs.zlib.dev}/share/pkgconfig:${bzip2-static.dev}/lib/pkgconfig:${pkgs.xz.dev}/lib/pkgconfig:${pkgs.dbus.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
             export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
               pkgs.wayland
