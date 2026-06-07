@@ -105,6 +105,10 @@ fn renderSettingsAppearance(frame: *Frame) void {
             tokens.active = tokens.presets.midnight;
             changed = true;
         }
+        if (style.button(@src(), "Paper (light)", .{}, .{})) {
+            tokens.active = tokens.presets.paper;
+            changed = true;
+        }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
     dvui.labelNoFmt(@src(), "Accent", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
