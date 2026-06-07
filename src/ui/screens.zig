@@ -27,6 +27,7 @@ const settings_screen = @import("screens/settings.zig");
 const import_screen = @import("screens/import.zig");
 const downloads_screen = @import("screens/downloads.zig");
 const diagnostics_screen = @import("screens/diagnostics.zig");
+const universal_mods_screen = @import("screens/universal_mods.zig");
 const components = @import("components.zig");
 
 // ---- Per-screen entry points (called by ui.zig) ----
@@ -40,6 +41,7 @@ pub const importFolderScreen = import_screen.importFolderScreen;
 pub const importF95CheckerReviewScreen = import_screen.importF95CheckerReviewScreen;
 pub const downloadsScreen = downloads_screen.downloadsScreen;
 pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
+pub const universalModsScreen = universal_mods_screen.universalModsScreen;
 
 // ---- Cross-screen overlay widgets (called by ui.zig) ----
 pub const renderSyncRecapPopup = components.renderSyncRecapPopup;
