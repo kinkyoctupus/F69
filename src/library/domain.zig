@@ -348,6 +348,20 @@ pub const ModInstall = struct {
     applied_at: i64 = 0,
 };
 
+/// An engine-wide ("universal") mod: a stored modfile applied across every
+/// game of `engine`, except games that opted out (see
+/// `game_universal_mod_disabled`). The apply itself reuses the per-game mod
+/// pipeline; this row is the registry entry.
+pub const UniversalMod = struct {
+    id: i64,
+    name: []const u8,
+    /// `@tagName(Engine)` — which engine's games this applies to.
+    engine: Engine,
+    /// Stored modfile (archive) path the apply pipeline consumes.
+    modfile_path: []const u8,
+    created_at: i64 = 0,
+};
+
 pub const PlaySession = struct {
     id: i64,
     game_thread_id: u64,

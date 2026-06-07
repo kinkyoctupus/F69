@@ -347,6 +347,95 @@ pub const Library = struct {
         return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
     }
 
+    // ----- universal (engine-wide) mods -----
+
+    pub fn createUniversalMod(self: *Library, name: []const u8, engine: dom.Engine, modfile_path: []const u8, now: i64) errs.Error!i64 {
+        self.conn.inner.exec(
+            "INSERT INTO universal_mods (name, engine, modfile_path, created_at) VALUES (?, ?, ?, ?)",
+            .{ name, @tagName(engine), modfile_path, now },
+        ) catch return errs.Error.DatabaseError;
+        return self.conn.inner.lastInsertedRowId();
+    }
+
+    pub fn deleteUniversalMod(self: *Library, id: i64) errs.Error!void {
+        self.conn.inner.exec("DELETE FROM game_universal_mod_disabled WHERE universal_mod_id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM universal_mods WHERE id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// All universal mods (or just one engine's when `engine` is non-null),
+    /// name-sorted. Caller frees via `freeUniversalMods`.
+    pub fn listUniversalMods(self: *Library, engine: ?dom.Engine) errs.Error![]dom.UniversalMod {
+        var out: std.ArrayList(dom.UniversalMod) = .empty;
+        errdefer {
+            for (out.items) |m| {
+                self.alloc.free(m.name);
+                self.alloc.free(m.modfile_path);
+            }
+            out.deinit(self.alloc);
+        }
+        var rows = if (engine) |e|
+            self.conn.inner.rows(
+                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods WHERE engine = ? ORDER BY name COLLATE NOCASE",
+                .{@tagName(e)},
+            ) catch return errs.Error.DatabaseError
+        else
+            self.conn.inner.rows(
+                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods ORDER BY name COLLATE NOCASE",
+                .{},
+            ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| {
+            const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
+            errdefer self.alloc.free(name);
+            const path = self.alloc.dupe(u8, r.text(3)) catch return errs.Error.OutOfMemory;
+            out.append(self.alloc, .{
+                .id = r.int(0),
+                .name = name,
+                .engine = std.meta.stringToEnum(dom.Engine, r.text(2)) orelse .unknown,
+                .modfile_path = path,
+                .created_at = r.int(4),
+            }) catch return errs.Error.OutOfMemory;
+        }
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    pub fn freeUniversalMods(self: *Library, mods: []dom.UniversalMod) void {
+        for (mods) |m| {
+            self.alloc.free(m.name);
+            self.alloc.free(m.modfile_path);
+        }
+        self.alloc.free(mods);
+    }
+
+    pub fn setUniversalModDisabled(self: *Library, game_thread_id: u64, mod_id: i64, disabled: bool) errs.Error!void {
+        if (disabled) {
+            self.conn.inner.exec(
+                "INSERT OR IGNORE INTO game_universal_mod_disabled (game_thread_id, universal_mod_id) VALUES (?, ?)",
+                .{ @as(i64, @intCast(game_thread_id)), mod_id },
+            ) catch return errs.Error.DatabaseError;
+        } else {
+            self.conn.inner.exec(
+                "DELETE FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
+                .{ @as(i64, @intCast(game_thread_id)), mod_id },
+            ) catch return errs.Error.DatabaseError;
+        }
+    }
+
+    pub fn isUniversalModDisabled(self: *Library, game_thread_id: u64, mod_id: i64) errs.Error!bool {
+        const row = self.conn.inner.row(
+            "SELECT 1 FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
+            .{ @as(i64, @intCast(game_thread_id)), mod_id },
+        ) catch return errs.Error.DatabaseError;
+        if (row) |r| {
+            var rr = r;
+            rr.deinit();
+            return true;
+        }
+        return false;
+    }
+
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
@@ -1369,6 +1458,24 @@ const migrations = [_]Migration{
         \\ALTER TABLE games ADD COLUMN status_changed_at INTEGER;
         ,
     },
+    .{
+        .id = 20,
+        .sql =
+        \\CREATE TABLE universal_mods (
+        \\  id INTEGER PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  engine TEXT NOT NULL,
+        \\  modfile_path TEXT NOT NULL,
+        \\  created_at INTEGER NOT NULL DEFAULT 0
+        \\);
+        \\CREATE INDEX universal_mods_engine ON universal_mods(engine);
+        \\CREATE TABLE game_universal_mod_disabled (
+        \\  game_thread_id INTEGER NOT NULL,
+        \\  universal_mod_id INTEGER NOT NULL,
+        \\  PRIMARY KEY (game_thread_id, universal_mod_id)
+        \\);
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1871,6 +1978,45 @@ test "library: user labels create/assign/list/delete" {
         const labels = try lib.listLabels();
         defer lib.freeLabels(labels);
         try std.testing.expectEqual(@as(usize, 1), labels.len);
+    }
+}
+
+test "library: universal mods registry + per-game disable" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    const renpy_id = try lib.createUniversalMod("Skip Splash", .renpy, "/mods/skip.zip", 100);
+    _ = try lib.createUniversalMod("RPGM Cheat", .rpgm_mv, "/mods/cheat.zip", 101);
+
+    {
+        const all = try lib.listUniversalMods(null);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expectEqual(@as(usize, 2), all.len);
+    }
+    {
+        const renpy_mods = try lib.listUniversalMods(.renpy);
+        defer lib.freeUniversalMods(renpy_mods);
+        try std.testing.expectEqual(@as(usize, 1), renpy_mods.len);
+        try std.testing.expectEqualStrings("Skip Splash", renpy_mods[0].name);
+        try std.testing.expectEqual(dom.Engine.renpy, renpy_mods[0].engine);
+        try std.testing.expectEqualStrings("/mods/skip.zip", renpy_mods[0].modfile_path);
+    }
+
+    // Per-game disable toggles.
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+    try lib.setUniversalModDisabled(42, renpy_id, true);
+    try std.testing.expect(try lib.isUniversalModDisabled(42, renpy_id));
+    try lib.setUniversalModDisabled(42, renpy_id, false);
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+
+    // Delete cascades to disables.
+    try lib.setUniversalModDisabled(42, renpy_id, true);
+    try lib.deleteUniversalMod(renpy_id);
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+    {
+        const all = try lib.listUniversalMods(null);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expectEqual(@as(usize, 1), all.len);
     }
 }
 
