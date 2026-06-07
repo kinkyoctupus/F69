@@ -14,7 +14,15 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // Default to a portable baseline CPU (x86_64_v1 / equivalent) so
+    // CI/release builds run on ANY x86-64 host. Without this, a bare
+    // `zig build` resolves to the *build machine's* native CPU model +
+    // features — the binary then SIGILLs ("Illegal instruction") on
+    // user CPUs lacking those features. Dev can opt back into native
+    // codegen with `-Dcpu=native`; `-Dtarget=` also still overrides.
+    const target = b.standardTargetOptions(.{
+        .default_target = .{ .cpu_model = .baseline },
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     // ----- root-level modules -----
@@ -77,7 +85,14 @@ pub fn build(b: *std.Build) void {
     // (similar to dav1d-static); deferred until the Windows port
     // forces the issue.
     util_archive_mod.linkSystemLibrary("z", .{});      // gzip
-    util_archive_mod.linkSystemLibrary("bz2", .{});    // bzip2
+    // bzip2's SONAME splits across distros — libbz2.so.1.0 on
+    // Debian/Ubuntu (and the GH-Actions release builder), libbz2.so.1
+    // on Fedora/Bazzite. A dynamic link bakes the build-host soname
+    // into DT_NEEDED, so the slim bundle (no bundled libs) fails to
+    // load on the *other* family. Static-link it instead — the f69
+    // binary then carries no libbz2 dependency at all. Needs libbz2.a:
+    // Debian/Fedora -dev packages ship it; nix uses `bzip2-static`.
+    util_archive_mod.linkSystemLibrary("bz2", .{ .preferred_link_mode = .static }); // bzip2
     util_archive_mod.linkSystemLibrary("lzma", .{});   // xz
     util_archive_mod.linkSystemLibrary("zstd", .{});   // zstd in .7z/.zip
     util_archive_mod.linkSystemLibrary("lz4", .{});    // lz4 filter
@@ -443,8 +458,13 @@ pub fn build(b: *std.Build) void {
 
     // ----- tests: every module's `test {}` blocks -----
 
+    // Pure UI logic modules (no dvui) — fast standalone tests.
+    const ui_tokens_mod = mod(b, "ui_tokens", "src/ui/tokens.zig", target, optimize);
+    const ui_sortx_mod = mod(b, "ui_sortx", "src/ui/sortx.zig", target, optimize);
+    const ui_columns_mod = mod(b, "ui_columns", "src/ui/columns.zig", target, optimize);
+
     const test_targets = [_]*std.Build.Module{
-        exe_mod,
+        exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
