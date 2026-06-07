@@ -282,6 +282,28 @@ fn saveOrToast(frame: *Frame, what: []const u8, err_opt: anyerror!void) void {
     };
 }
 
+fn findLabelById(all: []const library.UserLabel, id: i64) ?library.UserLabel {
+    for (all) |l| {
+        if (l.id == id) return l;
+    }
+    return null;
+}
+
+/// Create (or re-use by name) the label in the input buffer and assign it to
+/// `game`, then clear the buffer. No-op on a blank input.
+fn addLabelFromInput(frame: *Frame, game: *library.Game) void {
+    const buf = &frame.state.label_input_buf;
+    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    const name = std.mem.trim(u8, buf[0..end], " \t\r\n");
+    if (name.len == 0) return;
+    const id = frame.lib.createLabel(name, null) catch |e| {
+        saveOrToast(frame, "label", e);
+        return;
+    };
+    saveOrToast(frame, "label", frame.lib.addGameLabel(game.f95_thread_id, id));
+    @memset(buf, 0);
+}
+
 fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
     var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = game.f95_thread_id ^ 0xF9,
@@ -446,6 +468,71 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             }
         } else {
             dvui.label(@src(), "no version known yet", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
+    }
+
+    // User labels — the user's own organizational tags (distinct from the
+    // scraped F95 tags). Assigned chips (removable) + an add box that creates
+    // a new label or re-uses an existing one by name.
+    {
+        const all_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
+        defer if (all_opt) |a| frame.lib.freeLabels(a);
+        const all: []const library.UserLabel = all_opt orelse &.{};
+        const assigned_opt: ?[]i64 = frame.lib.labelsForGame(game.f95_thread_id) catch null;
+        defer if (assigned_opt) |a| frame.lib.alloc.free(a);
+        const assigned: []const i64 = assigned_opt orelse &.{};
+
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Labels", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+
+        var flow = dvui.flexbox(@src(), .{}, .{ .expand = .horizontal });
+        defer flow.deinit();
+
+        for (assigned) |lid| {
+            const lbl = findLabelById(all, lid) orelse continue;
+            const id_extra: u64 = @bitCast(lid);
+            var chip_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .id_extra = id_extra,
+                .gravity_y = 0.5,
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 4 },
+            });
+            defer chip_row.deinit();
+            const col = if (lbl.color) |c| (tokens.parseHex(c) orelse tokens.active.acc) else tokens.active.acc;
+            comp.chip(@src(), .{
+                .label = lbl.name,
+                .fill = col,
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                .border = col,
+                .scale = 0.8,
+            }, .{
+                .id_extra = id_extra,
+                .gravity_y = 0.5,
+                .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
+                .corner_radius = .all(3),
+            });
+            if (components.iconOnly(@src(), "remove-label", entypo.cross, .{ .id_extra = id_extra, .gravity_y = 0.5 })) {
+                saveOrToast(frame, "label", frame.lib.removeGameLabel(game.f95_thread_id, lid));
+            }
+        }
+
+        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &frame.state.label_input_buf } }, .{
+            .min_size_content = .{ .w = 150, .h = 26 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        if (components.iconButton(@src(), "Add", entypo.plus, .{ .style = .highlight, .gravity_y = 0.5 })) {
+            addLabelFromInput(frame, game);
         }
     }
 
