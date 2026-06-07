@@ -465,6 +465,8 @@ pub fn build(b: *std.Build) void {
     const util_argv_mod = mod(b, "util_argv", "src/util/argv.zig", target, optimize);
     const util_reltime_mod = mod(b, "util_reltime", "src/util/reltime.zig", target, optimize);
     const util_ratelimit_mod = mod(b, "util_ratelimit", "src/util/ratelimit.zig", target, optimize);
+    // One-shot HTTP helper consults the per-host limiter to space external requests.
+    util_http_mod.addImport("util_ratelimit", util_ratelimit_mod);
 
     // Theme-driven dvui component layer (Design B). Imports dvui (gui builds) + tokens.
     const ui_comp_mod = mod(b, "ui_comp", "src/ui/comp.zig", target, optimize);
