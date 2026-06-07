@@ -118,8 +118,8 @@ pub const Library = struct {
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
             \\  last_indexer_change, last_indexer_parser_version, last_played_version,
-            \\  pinned_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  pinned_version, status_changed_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -159,6 +159,7 @@ pub const Library = struct {
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
             g.last_played_version,
             g.pinned_version,
+            g.status_changed_at,
         }) catch return errs.Error.DatabaseError;
         return self.conn.inner.changes() > 0;
     }
@@ -175,8 +176,8 @@ pub const Library = struct {
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
             \\  auto_update, mod_backup_mode, last_indexer_change,
-            \\  last_indexer_parser_version, last_played_version, pinned_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -219,6 +220,7 @@ pub const Library = struct {
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
             g.last_played_version,
             g.pinned_version,
+            g.status_changed_at,
         }) catch return errs.Error.DatabaseError;
     }
 
@@ -361,7 +363,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version, last_played_version, pinned_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games WHERE f95_thread_id = ?
         , .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -385,7 +387,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version, last_played_version, pinned_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games ORDER BY name COLLATE NOCASE
         , .{}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -497,7 +499,15 @@ pub const Library = struct {
         if (upd.rating) |r| game.rating = r;
         if (upd.vote_count) |c| game.vote_count = c;
         if (upd.engine) |e| game.engine = e;
-        if (upd.dev_status) |d| game.dev_status = d;
+        if (upd.dev_status) |d| {
+            // Record when the developer status actually flips (Ongoing →
+            // Completed/Abandoned/…) so the UI can flag it. Stamped with the
+            // scrape time (the library stays clock-free).
+            if (d != game.dev_status) {
+                game.status_changed_at = upd.last_scraped_at orelse game.status_changed_at;
+            }
+            game.dev_status = d;
+        }
         if (upd.last_updated_at) |t| game.last_updated_at = t;
         if (upd.thread_info_md) |s| {
             try self.replaceOptionalString(&game.thread_info_md, s);
@@ -1353,6 +1363,12 @@ const migrations = [_]Migration{
         \\CREATE INDEX game_labels_label ON game_labels(label_id);
         ,
     },
+    .{
+        .id = 19,
+        .sql =
+        \\ALTER TABLE games ADD COLUMN status_changed_at INTEGER;
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1572,6 +1588,7 @@ fn hydrateGame(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Game {
     if (r.nullableText(30)) |s| {
         g.pinned_version = alloc.dupe(u8, s) catch return errs.Error.OutOfMemory;
     }
+    g.status_changed_at = r.nullableInt(31);
 
     return g;
 }

@@ -460,13 +460,14 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
             label_set = set;
         }
 
+        const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
         var fresh: std.ArrayList(u32) = .empty;
         fresh.ensureTotalCapacity(frame.lib.alloc, games.len) catch {};
         for (games, 0..) |*g, i| {
             if (label_set) |s| {
                 if (!s.contains(g.f95_thread_id)) continue;
             }
-            if (cardVisible(state, g, query, frame.install_versions)) {
+            if (cardVisible(state, g, query, frame.install_versions, now_s)) {
                 fresh.append(frame.lib.alloc, @intCast(i)) catch break;
             }
         }
@@ -596,6 +597,11 @@ fn sidebar(frame: *Frame) void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF22 });
         defer row.deinit();
         _ = dvui.checkbox(@src(), &state.filter_unplayed_updates, "Unplayed updates", .{});
+    }
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF23 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_status_changed, "Status changed", .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -1270,6 +1276,21 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                         .corner_radius = .all(2),
                     });
                 }
+                if (statusRecentlyChanged(g, now_s)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    comp.chip(@src(), .{
+                        .label = "STATUS",
+                        .fill = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff }, // amber
+                        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                        .border = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0x57A7,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
             }
             if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
@@ -1422,6 +1443,22 @@ fn renderListWindow(
                     .corner_radius = .all(2),
                 });
             }
+            const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
+            if (statusRecentlyChanged(g, now_s)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                comp.chip(@src(), .{
+                    .label = "STATUS",
+                    .fill = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                    .border = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                    .scale = 0.75,
+                }, .{
+                    .id_extra = g.f95_thread_id ^ 0x57A7,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                });
+            }
         }
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
@@ -1562,6 +1599,7 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     // Unplayed-updates filter: hash both the toggle and the install-
     // generation counter so a new install immediately re-evaluates.
     hasher.update(std.mem.asBytes(&state.filter_unplayed_updates));
+    hasher.update(std.mem.asBytes(&state.filter_status_changed));
     hasher.update(std.mem.asBytes(&state.snapshot_install_gen));
     // Label filter — selected ids. (Re-assigning a label to a game while the
     // filter is active needs a manual refresh; the common case of toggling
@@ -1571,11 +1609,20 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     return hasher.final();
 }
 
+/// Days a dev-status change stays "recent" for the chip + filter.
+const STATUS_CHANGE_RECENT_DAYS: i64 = 14;
+
+fn statusRecentlyChanged(g: *const library.Game, now_s: i64) bool {
+    const t = g.status_changed_at orelse return false;
+    return (now_s - t) < STATUS_CHANGE_RECENT_DAYS * 24 * 60 * 60;
+}
+
 fn cardVisible(
     state: *const State,
     g: *const library.Game,
     query: []const u8,
     install_versions: ?*const std.AutoHashMap(u64, []const u8),
+    now_s: i64,
 ) bool {
     if (query.len > 0) {
         const name_match = types.asciiContainsIgnoreCase(g.name, query);
@@ -1602,6 +1649,8 @@ fn cardVisible(
         const inst_v: ?[]const u8 = if (install_versions) |m| m.get(g.f95_thread_id) else null;
         if (!hasUnplayedUpdate(g, inst_v)) return false;
     }
+
+    if (state.filter_status_changed and !statusRecentlyChanged(g, now_s)) return false;
 
     return true;
 }

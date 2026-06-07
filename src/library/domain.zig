@@ -266,6 +266,10 @@ pub const Game = struct {
     /// suppressed (a newer release shows as available but isn't downloaded
     /// automatically). Cleared by a manual update. NULL = track latest.
     pinned_version: ?[]const u8 = null,
+    /// Unix seconds of the last time `dev_status` changed during a sync
+    /// (e.g. Ongoing → Completed/Abandoned). Drives the "status changed"
+    /// chip + filter. NULL = never observed changing.
+    status_changed_at: ?i64 = null,
 
     pub fn weightedRating(self: *const Game, library_mean: f32, prior_weight: f32) ?f32 {
         const r = self.rating orelse return null;
