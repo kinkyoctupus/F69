@@ -7,6 +7,7 @@ const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
 
+const tokens = @import("ui_tokens");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
@@ -52,6 +53,7 @@ pub fn settingsScreen(frame: *Frame) !bool {
         if (components.tabButton("Downloads", state.settings_tab == .downloads)) state.settings_tab = .downloads;
         if (components.tabButton("Mod presets", state.settings_tab == .mod_presets)) state.settings_tab = .mod_presets;
         if (components.tabButton("Convert presets", state.settings_tab == .convert_presets)) state.settings_tab = .convert_presets;
+        if (components.tabButton("Appearance", state.settings_tab == .appearance)) state.settings_tab = .appearance;
         if (components.tabButton("About", state.settings_tab == .about)) state.settings_tab = .about;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
@@ -74,10 +76,59 @@ pub fn settingsScreen(frame: *Frame) !bool {
         .downloads => renderSettingsDownloads(frame),
         .mod_presets => renderSettingsModPresets(frame),
         .convert_presets => renderSettingsConvertPresets(frame),
+        .appearance => renderSettingsAppearance(frame),
         .about => renderSettingsAbout(frame),
     }
 
     return true;
+}
+
+/// Appearance tab — live theme picker (Design B). Preset buttons + accent
+/// swatches mutate `tokens.active`; the main loop re-applies the theme each
+/// frame so changes show instantly.
+fn renderSettingsAppearance(frame: *Frame) void {
+    _ = frame;
+    dvui.labelNoFmt(@src(), "Theme preset", .{}, .{});
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 6, .w = 0, .h = 10 } });
+        defer row.deinit();
+        if (style.button(@src(), "Console", .{}, .{})) tokens.active = tokens.presets.console;
+        if (style.button(@src(), "Obsidian", .{}, .{})) tokens.active = tokens.presets.obsidian;
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    dvui.labelNoFmt(@src(), "Accent", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer row.deinit();
+        const swatches = [_]tokens.Color{
+            .{ .r = 0x34, .g = 0xd0, .b = 0xc4 }, // teal
+            .{ .r = 0xe8, .g = 0xa1, .b = 0x3c }, // amber
+            .{ .r = 0xe0, .g = 0x56, .b = 0x7f }, // rose
+            .{ .r = 0x6c, .g = 0x8c, .b = 0xff }, // indigo
+            .{ .r = 0x8b, .g = 0xe9, .b = 0xfd }, // cyan
+            .{ .r = 0xb8, .g = 0xe3, .b = 0x4a }, // lime
+        };
+        inline for (swatches, 0..) |sw, i| {
+            const opts: dvui.Options = .{
+                .id_extra = i,
+                .min_size_content = .{ .w = 28, .h = 28 },
+                .background = true,
+                .color_fill = tokens.toDvui(sw, dvui.Color),
+                .corner_radius = dvui.Rect.all(tokens.r),
+                .border = dvui.Rect.all(1),
+                .color_border = tokens.toDvui(tokens.active.line, dvui.Color),
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+            };
+            if (dvui.button(@src(), "", .{}, opts)) {
+                tokens.active = tokens.fromBase(.{
+                    .bg = tokens.active.bg0,
+                    .accent = sw,
+                    .ink = tokens.active.ink,
+                    .accent2 = tokens.active.accent2,
+                });
+            }
+        }
+    }
 }
 
 /// General tab — UI scale + browser path.

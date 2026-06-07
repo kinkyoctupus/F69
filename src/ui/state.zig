@@ -169,7 +169,7 @@ pub const LaunchFixId = enum {
     /// `state.launch_diag_compat_recipe_buf`.
     compat_recipe,
 };
-pub const SettingsTab = enum { general, sync, accounts, library, downloads, mod_presets, convert_presets, about };
+pub const SettingsTab = enum { general, sync, accounts, library, downloads, mod_presets, convert_presets, appearance, about };
 
 /// Recipe-wizard modal phases. The wizard renders one page per step,
 /// with Back/Next driving the transition. `review` is terminal — save
@@ -935,6 +935,13 @@ pub const State = struct {
     /// is atomic so the worker thread can bump after each fetch.
     image_done: std.atomic.Value(u32) = .init(0),
     image_total: u32 = 0,
+    /// dvui frame timestamp (ns) when image work first became visible
+    /// this batch; 0 = no work in flight. The banner image row waits
+    /// `IMAGE_BANNER_MIN_NS` past this before rendering, so a burst
+    /// that finishes near-instantly (every shot already on disk, or a
+    /// lone cache-fast fetch) can't flash a 0→100% bar. Set/cleared by
+    /// `components.renderSyncBanner`.
+    image_work_since_ns: i128 = 0,
     /// Set by `cancelSync` (or a dedicated cancel button on the banner)
     /// to bail every in-flight + queued image fetch. Worker checks
     /// between each image; drain clears the queue + resets to false
