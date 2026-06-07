@@ -756,8 +756,8 @@ pub const State = struct {
     lib_grid_scroll: dvui.ScrollInfo = .{},
     /// Kanban view: one independent scroll per status column so each
     /// column scrolls on its own (and to its own height). Indexed by
-    /// `@intFromEnum(DevStatus)` — 6 variants.
-    lib_kanban_scroll: [6]dvui.ScrollInfo = [_]dvui.ScrollInfo{.{}} ** 6,
+    /// `@intFromEnum(CompletionStatus)` — the player's progress, 7 variants.
+    lib_kanban_scroll: [7]dvui.ScrollInfo = [_]dvui.ScrollInfo{.{}} ** 7,
     /// Last Sync action's status. Reset to `.idle` when entering detail.
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).

@@ -67,6 +67,36 @@ pub fn devStatusShortLabel(s: library.DevStatus) []const u8 {
     };
 }
 
+/// Short label for the player's completion/progress status — the
+/// kanban column headers and any progress chip. Terser than the detail
+/// dropdown's prose labels so it fits a chip.
+pub fn completionStatusShortLabel(s: library.CompletionStatus) []const u8 {
+    return switch (s) {
+        .not_started => "Backlog",
+        .in_queue => "Queued",
+        .in_progress => "Playing",
+        .completed => "Completed",
+        .replaying => "Replaying",
+        .abandoned => "Dropped",
+        .waiting_for_update => "Wait Update",
+    };
+}
+
+/// Per-progress-status color. Distinct hues so the kanban columns read
+/// apart at a glance: grey backlog → blue playing → green completed,
+/// with amber for "waiting" and red for "dropped".
+pub fn completionStatusColor(s: library.CompletionStatus) dvui.Color {
+    return switch (s) {
+        .not_started => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey
+        .in_queue => .{ .r = 0x55, .g = 0x6A, .b = 0x8A }, // slate
+        .in_progress => .{ .r = 0x1F, .g = 0x6A, .b = 0xA0 }, // blue
+        .completed => .{ .r = 0x2E, .g = 0x7D, .b = 0x32 }, // green
+        .replaying => .{ .r = 0x2A, .g = 0x8A, .b = 0x82 }, // teal
+        .abandoned => .{ .r = 0xB7, .g = 0x1C, .b = 0x1C }, // red
+        .waiting_for_update => .{ .r = 0xC0, .g = 0x84, .b = 0x1F }, // amber
+    };
+}
+
 /// Per-status pill color. Mirrors a "traffic light" semantic: green
 /// for completed, red for abandoned, amber for on hold, blue for
 /// ongoing. Orphaned (thread gone from F95) reads as muted purple —
