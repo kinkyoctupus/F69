@@ -85,7 +85,7 @@ pub fn runMainLoop(
     defer backend.deinit();
 
     var win = try dvui.Window.init(@src(), gpa, backend.backend(), .{
-        .theme = types.pinkTheme(backend.preferredColorScheme() orelse .dark),
+        .theme = types.consoleTheme(backend.preferredColorScheme() orelse .dark),
     });
     defer win.deinit();
     // dvui folds `content_scale` into its layout math so scaling here

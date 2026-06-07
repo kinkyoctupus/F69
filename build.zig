@@ -469,6 +469,8 @@ pub fn build(b: *std.Build) void {
     const ui_comp_mod = mod(b, "ui_comp", "src/ui/comp.zig", target, optimize);
     ui_comp_mod.addImport("ui_tokens", ui_tokens_mod);
     if (dvui_dep_opt) |dep| ui_comp_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
+    // The main UI module uses the runtime theme too (consoleTheme).
+    ui_mod.addImport("ui_tokens", ui_tokens_mod);
 
     const test_targets = [_]*std.Build.Module{
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
