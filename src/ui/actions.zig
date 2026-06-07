@@ -143,6 +143,7 @@ pub const persistAutoConvertIfDirty = common.persistAutoConvertIfDirty;
 pub const persistAutoApplyCompatIfDirty = common.persistAutoApplyCompatIfDirty;
 pub const persistSandboxDefaultIfDirty = common.persistSandboxDefaultIfDirty;
 pub const persistAutoUpdateDefaultIfDirty = common.persistAutoUpdateDefaultIfDirty;
+pub const persistDesktopNotificationsIfDirty = common.persistDesktopNotificationsIfDirty;
 pub const persistRefreshBackendIfDirty = common.persistRefreshBackendIfDirty;
 pub const persistMaxParallelSyncIfDirty = common.persistMaxParallelSyncIfDirty;
 pub const persistMaxParallelImageIfDirty = common.persistMaxParallelImageIfDirty;

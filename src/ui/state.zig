@@ -1250,6 +1250,10 @@ pub const State = struct {
     /// under `<data_root>/auto_update_default`.
     auto_update_default: bool = false,
     auto_update_default_persisted: bool = false,
+    /// Fire a desktop notification when a sync batch finds updates.
+    /// Persisted under `<data_root>/desktop_notifications`.
+    desktop_notifications: bool = true,
+    desktop_notifications_persisted: bool = true,
     /// Source of game metadata during refresh. `.indexer` (default) hits
     /// `api.f95checker.dev`; `.scraper` parses f95zone.to thread pages
     /// directly. Toggle lives in Settings → Sync. Persisted under

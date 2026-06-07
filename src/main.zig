@@ -430,6 +430,10 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(auto_update_default_path);
     const initial_auto_update_default: bool = util_setting.loadBool(init.io, gpa, auto_update_default_path, false);
 
+    const desktop_notifications_path = try std.fmt.allocPrint(gpa, "{s}/desktop_notifications", .{data_root});
+    defer gpa.free(desktop_notifications_path);
+    const initial_desktop_notifications: bool = util_setting.loadBool(init.io, gpa, desktop_notifications_path, true);
+
     // Master tag list cache path. `runMainLoop` loads its contents
     // into State on startup so the sidebar's checkbox list is
     // populated even on first paint.
@@ -536,6 +540,8 @@ pub fn main(init: std.process.Init) !void {
         .initial_sandbox_default = initial_sandbox_default,
         .auto_update_default_path = auto_update_default_path,
         .initial_auto_update_default = initial_auto_update_default,
+        .desktop_notifications_path = desktop_notifications_path,
+        .initial_desktop_notifications = initial_desktop_notifications,
         .refresh_backend_path = refresh_backend_path,
         .initial_refresh_backend = initial_refresh_backend,
         .max_parallel_sync_path = max_parallel_sync_path,

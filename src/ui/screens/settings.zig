@@ -199,6 +199,8 @@ fn renderAutoUpdateDefaultSection(frame: *Frame) void {
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     _ = dvui.checkbox(@src(), &state.auto_update_default, "Auto-download updates on batch sync", .{});
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    _ = dvui.checkbox(@src(), &state.desktop_notifications, "Desktop notification when a sync finds updates", .{});
 }
 
 /// Minimum session duration (seconds) that counts as a "played" session.
