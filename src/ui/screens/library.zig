@@ -991,7 +991,9 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
     const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
 
     var grid = dvui.grid(@src(), .colWidths(&state.lib_col_widths), .{
-        .scroll_opts = .{ .vertical = .auto, .vertical_bar = .show },
+        // The body scroll area and the VirtualScroller below MUST share the
+        // same scroll_info, else viewport.h stays 0 and only 1 row renders.
+        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical = .auto, .vertical_bar = .show },
     }, .{ .expand = .both, .background = true });
     defer grid.deinit();
 
