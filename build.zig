@@ -463,9 +463,11 @@ pub fn build(b: *std.Build) void {
     const ui_sortx_mod = mod(b, "ui_sortx", "src/ui/sortx.zig", target, optimize);
     const ui_columns_mod = mod(b, "ui_columns", "src/ui/columns.zig", target, optimize);
     const util_argv_mod = mod(b, "util_argv", "src/util/argv.zig", target, optimize);
+    const util_reltime_mod = mod(b, "util_reltime", "src/util/reltime.zig", target, optimize);
 
     const test_targets = [_]*std.Build.Module{
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
+        util_reltime_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
