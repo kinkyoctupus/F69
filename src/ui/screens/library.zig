@@ -993,7 +993,10 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
     var grid = dvui.grid(@src(), .colWidths(&state.lib_col_widths), .{
         // The body scroll area and the VirtualScroller below MUST share the
         // same scroll_info, else viewport.h stays 0 and only 1 row renders.
-        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical = .auto, .vertical_bar = .show },
+        // `.given`: honor the virtual_size the VirtualScroller computes from the
+        // full row count. `.auto` would resize to only the rendered rows, so the
+        // scrollbar thumb wouldn't reflect the full list.
+        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical = .given, .vertical_bar = .show },
     }, .{ .expand = .both, .background = true });
     defer grid.deinit();
 
