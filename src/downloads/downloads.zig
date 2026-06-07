@@ -29,20 +29,12 @@ pub const verifyFile = ver.verifyFile;
 pub const hexDecode = ver.hexDecode;
 
 // RPDL is concrete (login + fetchTorrent → bytes → Manager.enqueueTorrent),
-// not a vtable Handler. The remaining handlers/ stubs are kept until they
-// either get real implementations or are deleted in the mirror-handler
-// follow-up round.
+// not a vtable Handler. The active download path goes Manager → aria2 Daemon
+// directly; the old per-host Handler stubs (mega/mediafire/gofile/browser/
+// http/aria2) were never registered and have been removed in the aria2
+// rewrite. If a specialty host ever needs a resolver, it resolves to a
+// direct URL fed to the daemon — no vtable indirection.
 pub const rpdl = @import("rpdl.zig");
-
-// Handler factories — callers choose which to register.
-pub const handlers = struct {
-    pub const http = @import("handlers/http.zig");
-    pub const aria2 = @import("handlers/aria2.zig");
-    pub const mega = @import("handlers/mega.zig");
-    pub const mediafire = @import("handlers/mediafire.zig");
-    pub const gofile = @import("handlers/gofile.zig");
-    pub const browser = @import("handlers/browser.zig");
-};
 
 // Force `zig test` to discover the per-file `test {}` blocks. Without
 // these references the compiler only pulls in the symbols re-exported
