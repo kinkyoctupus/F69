@@ -615,6 +615,12 @@ pub const Daemon = struct {
             // it left off, both for the data file AND seeding ratio.
             "--bt-save-metadata=true",
             "--bt-load-saved-metadata=true",
+            // Detach seed-only torrents from the concurrent-download budget:
+            // a completed torrent that's only uploading no longer occupies a
+            // download slot, so fresh leeches always get one. This replaces
+            // the old manual "leech-precedence" pause/resume hack in the
+            // manager (now deleted). See aria2_args.zig for the rewrite.
+            "--bt-detach-seed-only=true",
             // Aria2's `--save-session` only persists active / paused
             // / waiting downloads by default — completed seeders are
             // silently dropped from the session file at save time.

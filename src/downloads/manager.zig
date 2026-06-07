@@ -395,65 +395,9 @@ pub const Manager = struct {
             };
         }
 
-        // ----- Leech-precedence policy -----
-        // aria2 counts seeding torrents against its concurrent-download
-        // slot budget. With a handful of seeders left over from prior
-        // sessions, a fresh download can sit in "waiting" forever and
-        // never see a byte. Resolve by pausing seeders while there's
-        // anything actively leeching, and auto-resuming them once the
-        // leeches finish. User-paused jobs are untouched.
-        self.applyLeechPrecedence();
-    }
-
-    /// Walk the job table. If any job is currently leeching
-    /// (`.downloading` / `.queued` / `.fetching_metadata`), pause any
-    /// `.seeding` job that hasn't already been priority-paused. If no
-    /// leech is in flight, resume any job we previously
-    /// priority-paused.
-    fn applyLeechPrecedence(self: *Manager) void {
-        const daemon = if (self.daemon) |*d| d else return;
-
-        var has_active_leech = false;
-        var it = self.jobs.iterator();
-        while (it.next()) |entry| {
-            const j = entry.value_ptr;
-            switch (j.status) {
-                .downloading, .fetching_metadata, .verifying => {
-                    has_active_leech = true;
-                    break;
-                },
-                else => {},
-            }
-        }
-
-        it = self.jobs.iterator();
-        while (it.next()) |entry| {
-            const j = entry.value_ptr;
-            const gid = self.job_gids.get(j.id) orelse continue;
-            if (has_active_leech) {
-                // Pause seeders so the leecher gets a slot. Skip jobs
-                // that aren't seeding right now, and skip the ones
-                // we already paused (idempotent guard).
-                if (j.status == .seeding and !j.priority_paused) {
-                    daemon.pause(gid) catch |e| {
-                        log.warn("leech-precedence: pause job {d} failed: {s}", .{ j.id, @errorName(e) });
-                        continue;
-                    };
-                    j.priority_paused = true;
-                    log.info("leech-precedence: paused seeder job {d} to free aria2 slot", .{j.id});
-                }
-            } else {
-                // No leech in flight — resume anything we paused.
-                if (j.priority_paused and j.status == .paused) {
-                    daemon.unpause(gid) catch |e| {
-                        log.warn("leech-precedence: unpause job {d} failed: {s}", .{ j.id, @errorName(e) });
-                        continue;
-                    };
-                    j.priority_paused = false;
-                    log.info("leech-precedence: resumed seeder job {d} (no active leech)", .{j.id});
-                }
-            }
-        }
+        // Seeding-vs-leeching slot contention is now handled by aria2 itself
+        // via --bt-detach-seed-only (set at spawn) — seeders don't occupy a
+        // download slot, so the old manual leech-precedence hack is gone.
     }
 
     /// Pause every active download/seed. No-op when the daemon
