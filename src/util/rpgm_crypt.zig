@@ -65,9 +65,47 @@ pub fn encrypt(alloc: std.mem.Allocator, plain: []const u8, key: [KEY_LEN]u8) er
     return out;
 }
 
+/// Encrypted-asset extension → decrypted extension. RPG Maker uses both the
+/// `.rpgmv*` family (MV) and the `*_` trailing-underscore family (some MZ /
+/// repacks).
+const EXT_MAP = [_]struct { enc: []const u8, dec: []const u8 }{
+    .{ .enc = ".rpgmvp", .dec = ".png" },
+    .{ .enc = ".rpgmvo", .dec = ".ogg" },
+    .{ .enc = ".rpgmvm", .dec = ".m4a" },
+    .{ .enc = ".png_", .dec = ".png" },
+    .{ .enc = ".ogg_", .dec = ".ogg" },
+    .{ .enc = ".m4a_", .dec = ".m4a" },
+};
+
+/// If `name` is an encrypted RPG Maker asset, write its decrypted filename
+/// into `buf` and return it; otherwise null. Case-insensitive on the suffix.
+pub fn decryptedName(buf: []u8, name: []const u8) ?[]const u8 {
+    for (EXT_MAP) |m| {
+        if (name.len <= m.enc.len) continue;
+        const suffix = name[name.len - m.enc.len ..];
+        if (!std.ascii.eqlIgnoreCase(suffix, m.enc)) continue;
+        const stem = name[0 .. name.len - m.enc.len];
+        if (stem.len + m.dec.len > buf.len) return null;
+        @memcpy(buf[0..stem.len], stem);
+        @memcpy(buf[stem.len .. stem.len + m.dec.len], m.dec);
+        return buf[0 .. stem.len + m.dec.len];
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "decryptedName maps encrypted asset extensions" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("Actor1.png", decryptedName(&buf, "Actor1.rpgmvp").?);
+    try testing.expectEqualStrings("bgm.ogg", decryptedName(&buf, "bgm.rpgmvo").?);
+    try testing.expectEqualStrings("se.m4a", decryptedName(&buf, "se.rpgmvm").?);
+    try testing.expectEqualStrings("pic.png", decryptedName(&buf, "pic.png_").?);
+    try testing.expect(decryptedName(&buf, "readme.txt") == null);
+    try testing.expect(decryptedName(&buf, "plain.png") == null);
+}
 
 test "parseKey accepts 32 hex chars, rejects junk" {
     const k = parseKey("0123456789abcdef0123456789abcdef").?;
