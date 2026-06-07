@@ -122,7 +122,7 @@ pub fn downloadsScreen(frame: *Frame) !bool {
         frame.info.library_root, seedRatioTarget(frame),
     }) catch "Files land in the library root.";
     dvui.labelNoFmt(@src(), dst_msg, .{}, .{
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
 
@@ -242,7 +242,7 @@ fn downloadsSectionHeader(label_text: []const u8, count: u32, key: u8) void {
     dvui.labelNoFmt(@src(), n_s, .{}, .{
         .id_extra = key,
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 }
 
@@ -400,7 +400,7 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
         if (line.len > 0) {
             dvui.labelNoFmt(@src(), line, .{}, .{
                 .gravity_y = 0.5,
-                .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+                .color_text = style.labelDim(),
             });
         }
     }
@@ -455,7 +455,7 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
         .id_extra = @intFromEnum(kind),
         .min_size_content = .{ .w = 30, .h = 14 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     const fill_color: dvui.Color = switch (kind) {

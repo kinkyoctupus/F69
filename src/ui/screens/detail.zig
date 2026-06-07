@@ -19,7 +19,7 @@ const components = @import("../components.zig");
 const comp = @import("ui_comp");
 
 const Frame = types.Frame;
-const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+const helpTextColor = components.helpTextColor;
 
 // ============================================================
 //  detail screen
@@ -251,7 +251,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
         const s = std.fmt.bufPrint(&lbl_buf, "{d:.1} ({d} votes)", .{ r, game.vote_count orelse 0 }) catch "";
         dvui.labelNoFmt(@src(), s, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -262,7 +262,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
     if (style.button(@src(), tid_str, .{}, .{
         .gravity_y = 0.5,
         .style = .control,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     })) {
         actions.openInBrowser(frame, game.f95_thread_id);
     }
@@ -313,7 +313,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Last synced", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         var dt_buf: [40]u8 = undefined;
         const dt = if (game.last_scraped_at) |ts|
@@ -342,7 +342,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Your status", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = completionStatusLabels();
         var picked: usize = @intFromEnum(game.completion_status);
@@ -365,7 +365,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Your rating", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const ur_int: u8 = if (game.user_rating) |r| @as(u8, @intFromFloat(@round(r))) else 0;
         var n: u8 = 1;
@@ -397,7 +397,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Sandbox", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = sandboxOverrideLabels(frame.state.sandbox_default);
         var picked: usize = @intFromEnum(game.sandbox);
@@ -421,7 +421,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Auto-update", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = autoUpdateOverrideLabels(frame.state.auto_update_default);
         var picked: usize = @intFromEnum(game.auto_update);
@@ -470,7 +470,7 @@ fn renderCustomLaunchRow(frame: *Frame, game: *const library.Game) void {
     dvui.label(@src(), "Custom launch", .{}, .{
         .min_size_content = .{ .w = 120, .h = 20 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     const te_exe = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_exec_buf } }, .{
         .gravity_y = 0.5,
@@ -539,7 +539,7 @@ fn factsRow(row_id: *u32, label: []const u8, value: FactsValue) void {
     dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 20 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     switch (value) {
         .text => |t| dvui.labelNoFmt(@src(), t, .{}, .{
@@ -657,7 +657,7 @@ fn manualInstallPathRow(frame: *Frame) void {
     dvui.label(@src(), "Archive path", .{}, .{
         .min_size_content = .{ .w = 120, .h = 22 },
         .gravity_y = 0.5,
-        .color_text = HELP_TEXT_COLOR,
+        .color_text = helpTextColor(),
     });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.manual_install_path_buf } }, .{
         .expand = .horizontal,
@@ -706,7 +706,7 @@ fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
     dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 22 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = buf } }, .{
         .expand = .horizontal,
@@ -743,7 +743,7 @@ fn renderConvertHelp() void {
     for (help_lines) |line| {
         dvui.label(@src(), "- {s}", .{line}, .{
             .id_extra = std.hash.Wyhash.hash(0, line),
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
     }
 }
@@ -858,7 +858,7 @@ fn renderRenameInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var ver_buf: [128]u8 = undefined;
     const ver_text = std.fmt.bufPrint(&ver_buf, "Version: {s} ({s})", .{ inst.version, @tagName(inst.source) }) catch inst.version;
-    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
         "A name disambiguates two installs of the same version (e.g. \"vanilla\", \"modded\"). " ++
@@ -872,7 +872,7 @@ fn renderRenameInstallPopup(frame: *Frame, inst: *const library.Install) void {
         dvui.label(@src(), "Name", .{}, .{
             .min_size_content = .{ .w = 80, .h = 24 },
             .gravity_y = 0.5,
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.manage_rename_buf } }, .{
             .expand = .horizontal,
@@ -938,7 +938,7 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var path_buf: [320]u8 = undefined;
     const path_text = std.fmt.bufPrint(&path_buf, "Path: {s}", .{inst.install_path}) catch inst.install_path;
-    dvui.labelNoFmt(@src(), path_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), path_text, .{}, .{ .color_text = helpTextColor() });
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
     {
@@ -1193,7 +1193,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
         defer bar.deinit();
         dvui.label(@src(), "Walkthroughs, guides, cheats, notes — managed copies in your library.", .{}, .{
             .gravity_y = 0.5,
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (components.iconButton(@src(), "Add guide", entypo.plus, .{ .style = .highlight })) {
@@ -1205,7 +1205,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
     // List of guides — re-walked every frame. Cheap because guides
     // dirs hold a handful of files at most.
     const guides = actions.listGuides(frame, game.f95_thread_id) catch {
-        dvui.label(@src(), "Couldn't read the guides directory.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "Couldn't read the guides directory.", .{}, .{ .color_text = helpTextColor() });
         return;
     };
     defer actions.freeGuides(alloc, guides);
@@ -1215,7 +1215,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
             @src(),
             "No guides yet. Click \"Add guide\" to pick a PDF / EPUB / HTML / TXT from anywhere — f69 will copy it into the game's library folder so it stays with the install.",
             .{},
-            .{ .color_text = HELP_TEXT_COLOR },
+            .{ .color_text = helpTextColor() },
         );
         return;
     }
@@ -1317,7 +1317,7 @@ fn renderClashModal(frame: *Frame, game: *const library.Game) void {
 
     dvui.label(@src(), "Mod `{s}` overwrites paths owned by other installed mods.", .{m.recipe_id}, .{ .style = .err });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    dvui.label(@src(), "Last-applied wins — earlier mods' files will be replaced.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.label(@src(), "Last-applied wins — earlier mods' files will be replaced.", .{}, .{ .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     {
@@ -1886,7 +1886,7 @@ fn renderIdleHint(id: u64, text: []const u8) void {
     defer row.deinit();
     dvui.labelNoFmt(@src(), text, .{}, .{
         .gravity_y = 0.5,
-        .color_text = HELP_TEXT_COLOR,
+        .color_text = helpTextColor(),
         .expand = .horizontal,
         .min_size_content = .{ .w = 0, .h = 20 },
     });
@@ -1922,7 +1922,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         defer line.deinit();
         dvui.labelNoFmt(@src(), args.text, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
             .expand = .horizontal,
             .min_size_content = .{ .w = 0, .h = 20 },
         });
@@ -2359,7 +2359,7 @@ fn isPrintableTag(tag: []const u8) bool {
 
 fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
     const sessions = frame.lib.listPlaySessions(game.f95_thread_id) catch {
-        dvui.labelNoFmt(@src(), "Failed to load journal.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), "Failed to load journal.", .{}, .{ .color_text = helpTextColor() });
         return;
     };
     defer frame.lib.freePlaySessions(sessions);
@@ -2369,7 +2369,7 @@ fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
             @src(),
             "No play sessions recorded yet. Sessions start counting from the first launch after this release.",
             .{},
-            .{ .color_text = HELP_TEXT_COLOR },
+            .{ .color_text = helpTextColor() },
         );
         return;
     }
@@ -2437,7 +2437,7 @@ fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
             if (!std.mem.eql(u8, s.version, ver)) continue;
             var row_buf: [256]u8 = undefined;
             const row = formatSessionRow(&row_buf, s);
-            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = helpTextColor() });
         }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     }

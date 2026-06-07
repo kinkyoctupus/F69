@@ -19,7 +19,7 @@ const components = @import("../components.zig");
 
 const Frame = types.Frame;
 const State = types.State;
-const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+const helpTextColor = components.helpTextColor;
 
 // ============================================================
 //  settings screen
@@ -232,7 +232,7 @@ fn renderMinSessionSecondsSection(frame: *Frame) void {
         } else |_| {}
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    dvui.label(@src(), "0 = every successful launch counts as played.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.label(@src(), "0 = every successful launch counts as played.", .{}, .{ .color_text = helpTextColor() });
 }
 
 /// "Sandbox on launch by default" checkbox. Each game's per-game
@@ -521,7 +521,7 @@ fn renderEngineReanalyseSection(frame: *Frame) void {
         const msg = state.engine_reanalyse_msg_buf[0..state.engine_reanalyse_msg_len];
         dvui.labelNoFmt(@src(), msg, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 }
@@ -664,7 +664,7 @@ fn renderImportBanner(frame: *Frame) void {
         var cur_buf: [192]u8 = undefined;
         const cur_text = std.fmt.bufPrint(&cur_buf, "  current: {s}", .{cur}) catch cur;
         dvui.labelNoFmt(@src(), cur_text, .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
             .id_extra = std.hash.Wyhash.hash(0, cur),
         });
     }
@@ -731,13 +731,13 @@ fn renderSettingsDownloads(frame: *Frame) void {
         std.fmt.bufPrint(&live_buf, "now bound to {d}", .{live_port}) catch "(bound)";
     dvui.labelNoFmt(@src(), live_msg, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     if (state.aria2_port_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
         dvui.labelNoFmt(@src(), state.aria2_port_msg_buf[0..state.aria2_port_msg_len], .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -793,13 +793,13 @@ fn renderSettingsDownloads(frame: *Frame) void {
         std.fmt.bufPrint(&live_sr_buf, "now using {d:.1}×", .{live_sr}) catch "(set)";
     dvui.labelNoFmt(@src(), live_sr_msg, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     if (state.aria2_seed_ratio_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
         dvui.labelNoFmt(@src(), state.aria2_seed_ratio_msg_buf[0..state.aria2_seed_ratio_msg_len], .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 }
@@ -858,7 +858,7 @@ fn renderTagsRefreshSection(frame: *Frame) void {
     };
     dvui.labelNoFmt(@src(), info_text, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 }
 
@@ -891,11 +891,11 @@ fn renderSettingsModPresets(frame: *Frame) void {
     {
         var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer bar.deinit();
-        dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "User dir:", .{}, .{ .color_text = helpTextColor() });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         dvui.labelNoFmt(@src(), frame.info.mod_presets_dir, .{}, .{
             .font = .theme(.mono),
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -928,7 +928,7 @@ fn renderSettingsModPresets(frame: *Frame) void {
                     .color_text = if (from_user)
                         .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
                     else
-                        HELP_TEXT_COLOR,
+                        helpTextColor(),
                 });
             }
 
@@ -938,10 +938,10 @@ fn renderSettingsModPresets(frame: *Frame) void {
             const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  \u{00B7}  engine: {s}  \u{00B7}  patterns: {d}  \u{00B7}  weight: {d:.1}", .{
                 p.id, engine_txt, p.match.requires.len, p.weight,
             }) catch p.id;
-            dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = helpTextColor() });
 
             if (p.description.len > 0) {
-                dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
+                dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = helpTextColor() });
             }
         }
 
@@ -993,11 +993,11 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
     {
         var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer bar.deinit();
-        dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "User dir:", .{}, .{ .color_text = helpTextColor() });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         dvui.labelNoFmt(@src(), frame.info.convert_presets_dir, .{}, .{
             .font = .theme(.mono),
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -1021,7 +1021,7 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
                 .color_text = if (from_user)
                     .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
                 else
-                    HELP_TEXT_COLOR,
+                    helpTextColor(),
             });
         }
 
@@ -1037,10 +1037,10 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
         const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  -  engine: {s}  -  strategy: {s}  -  weight: {d:.1}", .{
             p.id, engine_txt, spec_txt, p.weight,
         }) catch p.id;
-        dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = helpTextColor() });
 
         if (p.description.len > 0) {
-            dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = helpTextColor() });
         }
     }
 }
@@ -1182,11 +1182,11 @@ fn renderAutoCheckSection(frame: *Frame) void {
         var ts_buf: [32]u8 = undefined;
         const ts = components.formatUtcDateTime(&ts_buf, state.last_update_check_ts) catch "—";
         dvui.label(@src(), "Last check: {s}", .{ts}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     } else {
         dvui.label(@src(), "Last check: never", .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 }
