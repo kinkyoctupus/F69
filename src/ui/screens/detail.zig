@@ -18,6 +18,7 @@ const style = @import("../style.zig");
 const components = @import("../components.zig");
 const comp = @import("ui_comp");
 const tokens = @import("ui_tokens");
+const dl_links = @import("ui_dl_links");
 
 const Frame = types.Frame;
 const helpTextColor = components.helpTextColor;
@@ -1168,11 +1169,74 @@ fn renderInlineLineWithLinks(frame: *Frame, line: []const u8, id: u64) void {
 }
 
 fn renderDownloadsTab(frame: *Frame, game: *const library.Game) void {
+    const has_mirrors = game.download_links.len > 0;
+    if (has_mirrors) renderMirrorList(frame, game);
+
     if (game.downloads_md) |text| {
+        if (has_mirrors) _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
         renderStructuredText(frame, text, game.f95_thread_id);
         return;
     }
-    dvui.label(@src(), "No download links scraped yet. Sync this game to populate.", .{}, .{});
+    if (!has_mirrors) {
+        dvui.label(@src(), "No download links scraped yet. Sync this game to populate.", .{}, .{});
+    }
+}
+
+/// Curated mirror list — the parsed `download_links` (host/url/label) as a
+/// per-host clickable list. Click a row to open the link externally.
+fn renderMirrorList(frame: *Frame, game: *const library.Game) void {
+    {
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+        });
+        defer hdr.deinit();
+        dvui.labelNoFmt(@src(), "Mirrors", .{}, .{ .gravity_y = 0.5, .font = dvui.Font.theme(.heading) });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        dvui.label(@src(), "({d})", .{game.download_links.len}, .{ .gravity_y = 0.5, .color_text = helpTextColor() });
+    }
+
+    for (game.download_links, 0..) |entry, i| {
+        const link = dl_links.parse(entry);
+        if (link.url.len == 0) continue;
+
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = i,
+            .expand = .horizontal,
+            .padding = .{ .x = 6, .y = 4, .w = 6, .h = 4 },
+            .corner_radius = .all(4),
+        });
+        defer row.deinit();
+
+        const hc = dl_links.hostColor(link.host);
+        comp.chip(@src(), .{
+            .label = dl_links.hostLabel(link.host),
+            .fill = hc,
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+            .border = hc,
+            .scale = 0.8,
+        }, .{
+            .id_extra = i,
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 88, .h = 1 },
+            .padding = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+            .corner_radius = .all(3),
+        });
+
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
+        const shown = if (link.label.len > 0) link.label else link.url;
+        dvui.labelNoFmt(@src(), shown, .{}, .{ .gravity_y = 0.5, .expand = .horizontal });
+
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        dvui.icon(@src(), "open-mirror", entypo.download, .{}, .{
+            .id_extra = i,
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 14, .h = 14 },
+            .color_text = helpTextColor(),
+        });
+
+        if (dvui.clicked(row.data(), .{})) actions.openExternalUrl(frame, link.url);
+    }
 }
 
 // ============================================================
