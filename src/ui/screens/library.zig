@@ -1515,49 +1515,37 @@ fn renderInstallDot(thread_id: u64, state: actions.InstallDotState) void {
 fn renderStatusBadge(thread_id: u64, status: library.DevStatus) void {
     if (status == .unknown) return;
     const fill = components.devStatusColor(status);
-    var badge = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    comp.chip(@src(), .{
+        .label = components.devStatusShortLabel(status),
+        .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+        .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .scale = style.chip_font_scale,
+    }, .{
         .id_extra = thread_id,
         .gravity_x = 1.0,
         .gravity_y = 1.0,
-        .background = true,
         .corner_radius = .all(2),
         .padding = .all(0),
         .margin = .{ .x = 0, .y = 0, .w = 4, .h = 4 },
-        .color_fill = fill,
-        .color_border = fill,
-        .border = style.border_thin,
-    });
-    defer badge.deinit();
-    const body = dvui.Font.theme(.body);
-    dvui.labelNoFmt(@src(), components.devStatusShortLabel(status), .{}, .{
-        .color_text = dvui.Color.white,
-        .font = body.withSize(body.size * style.chip_font_scale),
-        .padding = style.chip_label_padding,
-        .margin = .all(0),
     });
 }
 
 fn renderEngineBadge(thread_id: u64, engine: library.Engine) void {
     const fill = components.engineBadgeColor(engine);
-    var badge = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    comp.chip(@src(), .{
+        .label = components.engineShortLabel(engine),
+        .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+        .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .scale = style.chip_font_scale,
+    }, .{
         .id_extra = thread_id,
         .gravity_x = 0,
         .gravity_y = 1.0,
-        .background = true,
         .corner_radius = .all(2),
         .padding = .all(0),
         .margin = .{ .x = 4, .y = 0, .w = 0, .h = 4 },
-        .color_fill = fill,
-        .color_border = fill,
-        .border = style.border_thin,
-    });
-    defer badge.deinit();
-    const body = dvui.Font.theme(.body);
-    dvui.labelNoFmt(@src(), components.engineShortLabel(engine), .{}, .{
-        .color_text = dvui.Color.white,
-        .font = body.withSize(body.size * style.chip_font_scale),
-        .padding = style.chip_label_padding,
-        .margin = .all(0),
     });
 }
 
