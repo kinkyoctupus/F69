@@ -85,8 +85,8 @@ pub fn detailScreen(frame: *Frame) !bool {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer bar.deinit();
         var conf_buf: [128]u8 = undefined;
@@ -601,8 +601,8 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer panel.deinit();
 
@@ -724,8 +724,8 @@ fn renderConvertHelp() void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer help.deinit();
 
@@ -1229,8 +1229,8 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer row.deinit();
 
@@ -1909,8 +1909,8 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer wrap.deinit();
 
@@ -1946,7 +1946,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
             .min_size_content = .{ .w = 1, .h = 10 },
             .border = style.border_thin,
             .corner_radius = .all(2),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .padding = .all(0),
         });
@@ -1959,7 +1959,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         .min_size_content = .{ .w = 1, .h = 10 },
         .border = style.border_thin,
         .corner_radius = .all(2),
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .background = true,
         .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
     });
@@ -2238,7 +2238,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
             .min_size_content = aspect_min,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return wd;
     }
@@ -2249,7 +2249,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
     });
     defer slot.deinit();
@@ -2276,7 +2276,7 @@ fn renderCover(bytes_opt: ?[]const u8) void {
             .min_size_content = .{ .w = 220, .h = 320 },
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -2286,7 +2286,7 @@ fn renderCover(bytes_opt: ?[]const u8) void {
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
     });
     defer cover.deinit();
@@ -2307,7 +2307,7 @@ fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
             .min_size_content = .{ .w = 60, .h = 85 },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -2318,7 +2318,7 @@ fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
         .border = style.border_thin,
         .corner_radius = .all(3),
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
     });
     defer thumb.deinit();
 }

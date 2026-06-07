@@ -338,7 +338,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
                 .min_size_content = .{ .w = 240, .h = 14 },
                 .border = style.border_thin,
                 .corner_radius = .all(3),
-                .color_border = style.border_color,
+                .color_border = style.borderColor(),
                 .background = true,
                 .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
                 .gravity_y = 0.5,
@@ -1126,7 +1126,7 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
             .gravity_y = 0.5,
             .corner_radius = .all(3),
             .border = style.border_thin,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -1138,7 +1138,7 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
         .corner_radius = .all(3),
         .border = style.border_thin,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
     });
     defer slot.deinit();
 }
@@ -1228,8 +1228,8 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         .max_size_content = .{ .w = layout.card_w, .h = layout.card_h },
         .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
         .margin = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer card.deinit();
 
@@ -1403,7 +1403,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                     .min_size_content = .{ .w = 1, .h = 1 },
                     .corner_radius = style.corner_radius,
                     .border = style.border_thin,
-                    .color_border = style.border_color,
+                    .color_border = style.borderColor(),
                 });
             },
             .fit_backdrop => {
@@ -1417,7 +1417,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                         .background = true,
                         .corner_radius = style.corner_radius,
                         .border = style.border_thin,
-                        .color_border = style.border_color,
+                        .color_border = style.borderColor(),
                         .color_fill = style.letterbox_fill,
                     });
                     bg.deinit();
@@ -1445,7 +1445,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                         .background = true,
                         .corner_radius = style.corner_radius,
                         .border = style.border_thin,
-                        .color_border = style.border_color,
+                        .color_border = style.borderColor(),
                         .color_fill = style.letterbox_fill,
                     });
                     bg.deinit();
@@ -1471,7 +1471,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
             .corner_radius = style.corner_radius,
             .border = style.border_thin,
             .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         defer slot.deinit();
         dvui.label(@src(), "(no cover)", .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
