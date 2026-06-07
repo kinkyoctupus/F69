@@ -680,6 +680,25 @@ pub const Library = struct {
         self.install_generation +%= 1;
     }
 
+    /// Per-install custom launch override: the executable/command to run instead
+    /// of the heuristic launcher. Null clears it (back to auto).
+    pub fn setInstallExecutable(self: *Library, install_id: []const u8, exe: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE installs SET executable = ? WHERE id = ?", .{
+            exe,
+            install_id,
+        }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
+    }
+
+    /// Per-install custom launch arguments (raw string; tokenized at launch).
+    pub fn setInstallLaunchArgs(self: *Library, install_id: []const u8, args: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE installs SET launch_args = ? WHERE id = ?", .{
+            args,
+            install_id,
+        }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
+    }
+
     // TODO: mods table — upsertMod / listMods / setModInstalls /
     // listModInstalls were no-op stubs with zero callers; dropped.
 
@@ -1496,6 +1515,27 @@ test "library: install round-trip + latestInstallForGame" {
     defer lib.freeInstall(latest);
     try std.testing.expectEqualStrings("0.20.17", latest.version);
     try std.testing.expectEqualStrings("/games/14014/0.20.17", latest.install_path);
+}
+
+test "library: setInstallExecutable + setInstallLaunchArgs persist on the row" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 7, .name = "G" });
+    const id: [36]u8 = "cccccccc-cccc-cccc-cccc-cccccccccccc".*;
+    try lib.upsertInstall(&.{
+        .id = id,
+        .game_thread_id = 7,
+        .version = "1.0",
+        .install_path = "/g/7/1.0",
+        .recipe_id = "r",
+        .installed_at = 1,
+    });
+    try lib.setInstallExecutable(&id, "wine game.exe");
+    try lib.setInstallLaunchArgs(&id, "--fullscreen --no-intro");
+    const got = (try lib.latestInstallForGame(7)).?;
+    defer lib.freeInstall(got);
+    try std.testing.expectEqualStrings("wine game.exe", got.executable.?);
+    try std.testing.expectEqualStrings("--fullscreen --no-intro", got.launch_args.?);
 }
 
 test "library: deleteInstall removes one row" {
