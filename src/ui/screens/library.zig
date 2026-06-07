@@ -352,7 +352,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
                         .h = 10,
                     },
                     .background = true,
-                    .color_fill = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                    .color_fill = tokens.toDvui(tokens.active.acc, dvui.Color),
                     .corner_radius = .all(2),
                     .gravity_y = 0.5,
                 });
@@ -816,11 +816,11 @@ fn renderTagCheckboxFilter(state: *State) void {
 
         const marker: []const u8 = if (in_include) "[+] " else if (in_exclude) "[-] " else "[ ] ";
         const text_color: dvui.Color = if (in_include)
-            .{ .r = 0x6F, .g = 0xC8, .b = 0x7A } // green
+            tokens.toDvui(tokens.active.ok, dvui.Color) // include
         else if (in_exclude)
-            .{ .r = 0xE9, .g = 0x4B, .b = 0x7A } // red
+            tokens.toDvui(tokens.active.danger, dvui.Color) // exclude
         else
-            .{ .r = 0xC0, .g = 0xA0, .b = 0xB8 };
+            tokens.toDvui(tokens.active.ink3, dvui.Color);
 
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = i,
@@ -1052,7 +1052,7 @@ fn renderListWindow(
             dvui.icon(@src(), "rating-star", entypo.star, .{}, .{
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 14, .h = 14 },
-                .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
             });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
             var rate_buf: [16]u8 = undefined;
@@ -1307,7 +1307,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         dvui.icon(@src(), "rating-star", entypo.star, .{}, .{
             .gravity_y = 0.5,
             .min_size_content = .{ .w = 12, .h = 12 },
-            .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
         });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 3, .h = 1 } });
 

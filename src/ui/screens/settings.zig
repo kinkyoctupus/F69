@@ -926,7 +926,7 @@ fn renderSettingsModPresets(frame: *Frame) void {
                 const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
                 dvui.labelNoFmt(@src(), tag, .{}, .{
                     .color_text = if (from_user)
-                        .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                        tokens.toDvui(tokens.active.acc, dvui.Color)
                     else
                         helpTextColor(),
                 });
@@ -1019,7 +1019,7 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
             const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
             dvui.labelNoFmt(@src(), tag, .{}, .{
                 .color_text = if (from_user)
-                    .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                    tokens.toDvui(tokens.active.acc, dvui.Color)
                 else
                     helpTextColor(),
             });

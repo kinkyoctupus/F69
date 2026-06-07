@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const dvui = @import("dvui");
+const tokens = @import("ui_tokens");
 const entypo = dvui.entypo;
 const library = @import("library");
 const downloads = @import("downloads");
@@ -459,7 +460,7 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
     });
 
     const fill_color: dvui.Color = switch (kind) {
-        .download => .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+        .download => tokens.toDvui(tokens.active.acc, dvui.Color),
         .ratio => .{ .r = 0x6D, .g = 0xC0, .b = 0x8B }, // green — "giving back"
     };
     dvui.progress(@src(), .{ .percent = frac, .color = fill_color }, .{

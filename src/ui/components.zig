@@ -786,7 +786,7 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
                     .id_extra = e.thread_id,
                     .min_size_content = .{ .w = 16, .h = 16 },
                     .gravity_y = 0.5,
-                    .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                    .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
                 });
                 _ = dvui.spacer(@src(), .{ .id_extra = e.thread_id, .min_size_content = .{ .w = 6, .h = 1 } });
                 dvui.labelNoFmt(@src(), e.new_version, .{}, .{
@@ -942,7 +942,7 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
     };
     const text_color: dvui.Color = switch (t.kind) {
         .info => helpTextColor(),
-        .success => .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+        .success => tokens.toDvui(tokens.active.acc, dvui.Color),
         .warn => .{ .r = 0xE0, .g = 0xC0, .b = 0x70 },
         .err => .{ .r = 0xFF, .g = 0x80, .b = 0x80 },
     };
@@ -1150,7 +1150,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
                     .h = BANNER_BAR_H_SYNC - 4,
                 },
                 .background = true,
-                .color_fill = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                .color_fill = tokens.toDvui(tokens.active.acc, dvui.Color),
                 .corner_radius = .all(2),
                 .gravity_y = 0.5,
             });
