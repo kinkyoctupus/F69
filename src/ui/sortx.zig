@@ -37,6 +37,56 @@ pub fn sortIndices(comptime T: type, items: []const T, order: []u32, keys: []con
     std.sort.pdq(u32, order, Ctx{ .items = items, .keys = keys }, Ctx.less);
 }
 
+/// A memoized filtered+sorted index permutation over a row slice — the perf +
+/// stability keystone. Rows are never moved; the view recomputes only when the
+/// input generation or the filter/sort signature changes. `order`/`filtered`
+/// are caller-owned scratch buffers of length ≥ rows.len.
+pub fn View(comptime T: type) type {
+    return struct {
+        order: []u32,
+        filtered: []u32,
+        filtered_len: usize = 0,
+        gen: u64 = 0,
+        sig: u64 = 0,
+        computed: bool = false,
+        recomputes: u64 = 0,
+
+        const Self = @This();
+
+        /// `gen` bumps when the row slice is rebuilt (reload); `sig` is the
+        /// filter/sort-input signature. `pred(ctx, row)` keeps a row when true.
+        pub fn ensure(
+            self: *Self,
+            rows: []const T,
+            gen: u64,
+            sig: u64,
+            keys: []const Key(T),
+            ctx: anytype,
+            comptime pred: fn (@TypeOf(ctx), T) bool,
+        ) void {
+            if (self.computed and self.gen == gen and self.sig == sig) return;
+            sortIndices(T, rows, self.order[0..rows.len], keys);
+            var n: usize = 0;
+            for (self.order[0..rows.len]) |idx| {
+                if (pred(ctx, rows[idx])) {
+                    self.filtered[n] = idx;
+                    n += 1;
+                }
+            }
+            self.filtered_len = n;
+            self.gen = gen;
+            self.sig = sig;
+            self.computed = true;
+            self.recomputes += 1;
+        }
+
+        /// The current filtered+sorted indices into the row slice.
+        pub fn items(self: Self) []const u32 {
+            return self.filtered[0..self.filtered_len];
+        }
+    };
+}
+
 const Row = struct { name: []const u8, rating: i32 };
 fn cmpName(a: Row, b: Row) std.math.Order {
     return std.mem.order(u8, a.name, b.name);
@@ -66,4 +116,30 @@ test "sortIndices with no keys is identity order" {
     var order: [2]u32 = undefined;
     sortIndices(Row, &rows, &order, &.{});
     try std.testing.expectEqualSlices(u32, &.{ 0, 1 }, &order);
+}
+
+const Keep = struct { min: i32 };
+fn keep(p: Keep, r: Row) bool {
+    return r.rating >= p.min;
+}
+
+test "View filters+sorts into a permutation and memoizes on (gen,sig)" {
+    const rows = [_]Row{ .{ .name = "a", .rating = 3 }, .{ .name = "b", .rating = 9 }, .{ .name = "c", .rating = 5 } };
+    var ord: [3]u32 = undefined;
+    var filt: [3]u32 = undefined;
+    var v = View(Row){ .order = &ord, .filtered = &filt };
+    const keys = [_]Key(Row){.{ .cmp = cmpRating, .dir = .desc }};
+
+    v.ensure(&rows, 1, 100, &keys, Keep{ .min = 5 }, keep);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2 }, v.items()); // b(9), c(5)
+    try std.testing.expectEqual(@as(u64, 1), v.recomputes);
+
+    v.ensure(&rows, 1, 100, &keys, Keep{ .min = 5 }, keep); // unchanged → memoized
+    try std.testing.expectEqual(@as(u64, 1), v.recomputes);
+
+    v.ensure(&rows, 1, 200, &keys, Keep{ .min = 5 }, keep); // sig changed → recompute
+    try std.testing.expectEqual(@as(u64, 2), v.recomputes);
+
+    v.ensure(&rows, 2, 200, &keys, Keep{ .min = 5 }, keep); // gen changed → recompute
+    try std.testing.expectEqual(@as(u64, 3), v.recomputes);
 }
