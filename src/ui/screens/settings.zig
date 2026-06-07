@@ -94,21 +94,22 @@ fn renderSettingsAppearance(frame: *Frame) void {
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 6, .w = 0, .h = 10 } });
         defer row.deinit();
-        if (style.button(@src(), "Console", .{}, .{})) {
-            tokens.active = tokens.presets.console;
-            changed = true;
-        }
-        if (style.button(@src(), "Obsidian", .{}, .{})) {
-            tokens.active = tokens.presets.obsidian;
-            changed = true;
-        }
-        if (style.button(@src(), "Midnight", .{}, .{})) {
-            tokens.active = tokens.presets.midnight;
-            changed = true;
-        }
-        if (style.button(@src(), "Paper (light)", .{}, .{})) {
-            tokens.active = tokens.presets.paper;
-            changed = true;
+        const choices = .{
+            .{ "Console", tokens.presets.console },
+            .{ "Obsidian", tokens.presets.obsidian },
+            .{ "Midnight", tokens.presets.midnight },
+            .{ "Paper (light)", tokens.presets.paper },
+        };
+        inline for (choices, 0..) |ch, i| {
+            const is_active = std.meta.eql(tokens.active, ch[1]);
+            const opts: dvui.Options = if (is_active)
+                .{ .id_extra = i, .style = .highlight }
+            else
+                .{ .id_extra = i };
+            if (style.button(@src(), ch[0], .{}, opts)) {
+                tokens.active = ch[1];
+                changed = true;
+            }
         }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
