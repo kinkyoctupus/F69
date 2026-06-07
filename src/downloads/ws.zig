@@ -3,10 +3,14 @@
 //! aria2 multiplexes responses and push notifications on one socket, so a
 //! background read-loop thread classifies each frame: notifications
 //! (onDownloadComplete/…) go to an event queue the manager drains; responses
-//! go to the single waiting caller. Calls are serialized (one in-flight at a
-//! time) which makes correlation trivial — the next response after our send
-//! is ours — and avoids per-id bookkeeping. aria2 RPC is low-frequency and
-//! the manager calls sequentially, so serialization costs nothing.
+//! go to the single waiting caller. Calls are assumed serialized by the
+//! caller (the manager drives RPC from one thread), so correlation is
+//! trivial — the next response is ours.
+//!
+//! Sync note: this Zig has no `std.Thread.Mutex`; `std.Io.Mutex` needs an
+//! `io` (awkward across karlseguin's raw read thread and the io-less
+//! `drainEvents` vtable). So we use a tiny atomic spinlock for the brief
+//! critical sections, and the caller polls with `io.sleep` for its response.
 
 const std = @import("std");
 const websocket = @import("websocket");
@@ -21,27 +25,40 @@ pub const Endpoint = struct {
     path: []const u8 = "/jsonrpc",
 };
 
-/// How long `call` waits for a response before giving up (and letting the
-/// Fallback count a failure).
-const CALL_TIMEOUT_NS: u64 = 8 * std.time.ns_per_s;
+/// How long `call` waits for a response before giving up (Fallback then
+/// counts a failure). Polled in `POLL_MS` steps.
+const CALL_TIMEOUT_MS: u64 = 8000;
+const POLL_MS: u64 = 5;
+
+/// Minimal atomic spinlock — critical sections here are a few instructions
+/// (append/swap a pointer), so spinning never meaningfully blocks.
+const Spin = struct {
+    flag: std.atomic.Value(bool) = .init(false),
+    fn lock(self: *Spin) void {
+        while (self.flag.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+    fn unlock(self: *Spin) void {
+        self.flag.store(false, .release);
+    }
+};
 
 pub const WsTransport = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     client: Client,
     thread: ?std.Thread = null,
     connected: std.atomic.Value(bool),
 
-    // Serializes call() so the next response frame is unambiguously ours.
-    call_mu: std.Thread.Mutex = .{},
-
-    // Response handoff from the read thread to the waiting caller.
-    resp_mu: std.Thread.Mutex = .{},
-    resp_cv: std.Thread.Condition = .{},
+    // Response handoff (read thread → caller). Guarded by resp_lock.
+    resp_lock: Spin = .{},
     awaiting: bool = false,
+    resp_ready: bool = false,
     resp: ?[]u8 = null, // owned by gpa
 
-    // Pushed events, drained by the manager.
-    ev_mu: std.Thread.Mutex = .{},
+    // Pushed events, drained by the manager. Guarded by ev_lock.
+    ev_lock: Spin = .{},
     events: std.ArrayList(transport.Event) = .empty,
 
     const Handler = struct {
@@ -66,13 +83,14 @@ pub const WsTransport = struct {
         client.handshake(ep.path, .{ .timeout_ms = 5000 }) catch return transport.Error.ConnectFailed;
         return .{
             .gpa = gpa,
+            .io = io,
             .client = client,
             .connected = std.atomic.Value(bool).init(true),
         };
     }
 
     /// Spawn the read-loop thread. Call once, after the struct is at its
-    /// final address.
+    /// final (heap) address.
     pub fn start(self: *WsTransport) transport.Error!void {
         self.thread = self.client.readLoopInNewThread(Handler{ .t = self }) catch
             return transport.Error.ConnectFailed;
@@ -83,11 +101,17 @@ pub const WsTransport = struct {
         self.client.close(.{}) catch {};
         if (self.thread) |t| t.join();
         self.thread = null;
-        self.ev_mu.lock();
+
+        self.ev_lock.lock();
         for (self.events.items) |e| e.deinit(self.gpa);
         self.events.deinit(self.gpa);
-        self.ev_mu.unlock();
+        self.ev_lock.unlock();
+
+        self.resp_lock.lock();
         if (self.resp) |r| self.gpa.free(r);
+        self.resp = null;
+        self.resp_lock.unlock();
+
         self.client.deinit();
     }
 
@@ -107,8 +131,8 @@ pub const WsTransport = struct {
     fn onMessage(self: *WsTransport, data: []u8) void {
         // Notification? (has method, no id.) Push to the event queue.
         if (rpc.parseNotification(self.gpa, data)) |n| {
-            self.ev_mu.lock();
-            defer self.ev_mu.unlock();
+            self.ev_lock.lock();
+            defer self.ev_lock.unlock();
             self.events.append(self.gpa, .{ .method = n.method, .gid = n.gid }) catch {
                 self.gpa.free(n.method);
                 self.gpa.free(n.gid);
@@ -116,12 +140,11 @@ pub const WsTransport = struct {
             return;
         }
         // Otherwise it's a response — hand it to the waiting caller.
-        self.resp_mu.lock();
-        defer self.resp_mu.unlock();
-        if (self.awaiting) {
+        self.resp_lock.lock();
+        defer self.resp_lock.unlock();
+        if (self.awaiting and !self.resp_ready) {
             self.resp = self.gpa.dupe(u8, data) catch null;
-            self.awaiting = false;
-            self.resp_cv.signal();
+            self.resp_ready = true;
         }
         // Not awaiting → stray/late response; drop it.
     }
@@ -132,51 +155,59 @@ pub const WsTransport = struct {
         const self: *WsTransport = @ptrCast(@alignCast(ctx));
         if (!self.connected.load(.acquire)) return transport.Error.NotConnected;
 
-        self.call_mu.lock();
-        defer self.call_mu.unlock();
-
-        self.resp_mu.lock();
-        if (self.resp) |r| {
-            self.gpa.free(r);
-            self.resp = null;
-        }
+        // Arm the response slot.
+        self.resp_lock.lock();
+        if (self.resp) |r| self.gpa.free(r);
+        self.resp = null;
+        self.resp_ready = false;
         self.awaiting = true;
-        self.resp_mu.unlock();
+        self.resp_lock.unlock();
 
-        // writeText masks the payload in place — send a writable copy so we
-        // never mutate the caller's buffer.
+        // writeText masks the payload in place — send a writable copy.
         const wbuf = self.gpa.dupe(u8, body) catch return transport.Error.OutOfMemory;
         defer self.gpa.free(wbuf);
         self.client.writeText(wbuf) catch {
             self.connected.store(false, .release);
-            self.resp_mu.lock();
-            self.awaiting = false;
-            self.resp_mu.unlock();
+            self.disarm();
             return transport.Error.CallFailed;
         };
 
-        self.resp_mu.lock();
-        defer self.resp_mu.unlock();
-        while (self.awaiting) {
-            self.resp_cv.timedWait(&self.resp_mu, CALL_TIMEOUT_NS) catch {
+        // Poll for the response (the read thread fills it).
+        var waited: u64 = 0;
+        while (waited < CALL_TIMEOUT_MS) : (waited += POLL_MS) {
+            self.resp_lock.lock();
+            if (self.resp_ready) {
+                const r = self.resp;
+                self.resp = null;
+                self.resp_ready = false;
                 self.awaiting = false;
-                return transport.Error.CallFailed;
-            };
+                self.resp_lock.unlock();
+                const taken = r orelse return transport.Error.CallFailed;
+                defer self.gpa.free(taken);
+                return alloc.dupe(u8, taken) catch transport.Error.OutOfMemory;
+            }
+            self.resp_lock.unlock();
+            std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(POLL_MS), .awake) catch {};
         }
-        const r = self.resp orelse return transport.Error.CallFailed;
-        self.resp = null;
-        const out = alloc.dupe(u8, r) catch {
+        self.disarm();
+        return transport.Error.CallFailed;
+    }
+
+    fn disarm(self: *WsTransport) void {
+        self.resp_lock.lock();
+        self.awaiting = false;
+        if (self.resp) |r| {
             self.gpa.free(r);
-            return transport.Error.OutOfMemory;
-        };
-        self.gpa.free(r);
-        return out;
+            self.resp = null;
+        }
+        self.resp_ready = false;
+        self.resp_lock.unlock();
     }
 
     fn drainFn(ctx: *anyopaque, alloc: std.mem.Allocator, out: *std.ArrayList(transport.Event)) void {
         const self: *WsTransport = @ptrCast(@alignCast(ctx));
-        self.ev_mu.lock();
-        defer self.ev_mu.unlock();
+        self.ev_lock.lock();
+        defer self.ev_lock.unlock();
         for (self.events.items) |e| {
             const m = alloc.dupe(u8, e.method) catch {
                 e.deinit(self.gpa);

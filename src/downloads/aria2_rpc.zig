@@ -18,6 +18,12 @@ const std = @import("std");
 const Io = std.Io;
 const log = std.log.scoped(.aria2);
 const errs = @import("errors.zig");
+const transport = @import("transport.zig");
+const http_transport = @import("http.zig");
+const ws_transport = @import("ws.zig");
+
+/// Re-export so the manager can drain push events without importing transport.
+pub const Event = transport.Event;
 
 pub const Status = struct {
     /// "active" | "complete" | "error" | "paused" | "removed" | "waiting"
@@ -62,7 +68,6 @@ pub const Status = struct {
 pub const Daemon = struct {
     alloc: std.mem.Allocator,
     io: Io,
-    http: std.http.Client,
     aria2_path: []const u8,
     download_dir: []const u8,
     /// Optional `--save-session` / `--input-file` target. When set,
@@ -79,9 +84,16 @@ pub const Daemon = struct {
     /// 32-byte hex string + null terminator. Distinct per process.
     secret: [33]u8,
     child: ?std.process.Child = null,
-    /// `http://127.0.0.1:<port>/jsonrpc`
-    rpc_url_buf: [64]u8 = undefined,
-    rpc_url_len: usize = 0,
+    /// `http://127.0.0.1:<port>/jsonrpc` — heap-owned so the string survives
+    /// the by-value return from `init` (the HTTP transport borrows it).
+    url: []u8 = &.{},
+    /// RPC transports. Both heap-allocated so their addresses are stable
+    /// across the Daemon's by-value move out of `init` (the WS read-thread
+    /// and the Fallback's vtable ctx pointers must not dangle). `fallback`
+    /// routes to WS first and auto-switches to HTTP on repeated failure.
+    http_t: *http_transport.HttpTransport = undefined,
+    ws_t: ?*ws_transport.WsTransport = null,
+    fallback: transport.Fallback = undefined,
 
     /// Spawn aria2c and wait until it answers `aria2.getVersion`.
     /// `aria2_path` may be a bare name like "aria2c" — the OS resolves
@@ -104,7 +116,6 @@ pub const Daemon = struct {
         var d: Daemon = .{
             .alloc = alloc,
             .io = io,
-            .http = .{ .allocator = alloc, .io = io },
             .aria2_path = aria2_path,
             .download_dir = download_dir,
             .session_path = session_path,
@@ -113,20 +124,61 @@ pub const Daemon = struct {
             .secret = undefined,
         };
         genSecret(io, &d.secret);
-        const url = std.fmt.bufPrint(&d.rpc_url_buf, "http://127.0.0.1:{d}/jsonrpc", .{d.port}) catch
+
+        // Heap-owned RPC URL + HTTP transport (always available). Built before
+        // waitReady so the readiness probe runs over the transport too.
+        d.url = std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/jsonrpc", .{d.port}) catch
             return errs.Error.OutOfMemory;
-        d.rpc_url_len = url.len;
+        errdefer alloc.free(d.url);
+        d.http_t = alloc.create(http_transport.HttpTransport) catch return errs.Error.OutOfMemory;
+        errdefer alloc.destroy(d.http_t);
+        d.http_t.* = .{ .io = io, .url = d.url };
+        // Until WS connects, both legs of the fallback are HTTP.
+        d.fallback = .{ .primary = d.http_t.asTransport(), .secondary = d.http_t.asTransport() };
 
         try d.spawn();
         d.waitReady() catch |e| {
-            // Daemon failed to come up — kill the child if it's still
-            // alive, free http resources.
             if (d.child) |*c| c.kill(io);
-            d.http.deinit();
+            alloc.destroy(d.http_t);
+            alloc.free(d.url);
             return e;
         };
         log.info("aria2 ready on 127.0.0.1:{d}", .{d.port});
+
+        // aria2 is up — try to upgrade the primary leg to WebSocket so we get
+        // push events (onDownloadComplete/…). On any failure we stay HTTP-only;
+        // the fallback already points both legs at HTTP.
+        d.tryConnectWs();
         return d;
+    }
+
+    /// Best-effort WebSocket upgrade. Sets `ws_t` + repoints the fallback's
+    /// primary leg on success; silently keeps HTTP on failure.
+    fn tryConnectWs(self: *Daemon) void {
+        const wt = ws_transport.WsTransport.init(self.alloc, self.io, .{ .port = self.port }) catch {
+            log.info("aria2 WS transport unavailable; using HTTP polling", .{});
+            return;
+        };
+        const p = self.alloc.create(ws_transport.WsTransport) catch {
+            var tmp = wt;
+            tmp.deinit();
+            return;
+        };
+        p.* = wt;
+        p.start() catch {
+            p.deinit();
+            self.alloc.destroy(p);
+            log.info("aria2 WS read-loop failed to start; using HTTP polling", .{});
+            return;
+        };
+        self.ws_t = p;
+        self.fallback = .{ .primary = p.asTransport(), .secondary = self.http_t.asTransport() };
+        log.info("aria2 WS transport connected (push events enabled)", .{});
+    }
+
+    /// Drain pushed aria2 events (WS only) into `out`. No-op under HTTP.
+    pub fn drainEvents(self: *Daemon, alloc: std.mem.Allocator, out: *std.ArrayList(transport.Event)) void {
+        self.fallback.drainEvents(alloc, out);
     }
 
     pub fn deinit(self: *Daemon) void {
@@ -141,7 +193,7 @@ pub const Daemon = struct {
             // reaps the corpse.
             const pid = c.id orelse {
                 self.child = null;
-                self.http.deinit();
+                self.freeTransports();
                 self.* = undefined;
                 return;
             };
@@ -168,7 +220,7 @@ pub const Daemon = struct {
             // again from a destructor or stray path.
             self.child = null;
         }
-        self.http.deinit();
+        self.freeTransports();
         self.* = undefined;
     }
 
@@ -740,27 +792,22 @@ pub const Daemon = struct {
         self.alloc.free(resp);
     }
 
+    /// Send a JSON-RPC body through the active transport (WS, or HTTP after
+    /// fallback) and return the response body. Owned by `self.alloc`.
     fn rpcRaw(self: *Daemon, body: []const u8) errs.Error![]u8 {
-        var aw: Io.Writer.Allocating = .init(self.alloc);
-        errdefer aw.deinit();
-
-        const headers = [_]std.http.Header{
-            .{ .name = "content-type", .value = "application/json" },
-        };
-        const result = self.http.fetch(.{
-            .location = .{ .url = self.rpcUrl() },
-            .response_writer = &aw.writer,
-            .payload = body,
-            .extra_headers = &headers,
-            .keep_alive = false,
-        }) catch return errs.Error.HostUnreachable;
-
-        if (result.status != .ok) return errs.Error.AriaRpcError;
-        return aw.toOwnedSlice() catch errs.Error.OutOfMemory;
+        return self.fallback.call(self.alloc, body) catch errs.Error.HostUnreachable;
     }
 
-    fn rpcUrl(self: *const Daemon) []const u8 {
-        return self.rpc_url_buf[0..self.rpc_url_len];
+    /// Free the heap-owned transports + URL. Call after the child is reaped
+    /// (WS deinit closes the socket + joins the read thread).
+    fn freeTransports(self: *Daemon) void {
+        if (self.ws_t) |p| {
+            p.deinit();
+            self.alloc.destroy(p);
+            self.ws_t = null;
+        }
+        self.alloc.destroy(self.http_t);
+        self.alloc.free(self.url);
     }
 
     fn secretSlice(self: *const Daemon) []const u8 {
