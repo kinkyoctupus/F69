@@ -575,6 +575,22 @@ pub fn saveAria2SeedRatio(state: *State, path: []const u8, io: std.Io) !f32 {
     return parsed;
 }
 
+/// Parse + save the seed-time cap (minutes; 0 = no cap). Persists to
+/// `<data_root>/aria2_seed_time`. Applied live by the caller via
+/// `Manager.setSeedTimeLive`.
+pub fn saveAria2SeedTime(state: *State, path: []const u8, io: std.Io) !u32 {
+    const end = std.mem.indexOfScalar(u8, &state.aria2_seed_time_buf, 0) orelse state.aria2_seed_time_buf.len;
+    const trimmed = std.mem.trim(u8, state.aria2_seed_time_buf[0..end], " \t\r\n");
+    if (trimmed.len == 0) return error.Empty;
+    const parsed = try std.fmt.parseInt(u32, trimmed, 10);
+
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{parsed}) catch return error.OutOfMemory;
+    try persistTextFile(io, path, text);
+    state.aria2_seed_time_persisted = parsed;
+    return parsed;
+}
+
 /// Fire `startUpdateCheck` automatically based on the user's
 /// preferences: once at startup (if `on_startup`) and/or on a
 /// recurring interval (if `interval_enabled`). Skipped while any

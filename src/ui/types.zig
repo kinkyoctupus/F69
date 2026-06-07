@@ -256,6 +256,11 @@ pub const RuntimeInfo = struct {
     aria2_seed_ratio_path: []const u8,
     /// Aria2 seed-ratio target loaded from disk at startup.
     initial_aria2_seed_ratio: f32,
+    /// `<data_root>/aria2_seed_time` — BT seed-time cap in minutes
+    /// (0 = no cap). Applied live + via --seed-time at spawn.
+    aria2_seed_time_path: []const u8,
+    /// Aria2 seed-time cap (minutes) loaded from disk at startup.
+    initial_aria2_seed_time: u32,
     /// Snapshot of host env at process start — XDG_RUNTIME_DIR /
     /// WAYLAND_DISPLAY / DISPLAY / HOME. The sandbox backend uses
     /// these to wire display + audio + fontconfig binds.
