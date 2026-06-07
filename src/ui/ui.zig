@@ -385,7 +385,19 @@ pub fn runMainLoop(
     }
 }
 
+/// Build the installed theme from the runtime token palette, with the bundled
+/// font family applied. Re-applied each frame so Settings → Appearance edits
+/// to `tokens.active` take effect live.
+fn themedForActive() dvui.Theme {
+    var t = types.consoleTheme(.dark);
+    t.font_body = t.font_body.withFamily(fonts.DEFAULT_FAMILY);
+    t.font_heading = t.font_heading.withFamily(fonts.DEFAULT_FAMILY);
+    t.font_title = t.font_title.withFamily(fonts.DEFAULT_FAMILY);
+    return t;
+}
+
 fn guiFrame(frame: *Frame) !bool {
+    dvui.themeSet(themedForActive());
     // Snapshot caches: install_versions + games_by_thread. Both
     // survive across frames (owned by `lib.alloc`, lifetime managed
     // by `freeSnapshotCache`) and rebuild only when their key
