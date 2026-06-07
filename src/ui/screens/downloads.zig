@@ -366,6 +366,13 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
             if (components.iconButton(@src(), "Remove", entypo.trash, .{ .id_extra = job.id })) {
                 action = .{ .remove = job.id };
             }
+        } else if (job.is_torrent and (job.status == .seeding or job.status == .done)) {
+            // Per-torrent seed control: stop seeding before the ratio target
+            // is met. The default still seeds to ratio; this is the user's
+            // explicit "I'm done giving back on this one" override.
+            if (components.iconButton(@src(), "Stop seeding", entypo.cross, .{ .id_extra = job.id, .style = .err })) {
+                action = .{ .remove = job.id };
+            }
         }
     }
 
