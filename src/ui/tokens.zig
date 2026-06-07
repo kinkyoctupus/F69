@@ -7,6 +7,17 @@
 
 const std = @import("std");
 
+// ----- layout / type scale (Design B: squared, dense) -----
+pub const r: f32 = 3; // standard corner radius
+pub const r_lg: f32 = 5; // cards / panels
+pub const sp1: f32 = 4;
+pub const sp2: f32 = 8;
+pub const sp3: f32 = 12;
+pub const sp4: f32 = 16;
+pub const font_display = "archivo";
+pub const font_body = "plex_sans";
+pub const font_mono = "plex_mono";
+
 /// RGBA color, 8 bits per channel. Same field layout as `dvui.Color`, so a
 /// `toDvui` adapter is a field copy.
 pub const Color = struct {
@@ -85,11 +96,11 @@ pub const Theme = struct {
 };
 
 /// Perceived luminance (0..255) — rec601 weights. Used to choose contrasting text.
-pub fn luma(c: Color) f32 {
-    const r: f32 = @floatFromInt(c.r);
-    const g: f32 = @floatFromInt(c.g);
-    const b: f32 = @floatFromInt(c.b);
-    return 0.299 * r + 0.587 * g + 0.114 * b;
+pub fn luma(col: Color) f32 {
+    const rf: f32 = @floatFromInt(col.r);
+    const gf: f32 = @floatFromInt(col.g);
+    const bf: f32 = @floatFromInt(col.b);
+    return 0.299 * rf + 0.587 * gf + 0.114 * bf;
 }
 
 /// The few colors a user actually edits; the rest of the `Theme` derives from these.
