@@ -673,7 +673,7 @@ fn renderSimulationDetail(frame: *Frame, w: *state_mod.WizardState, sim: *const 
         .corner_radius = style.corner_radius,
         .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
         .color_fill = .{ .r = 0x14, .g = 0x0A, .b = 0x10 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .min_size_content = .{ .w = 1, .h = 240 },
     });
     defer pane.deinit();

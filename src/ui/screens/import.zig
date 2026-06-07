@@ -529,8 +529,8 @@ fn renderBulkApplyRow(state: *State, rows: []state_mod.FolderImportRowState) voi
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer bar.deinit();
 
@@ -611,7 +611,7 @@ fn renderPreviewRow(
     const row_border_color: dvui.Color = if (needs_attention)
         .{ .r = 0xCC, .g = 0x55, .b = 0x66 }
     else
-        style.border_color;
+        style.borderColor();
 
     var row = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = @intCast(idx),
@@ -621,7 +621,7 @@ fn renderPreviewRow(
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
+        .color_fill = style.cardFill(),
         .color_border = row_border_color,
     });
     defer row.deinit();
@@ -972,7 +972,7 @@ fn renderLinkSuggestions(
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .color_fill = .{ .r = 0x10, .g = 0x0A, .b = 0x14 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
     });
     defer listbox.deinit();
 

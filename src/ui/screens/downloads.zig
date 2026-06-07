@@ -283,8 +283,8 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
         .corner_radius = style.corner_radius,
         .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer row.deinit();
 
@@ -469,7 +469,7 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
         .gravity_y = 0.5,
         .border = style.border_thin,
         .corner_radius = .all(2),
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
         .padding = .all(0),
     });

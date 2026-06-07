@@ -13,6 +13,7 @@ const types = @import("types.zig");
 const state_mod = @import("state.zig");
 const actions = @import("actions.zig");
 const style = @import("style.zig");
+const tokens = @import("ui_tokens");
 
 const Frame = types.Frame;
 
@@ -192,10 +193,10 @@ pub fn iconOnly(
 /// tabs sit a touch lower and use a quieter fill so the active one
 /// pops as the obvious "you are here" affordance.
 pub fn tabButton(label: []const u8, active: bool) bool {
-    const active_fill: dvui.Color = .{ .r = 0x33, .g = 0x1E, .b = 0x28 };
-    const inactive_fill: dvui.Color = style.card_fill;
-    const tab_border: dvui.Color = style.border_color;
-    const highlight: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const active_fill: dvui.Color = tokens.toDvui(tokens.active.acc_wash, dvui.Color);
+    const inactive_fill: dvui.Color = style.cardFill();
+    const tab_border: dvui.Color = style.borderColor();
+    const highlight: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
 
     const radius: dvui.Rect = .{ .x = 8, .y = 8, .w = 0, .h = 0 };
     const margin: dvui.Rect = if (active)
@@ -451,7 +452,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
             .color_fill = .{ .r = 0x14, .g = 0x0A, .b = 0x10 },
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
         });
         defer border.deinit();
@@ -552,8 +553,8 @@ fn renderF95LoginCard(frame: *Frame) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
@@ -615,8 +616,8 @@ fn renderRpdlLoginCard(frame: *Frame) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
@@ -735,8 +736,8 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer row.deinit();
 
@@ -837,7 +838,7 @@ fn renderRecapThumb(frame: *Frame, thread_id: u64) void {
             .gravity_y = 0.5,
             .corner_radius = .all(3),
             .border = style.border_thin,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -848,7 +849,7 @@ fn renderRecapThumb(frame: *Frame, thread_id: u64) void {
         .background = true,
         .corner_radius = .all(3),
         .border = style.border_thin,
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .color_fill = .{ .r = 0x1A, .g = 0x10, .b = 0x14 },
     });
     defer slot.deinit();
@@ -954,8 +955,8 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
         .background = true,
         .border = style.border_thin,
         .corner_radius = .all(6),
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .expand = .horizontal,
     });
     bw.processEvents();
@@ -991,12 +992,29 @@ pub fn renderSyncBanner(frame: *Frame) void {
     const has_image_work = state.anyActiveImage() or
         (state.image_queue != null and state.image_queue_head < state.image_queue_len) or
         state.image_total > 0;
+
+    // Debounce the image row: only show it once image work has been in
+    // flight for at least IMAGE_BANNER_MIN_NS. A burst that drains
+    // near-instantly (a lone cache-fast fetch, or a residual total>0
+    // window between jobs) never crosses the threshold, so the bar
+    // can't flash on and off. `enqueueImageFetch` already suppresses
+    // no-new-image jobs entirely; this catches every other transient.
+    const IMAGE_BANNER_MIN_NS: i128 = 150 * std.time.ns_per_ms;
+    const now_ns = dvui.frameTimeNS();
+    if (has_image_work) {
+        if (state.image_work_since_ns == 0) state.image_work_since_ns = now_ns;
+    } else {
+        state.image_work_since_ns = 0;
+    }
+    const image_row_visible = has_image_work and
+        (now_ns - state.image_work_since_ns) >= IMAGE_BANNER_MIN_NS;
+
     // Only surface the banner while a sync is genuinely in flight.
     // Terminal messages like "nothing to sync — all games already
     // populated" used to keep the banner pinned on every screen
     // (including during bookmark imports) — that's noisy and confusing.
     // Settled state messages live in their normal status-line slots.
-    if (!has_active and !has_queue and !has_image_work) return;
+    if (!has_active and !has_queue and !image_row_visible) return;
 
     // Stack: row 1 = sync (text + cover); row 2 = phase-2 (images).
     // The outer vbox gives both rows the same padded background so it
@@ -1014,7 +1032,7 @@ pub fn renderSyncBanner(frame: *Frame) void {
     if (has_active or has_queue) {
         renderSyncBannerSyncRow(frame);
     }
-    if (has_image_work) {
+    if (image_row_visible) {
         renderSyncBannerImageRow(frame);
     }
 }
@@ -1118,7 +1136,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
             .min_size_content = .{ .w = BANNER_BAR_W, .h = BANNER_BAR_H_SYNC },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .background = true,
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .gravity_y = 0.5,
@@ -1278,7 +1296,7 @@ fn renderSyncBannerImageRow(frame: *Frame) void {
             .min_size_content = .{ .w = BANNER_BAR_W, .h = BANNER_BAR_H_IMAGE },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .background = true,
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .gravity_y = 0.5,
