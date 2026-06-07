@@ -121,6 +121,39 @@ pub fn sectionHeader(src: std.builtin.SourceLocation, label: []const u8, opts: d
     dvui.labelNoFmt(src, label, .{}, (dvui.Options{ .color_text = c(tokens.active.ink3) }).override(opts));
 }
 
+// ----- containers / inputs -----
+
+/// A bordered surface panel (card/pane). Returns the box; caller adds children + deinits.
+pub fn panel(src: std.builtin.SourceLocation, opts: dvui.Options) *dvui.BoxWidget {
+    const t = tokens.active;
+    const defaults: dvui.Options = .{
+        .background = true,
+        .color_fill = c(t.bg1),
+        .color_border = c(t.line),
+        .border = dvui.Rect.all(1),
+        .corner_radius = dvui.Rect.all(tokens.r_lg),
+    };
+    return dvui.box(src, .{ .dir = .vertical }, defaults.override(opts));
+}
+
+/// Bordered search/text field bound to `buffer`.
+pub fn searchBox(src: std.builtin.SourceLocation, buffer: []u8, opts: dvui.Options) void {
+    const t = tokens.active;
+    const defaults: dvui.Options = .{
+        .background = true,
+        .color_fill = c(t.bg0),
+        .color_border = c(t.line),
+        .border = dvui.Rect.all(1),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
+        .min_size_content = .{ .w = 0, .h = 29 },
+    };
+    var box = dvui.box(src, .{ .dir = .horizontal }, defaults.override(opts));
+    defer box.deinit();
+    var te = dvui.textEntry(@src(), .{ .text = .{ .buffer = buffer } }, .{ .expand = .horizontal, .color_text = c(t.ink) });
+    te.deinit();
+}
+
 test "comp compiles against dvui + tokens" {
     std.testing.refAllDecls(@This());
 }
