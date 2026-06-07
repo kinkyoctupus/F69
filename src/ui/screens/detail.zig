@@ -536,9 +536,8 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    // Engine tools — RPG Maker MV/MZ asset decryption (writes decrypted
-    // copies next to the originals; non-destructive).
-    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
+    // Engine tools — per-engine mod helpers. Non-destructive.
+    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz or game.engine == .renpy) {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
             .expand = .horizontal,
@@ -551,8 +550,15 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             .gravity_y = 0.5,
             .color_text = style.labelDim(),
         });
-        if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{ .gravity_y = 0.5 })) {
-            actions.decryptRpgmAssets(frame, game.f95_thread_id);
+        if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
+            if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{ .gravity_y = 0.5 })) {
+                actions.decryptRpgmAssets(frame, game.f95_thread_id);
+            }
+        }
+        if (game.engine == .renpy) {
+            if (components.iconButton(@src(), "Enable Ren'Py console", entypo.tools, .{ .gravity_y = 0.5 })) {
+                actions.enableRenpyConsole(frame, game.f95_thread_id);
+            }
         }
     }
 

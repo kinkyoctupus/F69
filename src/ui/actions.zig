@@ -152,6 +152,7 @@ pub const saveAria2Port = common.saveAria2Port;
 pub const saveAria2SeedRatio = common.saveAria2SeedRatio;
 pub const saveAria2SeedTime = common.saveAria2SeedTime;
 pub const decryptRpgmAssets = @import("actions/rpgm_tools.zig").decryptRpgmAssets;
+pub const enableRenpyConsole = @import("actions/renpy_tools.zig").enableRenpyConsole;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
 pub const deleteGameAndReturn = common.deleteGameAndReturn;
 pub const refreshInstalledSet = common.refreshInstalledSet;
