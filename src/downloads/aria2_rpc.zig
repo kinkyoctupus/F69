@@ -426,6 +426,12 @@ pub const Daemon = struct {
                     .string => |s| s,
                     else => "(no message)",
                 }) else "(no message)";
+                // Code 1 = "GID ... is not found": benign + expected when a
+                // gid is stale (download cleared from aria2, or a session-
+                // restored job whose gid changed). Don't warn — return a
+                // distinct error so the manager retires the job instead of
+                // re-polling (and re-logging) it every tick.
+                if (code == 1) return errs.Error.NotFound;
                 log.warn("aria2.tellStatus RPC error: {d} {s}", .{ code, msg });
                 return errs.Error.AriaRpcError;
             }
