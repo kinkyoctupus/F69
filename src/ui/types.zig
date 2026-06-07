@@ -281,9 +281,10 @@ pub fn consoleTheme(scheme: anytype) dvui.Theme {
             return tokens.toDvui(col, dvui.Color);
         }
     }.f;
-    var t = dvui.Theme.builtin.adwaita_dark;
+    const is_light = tokens.luma(k.bg0) > 128;
+    var t = if (is_light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark;
     t.name = "f69 console";
-    t.dark = true;
+    t.dark = !is_light;
     t.focus = tc(k.acc);
     t.text_select = tc(k.acc_wash);
     t.fill = tc(k.bg1);

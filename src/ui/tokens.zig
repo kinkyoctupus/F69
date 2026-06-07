@@ -192,6 +192,7 @@ pub const presets = struct {
         if (std.mem.eql(u8, name, "console")) return console;
         if (std.mem.eql(u8, name, "obsidian")) return obsidian;
         if (std.mem.eql(u8, name, "midnight")) return midnight;
+        if (std.mem.eql(u8, name, "paper")) return paper;
         return null;
     }
 
@@ -215,6 +216,14 @@ pub const presets = struct {
         .ink = hex("#e6e9f5"),  .ink2 = hex("#aab2d6"),     .ink3 = hex("#6b74a0"),      .ink_on_acc = hex("#0a0f1f"),
         .acc = hex("#6c8cff"),  .acc_dim = hex("#2f3d7a"),  .acc_wash = hex("#141a36"),  .accent2 = hex("#8be9fd"),
         .ok = hex("#5fb87a"),   .warn = hex("#e6b24a"),     .danger = hex("#e2604f"),    .info = hex("#6c8cff"),
+    };
+    /// Light theme. `consoleTheme` flips to the adwaita_light base when bg0 is light.
+    pub const paper = Theme{
+        .bg0 = hex("#f4f1ea"),  .bg1 = hex("#efece3"),      .bg2 = hex("#e7e3d8"),       .bg3 = hex("#dcd7c9"),
+        .surface = hex("#faf8f2"), .line = hex("#d6cfbe"),  .line_soft = hex("#e7e2d6"),
+        .ink = hex("#22201c"),  .ink2 = hex("#5b564c"),     .ink3 = hex("#8a8478"),      .ink_on_acc = hex("#ffffff"),
+        .acc = hex("#1d6f66"),  .acc_dim = hex("#a9cfc9"),  .acc_wash = hex("#e3efec"),  .accent2 = hex("#c2491f"),
+        .ok = hex("#2f8f5b"),   .warn = hex("#b5860b"),     .danger = hex("#c0392b"),    .info = hex("#2d6fa8"),
     };
 };
 
@@ -300,6 +309,12 @@ test "obsidian preset carries the Design A accent" {
 test "midnight preset is dark indigo and resolves by name" {
     try std.testing.expectEqual(Color{ .r = 0x6c, .g = 0x8c, .b = 0xff, .a = 0xff }, presets.midnight.acc);
     try std.testing.expectEqual(presets.midnight, presets.byName("midnight").?);
+}
+
+test "paper preset is a light theme and resolves by name" {
+    try std.testing.expect(luma(presets.paper.bg0) > 128); // light background
+    try std.testing.expect(luma(presets.paper.ink) < 128); // dark text
+    try std.testing.expectEqual(presets.paper, presets.byName("paper").?);
 }
 
 test "Color.lerp blends each channel at t" {
