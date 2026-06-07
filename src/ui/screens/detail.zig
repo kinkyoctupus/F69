@@ -16,6 +16,7 @@ const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const comp = @import("ui_comp");
 
 const Frame = types.Frame;
 const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
@@ -215,40 +216,30 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
 
     if (game.engine != .unknown) {
         const fill = components.engineBadgeColor(game.engine);
-        var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        comp.chip(@src(), .{
+            .label = components.engineShortLabel(game.engine),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        }, .{
             .id_extra = game.f95_thread_id ^ 0xE1,
             .gravity_y = 0.5,
             .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-            .corner_radius = .all(3),
-            .background = true,
-            .color_fill = fill,
-            .color_border = fill,
-            .border = style.border_thin,
-        });
-        defer pill.deinit();
-        dvui.labelNoFmt(@src(), components.engineShortLabel(game.engine), .{}, .{
-            .gravity_y = 0.5,
-            .color_text = dvui.Color.white,
         });
     }
 
     if (game.dev_status != .unknown) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         const fill = components.devStatusColor(game.dev_status);
-        var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        comp.chip(@src(), .{
+            .label = components.devStatusShortLabel(game.dev_status),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        }, .{
             .id_extra = game.f95_thread_id,
             .gravity_y = 0.5,
             .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-            .corner_radius = .all(3),
-            .background = true,
-            .color_fill = fill,
-            .color_border = fill,
-            .border = style.border_thin,
-        });
-        defer pill.deinit();
-        dvui.labelNoFmt(@src(), components.devStatusShortLabel(game.dev_status), .{}, .{
-            .gravity_y = 0.5,
-            .color_text = dvui.Color.white,
         });
     }
 
