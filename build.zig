@@ -468,6 +468,7 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("util_notify", util_notify_mod);
     // RPG Maker MV/MZ asset decryption (M3 mod tooling) — pure, unit-tested.
     const util_rpgm_crypt_mod = mod(b, "util_rpgm_crypt", "src/util/rpgm_crypt.zig", target, optimize);
+    ui_mod.addImport("util_rpgm_crypt", util_rpgm_crypt_mod);
     const util_ratelimit_mod = mod(b, "util_ratelimit", "src/util/ratelimit.zig", target, optimize);
     // One-shot HTTP helper consults the per-host limiter to space external requests.
     util_http_mod.addImport("util_ratelimit", util_ratelimit_mod);
