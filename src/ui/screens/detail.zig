@@ -17,6 +17,7 @@ const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
 const comp = @import("ui_comp");
+const tokens = @import("ui_tokens");
 
 const Frame = types.Frame;
 const helpTextColor = components.helpTextColor;
@@ -1357,11 +1358,13 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
     });
     defer row.deinit();
 
-    const launch_fill: dvui.Color = .{ .r = 0xFF, .g = 0x33, .b = 0x77 };
-    const launch_hover: dvui.Color = .{ .r = 0xFF, .g = 0x66, .b = 0xA0 };
-    const launch_press: dvui.Color = .{ .r = 0xCC, .g = 0x29, .b = 0x5E };
-    const launch_fill_off: dvui.Color = .{ .r = 0x3A, .g = 0x22, .b = 0x2A };
-    const launch_text_off: dvui.Color = .{ .r = 0x80, .g = 0x60, .b = 0x70 };
+    const tk = tokens.active;
+    const launch_fill: dvui.Color = tokens.toDvui(tk.acc, dvui.Color);
+    const launch_hover: dvui.Color = tokens.toDvui(tk.acc.lerp(.{}, 0.20), dvui.Color); // toward white
+    const launch_press: dvui.Color = tokens.toDvui(tk.acc_dim, dvui.Color);
+    const launch_fill_off: dvui.Color = tokens.toDvui(tk.bg3, dvui.Color);
+    const launch_text_off: dvui.Color = tokens.toDvui(tk.ink3, dvui.Color);
+    const launch_text: dvui.Color = tokens.toDvui(tk.ink_on_acc, dvui.Color);
 
     if (actions.isGameRunning(frame, game.f95_thread_id)) {
         if (components.iconButton(@src(), "Stop", entypo.cross, .{ .style = .err })) {
@@ -1373,7 +1376,7 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
             .color_fill = launch_fill,
             .color_fill_hover = launch_hover,
             .color_fill_press = launch_press,
-            .color_text = dvui.Color.white,
+            .color_text = launch_text,
             .color_border = launch_fill,
         } else .{
             .color_fill = launch_fill_off,
@@ -1401,7 +1404,7 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
             .color_fill = launch_fill,
             .color_fill_hover = launch_hover,
             .color_fill_press = launch_press,
-            .color_text = dvui.Color.white,
+            .color_text = launch_text,
             .color_border = launch_fill,
         })) {
             if (actions.hasAutoFetchableSource(frame, game.f95_thread_id)) {
