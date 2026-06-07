@@ -559,6 +559,10 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             if (components.iconButton(@src(), "Enable Ren'Py console", entypo.tools, .{ .gravity_y = 0.5 })) {
                 actions.enableRenpyConsole(frame, game.f95_thread_id);
             }
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            if (components.iconButton(@src(), "Extract .rpa", entypo.archive, .{ .gravity_y = 0.5 })) {
+                actions.extractRpaArchives(frame, game.f95_thread_id);
+            }
         }
     }
 
