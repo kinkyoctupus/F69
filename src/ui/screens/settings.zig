@@ -8,6 +8,7 @@ const entypo = dvui.entypo;
 const library = @import("library");
 
 const tokens = @import("ui_tokens");
+const theme_store = @import("ui_theme_store");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
@@ -87,13 +88,19 @@ pub fn settingsScreen(frame: *Frame) !bool {
 /// swatches mutate `tokens.active`; the main loop re-applies the theme each
 /// frame so changes show instantly.
 fn renderSettingsAppearance(frame: *Frame) void {
-    _ = frame;
+    var changed = false;
     dvui.labelNoFmt(@src(), "Theme preset", .{}, .{});
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 6, .w = 0, .h = 10 } });
         defer row.deinit();
-        if (style.button(@src(), "Console", .{}, .{})) tokens.active = tokens.presets.console;
-        if (style.button(@src(), "Obsidian", .{}, .{})) tokens.active = tokens.presets.obsidian;
+        if (style.button(@src(), "Console", .{}, .{})) {
+            tokens.active = tokens.presets.console;
+            changed = true;
+        }
+        if (style.button(@src(), "Obsidian", .{}, .{})) {
+            tokens.active = tokens.presets.obsidian;
+            changed = true;
+        }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
     dvui.labelNoFmt(@src(), "Accent", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
@@ -126,9 +133,11 @@ fn renderSettingsAppearance(frame: *Frame) void {
                     .ink = tokens.active.ink,
                     .accent2 = tokens.active.accent2,
                 });
+                changed = true;
             }
         }
     }
+    if (changed) theme_store.save(frame.io);
 }
 
 /// General tab — UI scale + browser path.

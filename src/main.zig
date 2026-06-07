@@ -18,6 +18,7 @@ const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const ui = @import("ui");
 const util_setting = @import("util_setting");
+const theme_store = @import("ui_theme_store");
 const build_options = @import("build_options");
 
 /// Override the stdlib's default log level so `log.debug(...)` actually
@@ -368,6 +369,13 @@ pub fn main(init: std.process.Init) !void {
     // Slider in Settings rewrites this file when the user adjusts it.
     const ui_scale_path = try std.fmt.allocPrint(gpa, "{s}/ui_scale", .{data_root});
     defer gpa.free(ui_scale_path);
+
+    // Theme: load the saved palette (if any) onto the console default before
+    // the UI builds its theme. Settings → Appearance rewrites this file.
+    const theme_path = try std.fmt.allocPrint(gpa, "{s}/theme.zon", .{data_root});
+    defer gpa.free(theme_path);
+    theme_store.setPath(theme_path);
+    theme_store.load(init.io, gpa);
     // ui_scale is clamped to [0.75, 3.0] so a bad file can't render the
     // UI unreadable.
     const initial_ui_scale: f32 = std.math.clamp(util_setting.loadFloat(f32, init.io, gpa, ui_scale_path, 1.25), 0.75, 3.0);
