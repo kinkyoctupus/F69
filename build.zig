@@ -473,6 +473,7 @@ pub fn build(b: *std.Build) void {
     // The main UI module uses the runtime theme too (consoleTheme).
     ui_mod.addImport("ui_tokens", ui_tokens_mod);
     ui_mod.addImport("util_argv", util_argv_mod);
+    ui_mod.addImport("util_reltime", util_reltime_mod);
     if (dvui_dep_opt != null) ui_mod.addImport("ui_comp", ui_comp_mod);
 
     // Theme persistence module — used by both main (load at startup) and the

@@ -15,6 +15,7 @@ const style = @import("../style.zig");
 const components = @import("../components.zig");
 const comp = @import("ui_comp");
 const tokens = @import("ui_tokens");
+const reltime = @import("util_reltime");
 
 const State = types.State;
 const Frame = types.Frame;
@@ -452,6 +453,14 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
         state.lib_filter_cache_sig = sig;
     }
     const filtered: []const u32 = state.lib_filter_cache_indices orelse &.{};
+
+    // List view = the dvui.grid table (sortable + resizable columns, its own
+    // virtual scroller). Card/grid view keeps the manual virtualization below.
+    if (state.view == .list) {
+        renderListTable(frame, games, filtered);
+        return;
+    }
+
     const total_visible: usize = filtered.len;
 
     const total_rows: usize = (total_visible + cols - 1) / cols;
@@ -958,6 +967,117 @@ fn renderGridWindow(
             });
         }
         renderCard(frame, g, layout);
+    }
+}
+
+// ----- dvui.grid-based list view (sortable / resizable columns) -----
+
+fn headerDir(state: anytype, sc: state_mod.SortColumn) dvui.GridWidget.SortDirection {
+    if (state.sort_column != sc) return .unsorted;
+    return if (state.sort_dir == .asc) .ascending else .descending;
+}
+
+fn applyHeaderSort(state: anytype, sc: state_mod.SortColumn, d: dvui.GridWidget.SortDirection) void {
+    state.sort_column = sc;
+    state.sort_dir = if (d == .descending) .desc else .asc;
+}
+
+fn colResize(state: anytype, col: usize) dvui.GridWidget.HeaderResizeWidget.InitOptions {
+    return .{ .sizes = &state.lib_col_widths, .num = col, .min_size = 50, .max_size = 800 };
+}
+
+fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
+    const state = frame.state;
+    const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
+
+    var grid = dvui.grid(@src(), .colWidths(&state.lib_col_widths), .{
+        .scroll_opts = .{ .vertical = .auto, .vertical_bar = .show },
+    }, .{ .expand = .both, .background = true });
+    defer grid.deinit();
+
+    const scroller = dvui.GridWidget.VirtualScroller.init(grid, .{
+        .total_rows = filtered.len,
+        .scroll_info = &state.lib_grid_scroll,
+    });
+    const first = scroller.startRow();
+    const last = scroller.endRow();
+
+    // headers: Name + Rating + Updated are sortable (map to the existing
+    // SortColumn); Engine + Version are display-only. All resizable.
+    {
+        var d = headerDir(state, .name);
+        if (dvui.gridHeadingSortable(@src(), grid, 0, "Name", &d, colResize(state, 0), .{})) applyHeaderSort(state, .name, d);
+    }
+    dvui.gridHeading(@src(), grid, 1, "Engine", colResize(state, 1), .{});
+    {
+        var d = headerDir(state, .rating);
+        if (dvui.gridHeadingSortable(@src(), grid, 2, "Rating", &d, colResize(state, 2), .{})) applyHeaderSort(state, .rating, d);
+    }
+    dvui.gridHeading(@src(), grid, 3, "Version", colResize(state, 3), .{});
+    {
+        var d = headerDir(state, .last_updated);
+        if (dvui.gridHeadingSortable(@src(), grid, 4, "Updated", &d, colResize(state, 4), .{})) applyHeaderSort(state, .last_updated, d);
+    }
+
+    var row = first;
+    while (row < last and row < filtered.len) : (row += 1) {
+        const g = &games[filtered[row]];
+        var cell_num = dvui.GridWidget.Cell.colRow(0, row);
+
+        // Name (click → detail)
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            dvui.labelNoFmt(@src(), g.name, .{}, .{ .gravity_y = 0.5 });
+            if (dvui.clicked(cell.data(), .{})) {
+                state.screen = .detail;
+                state.selected_thread = g.f95_thread_id;
+            }
+        }
+        // Engine
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            if (g.engine != .unknown) {
+                const fill = components.engineBadgeColor(g.engine);
+                comp.chip(@src(), .{
+                    .label = components.engineShortLabel(g.engine),
+                    .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                    .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                    .scale = 0.75,
+                }, .{ .gravity_y = 0.5, .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 }, .corner_radius = .all(2) });
+            }
+        }
+        // Rating
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            if (g.rating) |r| {
+                var b: [8]u8 = undefined;
+                const s = std.fmt.bufPrint(&b, "{d:.1}", .{r}) catch "?";
+                dvui.labelNoFmt(@src(), s, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            }
+        }
+        // Version
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            dvui.labelNoFmt(@src(), g.latest_version orelse "", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
+        // Updated
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            var ub: [16]u8 = undefined;
+            const us = reltime.ago(now_s, g.last_updated_at orelse 0, &ub);
+            dvui.labelNoFmt(@src(), us, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
     }
 }
 
