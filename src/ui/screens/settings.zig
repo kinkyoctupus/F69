@@ -806,6 +806,49 @@ fn renderSettingsDownloads(frame: *Frame) void {
             .color_text = style.labelDim(),
         });
     }
+
+    // ----- BitTorrent seed-time cap -----
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    dvui.label(@src(), "Seed time", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    components.settingsHelpText(
+        "Optional cap on how long each completed torrent keeps seeding, in minutes. 0 = no time cap " ++
+            "(seed until the ratio above is met). Applied immediately to the running daemon + in-flight torrents.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    var st_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer st_row.deinit();
+
+    dvui.label(@src(), "Minutes", .{}, .{
+        .min_size_content = .{ .w = 60, .h = 20 },
+        .gravity_y = 0.5,
+    });
+    const st_te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.aria2_seed_time_buf } }, .{
+        .min_size_content = .{ .w = 120, .h = 28 },
+        .gravity_y = 0.5,
+    });
+    st_te.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+
+    if (style.button(@src(), "Save", .{}, .{ .style = .highlight, .gravity_y = 0.5, .id_extra = 0xCEEE })) {
+        if (actions.saveAria2SeedTime(state, frame.info.aria2_seed_time_path, frame.io)) |minutes| {
+            frame.dl_mgr.setSeedTimeLive(minutes);
+            var msg_buf: [80]u8 = undefined;
+            const m = if (minutes == 0)
+                "saved — no seed-time cap"
+            else
+                std.fmt.bufPrint(&msg_buf, "saved — {d}m cap applied now", .{minutes}) catch "saved";
+            setAria2SeedRatioMsg(state, m);
+        } else |e| {
+            const m: []const u8 = switch (e) {
+                error.Empty => "minutes cannot be blank (use 0 for no cap)",
+                error.InvalidCharacter, error.Overflow => "not a valid whole number",
+                else => "save failed",
+            };
+            setAria2SeedRatioMsg(state, m);
+        }
+    }
 }
 
 fn setAria2PortMsg(state: *State, msg: []const u8) void {

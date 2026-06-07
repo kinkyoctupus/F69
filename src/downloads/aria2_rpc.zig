@@ -81,6 +81,9 @@ pub const Daemon = struct {
     /// Clamped to ≥ 2.0 by the caller — anything below is below the
     /// RPDL community "give back twice what you took" floor.
     seed_ratio: f32 = 5.0,
+    /// Daemon-wide seed-time cap in minutes; 0 = no cap. Passed as
+    /// `--seed-time` at spawn when non-zero.
+    seed_time_min: u32 = 0,
     /// 32-byte hex string + null terminator. Distinct per process.
     secret: [33]u8,
     child: ?std.process.Child = null,
@@ -112,6 +115,7 @@ pub const Daemon = struct {
         session_path: ?[]const u8,
         port: u16,
         seed_ratio: f32,
+        seed_time_min: u32,
     ) errs.Error!Daemon {
         var d: Daemon = .{
             .alloc = alloc,
@@ -121,6 +125,7 @@ pub const Daemon = struct {
             .session_path = session_path,
             .port = if (port == 0) pickRandomPort(io) else port,
             .seed_ratio = @max(seed_ratio, 2.0),
+            .seed_time_min = seed_time_min,
             .secret = undefined,
         };
         genSecret(io, &d.secret);
@@ -641,6 +646,13 @@ pub const Daemon = struct {
         defer self.alloc.free(dir_arg);
         const seed_ratio_arg = std.fmt.allocPrint(self.alloc, "--seed-ratio={d:.2}", .{self.seed_ratio}) catch return errs.Error.OutOfMemory;
         defer self.alloc.free(seed_ratio_arg);
+        // Optional seed-time cap (minutes). Omitted entirely when 0 so aria2
+        // keeps "seed until ratio" semantics.
+        var seed_time_arg: ?[]u8 = null;
+        defer if (seed_time_arg) |s| self.alloc.free(s);
+        if (self.seed_time_min > 0) {
+            seed_time_arg = std.fmt.allocPrint(self.alloc, "--seed-time={d}", .{self.seed_time_min}) catch return errs.Error.OutOfMemory;
+        }
 
         // Session args are only attached when persistence is enabled.
         // `--save-session-interval=60` makes aria2 checkpoint every
@@ -747,6 +759,7 @@ pub const Daemon = struct {
             // gated by the daemon-wide bandwidth limits above.
             "--max-concurrent-downloads=32",
         }) catch return errs.Error.OutOfMemory;
+        if (seed_time_arg) |s| argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;
         if (save_arg) |s| argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;
         if (input_arg) |s| {
             argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;

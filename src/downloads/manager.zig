@@ -58,6 +58,9 @@ pub const Manager = struct {
     /// by the UI under `<data_root>/aria2_seed_ratio`; changes take
     /// effect on the next launch (daemon-wide flag set at spawn).
     aria2_seed_ratio: f32 = 5.0,
+    /// Daemon-wide BitTorrent seed-time cap in minutes. 0 = no time cap
+    /// (the ratio governs). Persisted under `<data_root>/aria2_seed_time`.
+    aria2_seed_time_min: u32 = 0,
     /// Lazy-started on first enqueue. Owned by the Manager.
     daemon: ?aria2_rpc.Daemon = null,
     /// Optional persistence paths. When set, Manager (a) rehydrates
@@ -77,6 +80,7 @@ pub const Manager = struct {
         aria2_path: []const u8,
         aria2_port: u16,
         aria2_seed_ratio: f32,
+        aria2_seed_time_min: u32,
     ) Manager {
         return .{
             .alloc = alloc,
@@ -88,6 +92,7 @@ pub const Manager = struct {
             .aria2_path = aria2_path,
             .aria2_port = aria2_port,
             .aria2_seed_ratio = aria2_seed_ratio,
+            .aria2_seed_time_min = aria2_seed_time_min,
             .handlers = .empty,
             .jobs = std.AutoHashMap(u64, dom.Job).init(alloc),
             .job_urls = std.AutoHashMap(u64, []u8).init(alloc),
@@ -203,6 +208,7 @@ pub const Manager = struct {
                 self.aria2_session_path,
                 self.aria2_port,
                 self.aria2_seed_ratio,
+                self.aria2_seed_time_min,
             );
             log.info("aria2c daemon ready", .{});
         }
@@ -513,6 +519,7 @@ pub const Manager = struct {
     /// Apply a daemon-wide seed-time cap (minutes; 0 = no cap) live + to
     /// in-flight torrents. Same best-effort semantics as `setSeedRatioLive`.
     pub fn setSeedTimeLive(self: *Manager, minutes: u32) void {
+        self.aria2_seed_time_min = minutes;
         const daemon = if (self.daemon) |*d| d else return;
         var buf: [16]u8 = undefined;
         const mstr = std.fmt.bufPrint(&buf, "{d}", .{minutes}) catch return;
@@ -781,6 +788,7 @@ test "Manager init/deinit doesn't spawn aria2" {
         "aria2c",
         0,
         5.0,
+        0,
     );
     mgr.deinit();
 }
@@ -805,7 +813,7 @@ test "persistJobs / loadJobsJson round-trip" {
     defer alloc.free(path);
 
     // ---- write side: populate maps directly + persist ----
-    var write_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var write_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer write_mgr.deinit();
     write_mgr.jobs_json_path = path;
 
@@ -840,7 +848,7 @@ test "persistJobs / loadJobsJson round-trip" {
     try write_mgr.persistJobs();
 
     // ---- read side: fresh Manager picks up the same jobs ----
-    var read_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var read_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer read_mgr.deinit();
     read_mgr.jobs_json_path = path;
     try read_mgr.loadJobsJson();
@@ -866,7 +874,7 @@ test "loadJobsJson handles missing file" {
     const path = try env.path("missing-jobs.json");
     defer alloc.free(path);
 
-    var mgr = Manager.init(alloc, env.io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var mgr = Manager.init(alloc, env.io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer mgr.deinit();
     mgr.jobs_json_path = path;
     try mgr.loadJobsJson(); // should be a no-op, not an error

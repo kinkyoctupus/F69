@@ -189,6 +189,13 @@ pub fn main(init: std.process.Init) !void {
     const initial_aria2_seed_ratio: f32 = @max(util_setting.loadFloat(f32, init.io, gpa, aria2_seed_ratio_path, 5.0), 2.0);
     log.info("aria2 seed_ratio {d:.2}", .{initial_aria2_seed_ratio});
 
+    // aria2 seed-time cap (minutes) — `<data_root>/aria2_seed_time`. 0 = no
+    // cap (ratio governs). Applied live + at spawn via --seed-time.
+    const aria2_seed_time_path = try std.fmt.allocPrint(gpa, "{s}/aria2_seed_time", .{data_root});
+    defer gpa.free(aria2_seed_time_path);
+    const initial_aria2_seed_time: u32 = util_setting.loadInt(u32, init.io, gpa, aria2_seed_time_path, 0);
+    log.info("aria2 seed_time {d}m", .{initial_aria2_seed_time});
+
     // Downloads layout — split between `direct/` (plain HTTP) and
     // `torrents/` (BitTorrent). aria2's daemon-wide `--dir=` points at
     // `direct/`; `enqueueTorrent` overrides per-call to `torrents/`.
@@ -217,6 +224,7 @@ pub fn main(init: std.process.Init) !void {
         aria2_path,
         initial_aria2_port,
         initial_aria2_seed_ratio,
+        initial_aria2_seed_time,
     );
     defer dl_mgr.deinit();
 
@@ -518,6 +526,8 @@ pub fn main(init: std.process.Init) !void {
         .initial_aria2_port = initial_aria2_port,
         .aria2_seed_ratio_path = aria2_seed_ratio_path,
         .initial_aria2_seed_ratio = initial_aria2_seed_ratio,
+        .aria2_seed_time_path = aria2_seed_time_path,
+        .initial_aria2_seed_time = initial_aria2_seed_time,
         .auto_convert_path = auto_convert_path,
         .initial_auto_convert = initial_auto_convert,
         .auto_apply_compat_path = auto_apply_compat_path,

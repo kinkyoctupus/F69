@@ -182,6 +182,11 @@ pub fn runMainLoop(
         const sr_slice = std.fmt.bufPrint(&state.aria2_seed_ratio_buf, "{d:.1}", .{info.initial_aria2_seed_ratio}) catch state.aria2_seed_ratio_buf[0..0];
         _ = sr_slice;
     }
+    state.aria2_seed_time_persisted = info.initial_aria2_seed_time;
+    {
+        const st_slice = std.fmt.bufPrint(&state.aria2_seed_time_buf, "{d}", .{info.initial_aria2_seed_time}) catch state.aria2_seed_time_buf[0..0];
+        _ = st_slice;
+    }
 
     // Master tag list — disk first, embedded build-time snapshot as
     // first-run fallback. The user's Refresh button in Settings →

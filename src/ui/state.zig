@@ -1091,6 +1091,9 @@ pub const State = struct {
     /// Editable buffer for the Settings → Downloads seed-ratio field.
     /// Float like "5.0". Floor 2.0 enforced on Save.
     aria2_seed_ratio_buf: [16]u8 = [_]u8{0} ** 16,
+    /// Editable seed-time cap (minutes) text buffer + last-saved value.
+    aria2_seed_time_buf: [16]u8 = [_]u8{0} ** 16,
+    aria2_seed_time_persisted: u32 = 0,
     aria2_seed_ratio_persisted: f32 = 5.0,
     aria2_seed_ratio_msg_buf: [80]u8 = [_]u8{0} ** 80,
     aria2_seed_ratio_msg_len: usize = 0,

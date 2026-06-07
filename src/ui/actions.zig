@@ -88,6 +88,14 @@ pub const cancelSync = sync.cancelSync;
 pub const cancelImageQueue = sync.cancelImageQueue;
 pub const drainImageQueue = sync.drainImageQueue;
 pub const coverBytes = sync.coverBytes;
+// DIAG: cover-cache miss counter accessors (alias to a mutable global
+// can't be a `const`, so wrap). Remove with the scroll-perf probe.
+pub fn dbgCoverMisses() usize {
+    return sync.dbg_cover_misses;
+}
+pub fn dbgResetCoverMisses() void {
+    sync.dbg_cover_misses = 0;
+}
 pub const coverFullBytes = sync.coverFullBytes;
 pub const freeCoverCache = sync.freeCoverCache;
 pub const spawnCoverPrewarm = sync.spawnCoverPrewarm;
@@ -141,6 +149,7 @@ pub const persistMaxParallelImageIfDirty = common.persistMaxParallelImageIfDirty
 pub const persistMinSessionSecondsIfDirty = common.persistMinSessionSecondsIfDirty;
 pub const saveAria2Port = common.saveAria2Port;
 pub const saveAria2SeedRatio = common.saveAria2SeedRatio;
+pub const saveAria2SeedTime = common.saveAria2SeedTime;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
 pub const deleteGameAndReturn = common.deleteGameAndReturn;
 pub const refreshInstalledSet = common.refreshInstalledSet;
