@@ -530,6 +530,32 @@ pub const Daemon = struct {
         self.alloc.free(resp);
     }
 
+    /// Change a daemon-wide default option live (applies to NEW downloads).
+    /// e.g. `changeGlobalOption("seed-ratio", "3.00")`.
+    pub fn changeGlobalOption(self: *Daemon, name: []const u8, value: []const u8) errs.Error!void {
+        var body_buf: [320]u8 = undefined;
+        const body = std.fmt.bufPrint(
+            &body_buf,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"aria2.changeGlobalOption\",\"params\":[\"token:{s}\",{{\"{s}\":\"{s}\"}}]}}",
+            .{ self.secretSlice(), name, value },
+        ) catch return errs.Error.AriaInvalidResponse;
+        const resp = self.rpcRaw(body) catch |e| return e;
+        self.alloc.free(resp);
+    }
+
+    /// Change an option on a single running download (GID) — used to apply a
+    /// new seed-ratio / seed-time to torrents already in flight.
+    pub fn changeOption(self: *Daemon, gid: []const u8, name: []const u8, value: []const u8) errs.Error!void {
+        var body_buf: [384]u8 = undefined;
+        const body = std.fmt.bufPrint(
+            &body_buf,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"aria2.changeOption\",\"params\":[\"token:{s}\",\"{s}\",{{\"{s}\":\"{s}\"}}]}}",
+            .{ self.secretSlice(), gid, name, value },
+        ) catch return errs.Error.AriaInvalidResponse;
+        const resp = self.rpcRaw(body) catch |e| return e;
+        self.alloc.free(resp);
+    }
+
     /// Drop a finished/failed/removed entry from aria2's in-memory
     /// status table. Use after we've absorbed the final state into
     /// our own Job — keeps `aria2.tellActive` clean for diagnostics.

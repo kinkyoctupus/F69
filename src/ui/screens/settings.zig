@@ -770,8 +770,11 @@ fn renderSettingsDownloads(frame: *Frame) void {
 
     if (style.button(@src(), "Save", .{}, .{ .style = .highlight, .gravity_y = 0.5, .id_extra = 0xCEED })) {
         if (actions.saveAria2SeedRatio(state, frame.info.aria2_seed_ratio_path, frame.io)) |ratio| {
+            // Apply immediately to the running daemon + in-flight torrents
+            // (no restart needed); the file persists it for next launch.
+            frame.dl_mgr.setSeedRatioLive(ratio);
             var msg_buf: [80]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg_buf, "saved — {d:.1}× target active after restart", .{ratio}) catch "saved";
+            const m = std.fmt.bufPrint(&msg_buf, "saved — {d:.1}× target applied now", .{ratio}) catch "saved";
             setAria2SeedRatioMsg(state, m);
         } else |e| {
             const m: []const u8 = switch (e) {

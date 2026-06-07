@@ -489,6 +489,44 @@ pub const Manager = struct {
         if (self.jobs.getPtr(id)) |j| j.status = .cancelled;
     }
 
+    /// Apply a new seed-ratio without restarting aria2: set the daemon-wide
+    /// default (for future downloads) AND push it onto every torrent already
+    /// in flight. Updates the cached value used by the ratio-met checks.
+    /// Best-effort — a dead daemon just updates the cached value (it'll take
+    /// effect at next spawn via the persisted file).
+    pub fn setSeedRatioLive(self: *Manager, ratio: f32) void {
+        self.aria2_seed_ratio = ratio;
+        const daemon = if (self.daemon) |*d| d else return;
+        var buf: [16]u8 = undefined;
+        const rstr = std.fmt.bufPrint(&buf, "{d:.2}", .{ratio}) catch return;
+        daemon.changeGlobalOption("seed-ratio", rstr) catch |e|
+            log.warn("changeGlobalOption seed-ratio failed: {s}", .{@errorName(e)});
+        var it = self.jobs.iterator();
+        while (it.next()) |entry| {
+            const j = entry.value_ptr;
+            if (!j.is_torrent) continue;
+            const gid = self.job_gids.get(j.id) orelse continue;
+            daemon.changeOption(gid, "seed-ratio", rstr) catch {};
+        }
+    }
+
+    /// Apply a daemon-wide seed-time cap (minutes; 0 = no cap) live + to
+    /// in-flight torrents. Same best-effort semantics as `setSeedRatioLive`.
+    pub fn setSeedTimeLive(self: *Manager, minutes: u32) void {
+        const daemon = if (self.daemon) |*d| d else return;
+        var buf: [16]u8 = undefined;
+        const mstr = std.fmt.bufPrint(&buf, "{d}", .{minutes}) catch return;
+        daemon.changeGlobalOption("seed-time", mstr) catch |e|
+            log.warn("changeGlobalOption seed-time failed: {s}", .{@errorName(e)});
+        var it = self.jobs.iterator();
+        while (it.next()) |entry| {
+            const j = entry.value_ptr;
+            if (!j.is_torrent) continue;
+            const gid = self.job_gids.get(j.id) orelse continue;
+            daemon.changeOption(gid, "seed-time", mstr) catch {};
+        }
+    }
+
     /// Drop a single job from the table (any status). For non-
     /// terminal jobs we first force-stop the aria2 side, otherwise
     /// `removeDownloadResult` rejects with "in use" and aria2 happily
