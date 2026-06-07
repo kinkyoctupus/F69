@@ -319,6 +319,21 @@ pub const Manager = struct {
     /// alive).
     pub fn tick(self: *Manager) void {
         const daemon = if (self.daemon) |*d| d else return;
+
+        // Drain any WebSocket push events (no-op under HTTP). The per-job
+        // poll below is the source of truth for state; consuming the queue
+        // here keeps it bounded and surfaces completion/error events in the
+        // log the instant aria2 reports them.
+        var events: std.ArrayList(aria2_rpc.Event) = .empty;
+        defer {
+            for (events.items) |e| e.deinit(self.alloc);
+            events.deinit(self.alloc);
+        }
+        daemon.drainEvents(self.alloc, &events);
+        for (events.items) |e| {
+            log.info("aria2 push event {s} gid={s}", .{ e.method, e.gid });
+        }
+
         // Track whether any job changed status this tick, so we can
         // flush the JSON exactly once per transition batch — without
         // this the persisted status lags reality (a torrent moves
