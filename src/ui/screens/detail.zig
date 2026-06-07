@@ -194,7 +194,7 @@ pub fn detailScreen(frame: *Frame) !bool {
 // ============================================================
 
 fn renderRatingStars(rating: f32) void {
-    const accent: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const accent: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
     var n: u8 = 1;
     while (n <= 5) : (n += 1) {
         const filled = rating >= @as(f32, @floatFromInt(n)) - 0.5;
@@ -378,7 +378,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 22, .h = 22 },
                 .color_text = if (filled)
-                    dvui.Color{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                    tokens.toDvui(tokens.active.acc, dvui.Color)
                 else
                     null,
             })) {
@@ -1117,7 +1117,7 @@ fn renderInlineLineWithLinks(frame: *Frame, line: []const u8, id: u64) void {
 
     const body = dvui.Font.theme(.body);
     const bold_font = body.withWeight(.bold);
-    const link_color: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const link_color: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
 
     var cursor: usize = 0;
     while (cursor < line.len) {
@@ -1808,7 +1808,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id ^ 0xA0),
             .text = "Searching RPDL for a matching torrent…",
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = null,
             .view_link = false,
         });
@@ -1818,7 +1818,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id ^ 0xA1),
             .text = "Requesting signed URL from F95 donor DDL…",
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = null,
             .view_link = false,
         });
@@ -1829,7 +1829,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(job.id),
             .text = downloadStatusText(job),
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = downloadProgressPct(job),
             .view_link = true,
         });
@@ -1846,7 +1846,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id),
             .text = msg,
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = if (pct_opt) |p| @as(u32, p) else null,
             .view_link = false,
         });
@@ -2071,7 +2071,7 @@ fn renderRibbon(frame: *Frame, game: *const library.Game) void {
 fn renderRibbonThumb(bytes_opt: ?[]const u8, idx: usize, is_active: bool, thread_id: u64) bool {
     const id_extra: usize = (@as(usize, @intCast(thread_id)) << 8) | (idx & 0xff) | 0x10000000_0000_0000;
     const border = if (is_active)
-        dvui.Color{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+        tokens.toDvui(tokens.active.acc, dvui.Color)
     else
         dvui.Color{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
 
@@ -2344,7 +2344,7 @@ fn renderTagChips(tags: []const []const u8) void {
             .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
             .margin = .{ .x = 0, .y = 0, .w = 2, .h = 2 },
             .color_fill = .{ .r = 0x3A, .g = 0x1A, .b = 0x28 },
-            .color_border = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .color_border = tokens.toDvui(tokens.active.acc, dvui.Color),
         });
         defer chip.deinit();
         dvui.labelNoFmt(@src(), tag, .{}, .{ .font = small });
