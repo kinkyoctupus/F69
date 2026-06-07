@@ -13,6 +13,8 @@ const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const comp = @import("ui_comp");
+const tokens = @import("ui_tokens");
 
 const State = types.State;
 const Frame = types.Frame;
@@ -415,6 +417,7 @@ fn hasUnplayedUpdate(g: *const library.Game, install_v: ?[]const u8) bool {
 /// spacer of equivalent height so the scrollbar tracks correctly.
 fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []const u8) void {
     const state = frame.state;
+    actions.dbgResetCoverMisses(); // DIAG: count cover-cache misses this frame
 
     const layout = if (state.view == .grid) gridLayout() else GridLayout{
         .cols = 1,
@@ -498,6 +501,16 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
             .min_size_content = .{ .w = 1, .h = bot_spacer_h },
         });
     }
+
+    // DIAG: attribute library-scroll cost. `misses` = cover-cache
+    // thumbs re-read from disk this frame. If it tracks the rendered
+    // window size during scroll, the 64-slot cover cache is thrashing
+    // (visible cards > cap). If it stays ~0 while frames are slow, the
+    // cost is elsewhere (first-decode / layout). Remove once pinned.
+    std.log.scoped(.latency).info(
+        "lib window: view={s} cols={d} rendered={d} visible={d} cover_misses={d}",
+        .{ @tagName(state.view), cols, end_idx -| start_idx, total_visible, actions.dbgCoverMisses() },
+    );
 }
 
 fn sidebar(state: *State) void {
@@ -1022,26 +1035,19 @@ fn renderListWindow(
             const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(g.f95_thread_id) else null;
             if (hasUnplayedUpdate(g, inst_v)) {
                 _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
-                // Accent colour: bright teal-green to stand out from
-                // the engine/status pills.
-                const new_fill: dvui.Color = .{ .r = 0x00, .g = 0xBF, .b = 0xA5 };
-                var new_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                // Design B "NEW" chip — theme-following accent2 (validated comp layer).
+                const t = tokens.active;
+                comp.chip(@src(), .{
+                    .label = "NEW",
+                    .fill = t.bg2,
+                    .text = t.accent2,
+                    .border = t.line,
+                    .scale = 0.75,
+                }, .{
                     .id_extra = g.f95_thread_id ^ 0xBB22,
                     .gravity_y = 0.5,
                     .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                     .corner_radius = .all(2),
-                    .background = true,
-                    .color_fill = new_fill,
-                    .color_border = new_fill,
-                    .border = style.border_thin,
-                });
-                defer new_pill.deinit();
-                const new_body = dvui.Font.theme(.body);
-                dvui.labelNoFmt(@src(), "NEW", .{}, .{
-                    .gravity_y = 0.5,
-                    .gravity_x = 0.5,
-                    .color_text = dvui.Color.white,
-                    .font = new_body.withSize(new_body.size * 0.75),
                 });
             }
         }
