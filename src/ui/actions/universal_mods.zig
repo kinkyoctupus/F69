@@ -7,6 +7,7 @@
 const std = @import("std");
 const Io = std.Io;
 const library = @import("library");
+const installer = @import("installer");
 const file_picker = @import("util_file_picker");
 const types = @import("../types.zig");
 
@@ -83,6 +84,33 @@ pub fn doDeleteUniversalMod(frame: *Frame, id: i64, modfile_path: []const u8) vo
         Io.Dir.cwd().deleteFile(frame.io, modfile_path) catch {};
     }
     frame.state.notifyOk("Universal mod removed.");
+}
+
+/// Distribute a universal mod to every eligible game (engine match, not
+/// opted out): registers its modfile as a managed modfile on each game (with
+/// auto-preset detection), so it shows up + applies through the normal
+/// per-game mod flow. Idempotent — re-running just no-ops on duplicates.
+pub fn applyUniversalMod(frame: *Frame, mod_id: i64, engine: library.Engine, modfile_path: []const u8) void {
+    const alloc = frame.lib.alloc;
+    const ma = installer.mod_archives;
+    var applied: usize = 0;
+    for (frame.games) |*g| {
+        if (g.engine != engine) continue;
+        if (frame.lib.isUniversalModDisabled(g.f95_thread_id, mod_id) catch false) continue;
+        const res = ma.addForGame(alloc, frame.io, frame.info.mod_archives_dir, g.f95_thread_id, modfile_path) catch continue;
+        switch (res) {
+            .added => |m| {
+                ma.freeModfile(alloc, m);
+                applied += 1;
+            },
+            .duplicate => |d| {
+                ma.freeModfile(alloc, d.existing);
+                applied += 1;
+            },
+        }
+    }
+    var buf: [96]u8 = undefined;
+    frame.state.notifyOk(std.fmt.bufPrint(&buf, "Universal mod available on {d} game(s).", .{applied}) catch "Applied.");
 }
 
 fn copyFile(io: Io, alloc: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
