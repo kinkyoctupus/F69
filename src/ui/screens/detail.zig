@@ -442,6 +442,65 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             saveOrToast(frame, "game", frame.lib.upsertGame(game));
         }
     }
+
+    renderCustomLaunchRow(frame, game);
+}
+
+/// Per-install custom launch override editor (applies to the latest install).
+/// Empty fields clear the override (back to the heuristic launcher).
+fn renderCustomLaunchRow(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    if (state.launch_cfg_for_thread != game.f95_thread_id) {
+        @memset(&state.launch_exec_buf, 0);
+        @memset(&state.launch_args_buf, 0);
+        state.launch_cfg_has_install = false;
+        if (frame.lib.latestInstallForGame(game.f95_thread_id) catch null) |inst| {
+            defer frame.lib.freeInstall(inst);
+            state.launch_cfg_install_id = inst.id;
+            state.launch_cfg_has_install = true;
+            if (inst.executable) |e| {
+                const n = @min(e.len, state.launch_exec_buf.len - 1);
+                @memcpy(state.launch_exec_buf[0..n], e[0..n]);
+            }
+            if (inst.launch_args) |a| {
+                const n = @min(a.len, state.launch_args_buf.len - 1);
+                @memcpy(state.launch_args_buf[0..n], a[0..n]);
+            }
+        }
+        state.launch_cfg_for_thread = game.f95_thread_id;
+    }
+    if (!state.launch_cfg_has_install) return;
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+    });
+    defer row.deinit();
+    dvui.label(@src(), "Custom launch", .{}, .{
+        .min_size_content = .{ .w = 120, .h = 20 },
+        .gravity_y = 0.5,
+        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+    });
+    const te_exe = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_exec_buf } }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 170, .h = 26 },
+    });
+    te_exe.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    const te_args = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_args_buf } }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 170, .h = 26 },
+        .id_extra = 1,
+    });
+    te_args.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    if (style.button(@src(), "Save", .{}, .{ .gravity_y = 0.5 })) {
+        const exe = std.mem.trim(u8, std.mem.sliceTo(&state.launch_exec_buf, 0), " \t");
+        const args = std.mem.trim(u8, std.mem.sliceTo(&state.launch_args_buf, 0), " \t");
+        const id: []const u8 = &state.launch_cfg_install_id;
+        saveOrToast(frame, "launch", frame.lib.setInstallExecutable(id, if (exe.len > 0) exe else null));
+        saveOrToast(frame, "launch", frame.lib.setInstallLaunchArgs(id, if (args.len > 0) args else null));
+    }
 }
 
 fn autoUpdateOverrideLabels(global_default_on: bool) []const []const u8 {
