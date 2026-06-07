@@ -167,8 +167,13 @@ pub fn libraryScreen(frame: *Frame) !bool {
             .{ .id_extra = 2, .style = .highlight, .gravity_y = 0.5 }
         else
             .{ .id_extra = 2, .gravity_y = 0.5 };
+        const kanban_opts: dvui.Options = if (state.view == .kanban)
+            .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
+        else
+            .{ .id_extra = 3, .gravity_y = 0.5 };
         if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts)) state.view = .grid;
         if (components.iconOnly(@src(), "list", entypo.list, list_opts)) state.view = .list;
+        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts)) state.view = .kanban;
     }
 
     const query = state.searchSlice();
@@ -460,6 +465,11 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
         renderListTable(frame, games, filtered);
         return;
     }
+    // Kanban = one status column per DevStatus, each its own scroll.
+    if (state.view == .kanban) {
+        renderKanban(frame, games, filtered);
+        return;
+    }
 
     const total_visible: usize = filtered.len;
 
@@ -502,6 +512,7 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     switch (state.view) {
         .grid => renderGridWindow(frame, games, filtered, layout, start_idx, end_idx),
         .list => renderListWindow(frame, games, filtered, start_idx, end_idx),
+        .kanban => unreachable, // handled by the early return above
     }
 
     if (bot_spacer_h > 0.5) {
@@ -966,6 +977,115 @@ fn renderGridWindow(
                 .expand = .horizontal,
             });
         }
+        renderCard(frame, g, layout);
+    }
+}
+
+// ----- kanban view (one status column each, independently scrolled) -----
+
+/// Width of a single kanban status column.
+const KANBAN_COL_W: f32 = 244.0;
+
+/// Card layout used inside a kanban column — full-width cards stacked
+/// vertically (reuses renderCard, so the cover/title/meta match grid view).
+fn kanbanCardLayout() GridLayout {
+    const card_w: f32 = KANBAN_COL_W - 24.0; // column padding + scrollbar gutter
+    const cover_h = card_w * COVER_H_PER_W;
+    return .{ .cols = 1, .card_w = card_w, .card_h = cover_h + CARD_TEXT_CHROME_H, .cover_h = cover_h };
+}
+
+/// Status columns, left→right. `unknown` last as a catch-all bucket.
+const KANBAN_ORDER = [_]library.DevStatus{
+    .in_progress, .completed, .on_hold, .abandoned, .orphaned, .unknown,
+};
+
+fn renderKanban(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
+    // Horizontal scroll across columns; each column owns its vertical scroll
+    // (so columns scroll independently and to their own content height).
+    var hscroll = dvui.scrollArea(@src(), .{
+        .horizontal = .auto,
+        .vertical = .none,
+    }, .{ .expand = .both });
+    defer hscroll.deinit();
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .vertical });
+    defer row.deinit();
+
+    const layout = kanbanCardLayout();
+    for (KANBAN_ORDER) |st| {
+        renderKanbanColumn(frame, games, filtered, st, layout);
+    }
+}
+
+fn renderKanbanColumn(
+    frame: *Frame,
+    games: []const library.Game,
+    filtered: []const u32,
+    status: library.DevStatus,
+    layout: GridLayout,
+) void {
+    const state = frame.state;
+    const sidx: usize = @intFromEnum(status);
+
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .id_extra = sidx,
+        .min_size_content = .{ .w = KANBAN_COL_W, .h = 1 },
+        .max_size_content = .{ .w = KANBAN_COL_W, .h = 0 },
+        .expand = .vertical,
+        .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+    });
+    defer col.deinit();
+
+    // Count games in this column (for the header badge).
+    var count: usize = 0;
+    for (filtered) |gi| {
+        if (games[gi].dev_status == status) count += 1;
+    }
+
+    // Header: status chip + count.
+    {
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = sidx,
+            .expand = .horizontal,
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+        });
+        defer hdr.deinit();
+
+        const fill = components.devStatusColor(status);
+        comp.chip(@src(), .{
+            .label = components.devStatusShortLabel(status),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .scale = 0.85,
+        }, .{
+            .gravity_y = 0.5,
+            .padding = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+            .corner_radius = .all(3),
+        });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        var cbuf: [16]u8 = undefined;
+        const cstr = std.fmt.bufPrint(&cbuf, "{d}", .{count}) catch "?";
+        dvui.labelNoFmt(@src(), cstr, .{}, .{
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+    }
+
+    // Body: each column scrolls on its own.
+    state.lib_kanban_scroll[sidx].vertical = .auto;
+    var sc = dvui.scrollArea(@src(), .{
+        .scroll_info = &state.lib_kanban_scroll[sidx],
+    }, .{
+        .expand = .both,
+        .background = true,
+        .corner_radius = .all(6),
+    });
+    defer sc.deinit();
+
+    for (filtered) |gi| {
+        const g = &games[gi];
+        if (g.dev_status != status) continue;
         renderCard(frame, g, layout);
     }
 }
