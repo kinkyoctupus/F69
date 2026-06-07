@@ -9,7 +9,7 @@ const std = @import("std");
 
 pub const Ctx = struct { install: []const u8 = "", exe: []const u8 = "" };
 
-pub fn free(alloc: std.mem.Allocator, toks: [][]u8) void {
+pub fn free(alloc: std.mem.Allocator, toks: []const []const u8) void {
     for (toks) |t| alloc.free(t);
     alloc.free(toks);
 }
@@ -19,8 +19,8 @@ fn starts(hay: []const u8, needle: []const u8) bool {
 }
 
 /// Tokenize `raw` into owned argv strings. Caller frees with `free`.
-pub fn tokenize(alloc: std.mem.Allocator, raw: []const u8, ctx: Ctx) ![][]u8 {
-    var toks: std.ArrayList([]u8) = .empty;
+pub fn tokenize(alloc: std.mem.Allocator, raw: []const u8, ctx: Ctx) ![]const []const u8 {
+    var toks: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (toks.items) |t| alloc.free(t);
         toks.deinit(alloc);

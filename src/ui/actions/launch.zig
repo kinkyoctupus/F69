@@ -11,6 +11,7 @@ const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const downloads = @import("downloads");
 const version_mod = @import("util_version");
+const argv = @import("util_argv");
 const dvui = @import("dvui");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
@@ -109,7 +110,23 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     // the detected engine; `.none` means "nothing to do."
     var exe_buf: [512]u8 = undefined;
     var exe_storage: []const u8 = "";
-    if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf) == null) {
+    var custom_args: []const []const u8 = &.{};
+    var owns_custom_args = false;
+    defer if (owns_custom_args) argv.free(alloc, custom_args);
+
+    // Per-install custom launch override (installs.executable). When set, run it
+    // verbatim and skip the heuristic finder + auto-convert.
+    if (picked_install) |inst| if (inst.executable) |custom| if (custom.len > 0) {
+        exe_storage = custom;
+        const raw_args: []const u8 = inst.launch_args orelse "";
+        if (argv.tokenize(alloc, raw_args, .{ .install = install_path, .exe = custom })) |toks| {
+            custom_args = toks;
+            owns_custom_args = true;
+        } else |_| {}
+        log.info("launch: custom override '{s}' under {s}", .{ custom, install_path });
+    };
+
+    if (exe_storage.len == 0 and findLinuxLauncher(frame.io, alloc, install_path, &exe_buf) == null) {
         const conv_spec = mods_act.resolveConvertSpec(frame, install_path);
         if (conv_spec != .none) {
             state.setLaunchMsg("Converting before launch...");
@@ -124,30 +141,32 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
 
     // Second pass post-convert (or first pass when no convert was
     // needed). The launcher should exist now if everything worked.
-    if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf)) |found| {
-        exe_storage = found;
-        log.info("launch: auto-picked launcher '{s}' under {s}", .{ found, install_path });
-    } else {
-        // Nothing Linux-native on disk. Look for a Windows .exe so we
-        // can give an actionable message.
-        if (findWindowsExe(frame.io, alloc, install_path, &exe_buf)) |win_exe| {
-            var buf: [320]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                "Found Windows binary ({s}) — click Convert to translate it for Linux first.",
-                .{win_exe},
-            ) catch "Windows build — click Convert first.";
-            state.notifyErr(msg);
+    if (exe_storage.len == 0) {
+        if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf)) |found| {
+            exe_storage = found;
+            log.info("launch: auto-picked launcher '{s}' under {s}", .{ found, install_path });
         } else {
-            var buf: [384]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                "No runnable found under {s}. Either the archive didn't extract cleanly (re-download), or the install layout is non-standard (open the folder and check what's there).",
-                .{install_path},
-            ) catch "No runnable found in the install dir.";
-            state.notifyErr(msg);
+            // Nothing Linux-native on disk. Look for a Windows .exe so we
+            // can give an actionable message.
+            if (findWindowsExe(frame.io, alloc, install_path, &exe_buf)) |win_exe| {
+                var buf: [320]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "Found Windows binary ({s}) — click Convert to translate it for Linux first.",
+                    .{win_exe},
+                ) catch "Windows build — click Convert first.";
+                state.notifyErr(msg);
+            } else {
+                var buf: [384]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "No runnable found under {s}. Either the archive didn't extract cleanly (re-download), or the install layout is non-standard (open the folder and check what's there).",
+                    .{install_path},
+                ) catch "No runnable found in the install dir.";
+                state.notifyErr(msg);
+            }
+            return;
         }
-        return;
     }
 
     // Sandbox config used to pull `network` / `bind_extra` from the
@@ -223,6 +242,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         .sandbox_home = sandbox_home,
         .install_path = install_path,
         .executable = exe_storage,
+        .launch_args = custom_args,
         .host = frame.info.host,
         .env_extra = launch_envs,
     };
