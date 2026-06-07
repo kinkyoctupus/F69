@@ -84,13 +84,20 @@ pub const Theme = struct {
     info: Color,
 };
 
+/// Perceived luminance (0..255) — rec601 weights. Used to choose contrasting text.
+pub fn luma(c: Color) f32 {
+    const r: f32 = @floatFromInt(c.r);
+    const g: f32 = @floatFromInt(c.g);
+    const b: f32 = @floatFromInt(c.b);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
 /// The few colors a user actually edits; the rest of the `Theme` derives from these.
 pub const Base = struct { bg: Color, accent: Color, ink: Color, accent2: Color };
 
 /// Derive a full `Theme` from a handful of base colors (the "Custom" theme path).
 pub fn fromBase(base: Base) Theme {
     const white = Color{};
-    const black = Color{ .r = 0, .g = 0, .b = 0 };
     const bg = base.bg;
     return .{
         .bg0 = bg,
@@ -103,7 +110,8 @@ pub fn fromBase(base: Base) Theme {
         .ink = base.ink,
         .ink2 = base.ink.lerp(bg, 0.30),
         .ink3 = base.ink.lerp(bg, 0.58),
-        .ink_on_acc = base.accent.lerp(black, 0.93),
+        // readable text on the accent: dark for light accents, light for dark
+        .ink_on_acc = if (luma(base.accent) > 140) Color{ .r = 8, .g = 8, .b = 8 } else Color{ .r = 245, .g = 245, .b = 245 },
         .acc = base.accent,
         .acc_dim = base.accent.lerp(bg, 0.55),
         .acc_wash = base.accent.lerp(bg, 0.88),
@@ -225,6 +233,22 @@ test "fromBase keeps the chosen colors and derives the ramps" {
     try std.testing.expect(t.ink3.r < t.ink.r and t.ink3.r > t.bg0.r);
     // accent wash is a dark, accent-tinted fill
     try std.testing.expect(t.acc_wash.r < t.acc.r);
+}
+
+test "fromBase picks readable on-accent text by accent luminance" {
+    const base = Base{
+        .bg = Color{ .r = 10, .g = 14, .b = 18 },
+        .ink = Color{ .r = 219, .g = 227, .b = 234 },
+        .accent2 = Color{ .r = 184, .g = 227, .b = 74 },
+        .accent = undefined,
+    };
+    var bright = base;
+    bright.accent = Color{ .r = 230, .g = 230, .b = 120 }; // light accent
+    try std.testing.expect(luma(fromBase(bright).ink_on_acc) < 90); // → dark text
+
+    var dark = base;
+    dark.accent = Color{ .r = 20, .g = 30, .b = 80 }; // dark accent
+    try std.testing.expect(luma(fromBase(dark).ink_on_acc) > 160); // → light text
 }
 
 test "presets.byName resolves known names, null otherwise" {
