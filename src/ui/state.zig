@@ -876,6 +876,9 @@ pub const State = struct {
     /// the game has been installed but never played). Bound to the
     /// "Unplayed updates" sidebar checkbox.
     filter_unplayed_updates: bool = false,
+    /// Library filter: only games whose dev-status changed recently (sets
+    /// `status_changed_at`). Pairs with the "status changed" chip.
+    filter_status_changed: bool = false,
     /// Snapshot cache: `thread_id → *Game` lookup map. Invalidated
     /// when the frame's `games` slice ptr or len changes (a fresh
     /// `listGames` allocation invalidates every cached pointer).
