@@ -356,7 +356,22 @@ pub const Manager = struct {
                 else => {},
             }
             const gid = self.job_gids.get(j.id) orelse continue;
-            var s = daemon.tellStatus(gid) catch continue;
+            var s = daemon.tellStatus(gid) catch |e| {
+                if (e == errs.Error.NotFound) {
+                    // aria2 no longer knows this gid (cleared after completion,
+                    // or a session-restored job whose gid changed). Drop the
+                    // gid mapping so we stop polling — and re-logging — it.
+                    if (self.job_gids.fetchRemove(j.id)) |kv| self.alloc.free(kv.value);
+                    // Keep finished work as done; treat a vanished in-flight
+                    // job as gone.
+                    j.status = switch (j.status) {
+                        .done, .seeding => .done,
+                        else => .cancelled,
+                    };
+                    any_transition = true;
+                }
+                continue;
+            };
             defer s.deinit(self.alloc);
 
             const prev_status = j.status;
