@@ -965,6 +965,14 @@ pub const State = struct {
     /// `notes_for_thread` changes. UI flushes back to DB on Save click.
     notes_buf: [4096]u8 = [_]u8{0} ** 4096,
     notes_for_thread: ?u64 = null,
+
+    /// Custom-launch editor (detail facts grid). Re-loaded from the latest
+    /// install whenever `launch_cfg_for_thread` changes; Save flushes to DB.
+    launch_exec_buf: [256]u8 = [_]u8{0} ** 256,
+    launch_args_buf: [256]u8 = [_]u8{0} ** 256,
+    launch_cfg_for_thread: u64 = 0,
+    launch_cfg_install_id: [36]u8 = [_]u8{0} ** 36,
+    launch_cfg_has_install: bool = false,
     /// Paste-area for the bookmark/thread-list importer (8 KiB cap).
     import_buf: [8192]u8 = [_]u8{0} ** 8192,
     /// Imported / skipped counts shown to the user post-import.
