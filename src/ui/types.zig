@@ -13,6 +13,7 @@
 // No file imports `ui.zig`, so there are no module cycles.
 
 const std = @import("std");
+const tokens = @import("ui_tokens");
 const library = @import("library");
 const f95 = @import("f95");
 const f95_indexer = @import("f95_indexer");
@@ -268,6 +269,37 @@ pub const RuntimeInfo = struct {
 /// Pink palette. Hot rose for focus/highlight, deep wine for text-select,
 /// muted plum borders. Tuned to look at home on Adwaita Dark; Light mode
 /// gets a slightly toned-down version for legibility on white.
+/// Design B ("Console") dvui theme, sourced from the runtime `tokens.active`
+/// palette so it follows the user-chosen theme. Replaces pinkTheme as the
+/// installed theme. (Fonts stay adwaita's for now — bundling Archivo/IBM Plex
+/// is a separate step.)
+pub fn consoleTheme(scheme: anytype) dvui.Theme {
+    _ = scheme;
+    const k = tokens.active;
+    const tc = struct {
+        fn f(col: tokens.Color) dvui.Color {
+            return tokens.toDvui(col, dvui.Color);
+        }
+    }.f;
+    var t = dvui.Theme.builtin.adwaita_dark;
+    t.name = "f69 console";
+    t.dark = true;
+    t.focus = tc(k.acc);
+    t.text_select = tc(k.acc_wash);
+    t.fill = tc(k.bg1);
+    t.fill_hover = tc(k.bg2);
+    t.fill_press = tc(k.bg3);
+    t.text = tc(k.ink);
+    t.text_hover = tc(k.ink);
+    t.text_press = tc(k.ink);
+    t.border = tc(k.line);
+    t.control = .{ .fill = tc(k.bg2), .fill_hover = tc(k.bg3), .fill_press = tc(k.bg3), .text = tc(k.ink), .border = tc(k.line) };
+    t.window = .{ .fill = tc(k.bg0), .text = tc(k.ink), .border = tc(k.line) };
+    t.highlight = .{ .fill = tc(k.acc), .fill_hover = tc(k.acc), .fill_press = tc(k.acc_dim), .text = tc(k.ink_on_acc), .border = tc(k.acc) };
+    t.err = .{ .fill = tc(k.bg2), .text = tc(k.danger), .border = tc(k.line) };
+    return t;
+}
+
 pub fn pinkTheme(scheme: anytype) dvui.Theme {
     _ = scheme; // dvui.Theme has no built-in light variant of our pink
     // yet — keep dark base. Phase 1.5: per-scheme palette.
