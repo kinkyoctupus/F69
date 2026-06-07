@@ -230,7 +230,7 @@ pub fn tabButton(label: []const u8, active: bool) bool {
 /// prose-under-heading slots. `dvui.label` doesn't wrap — long
 /// explanations overflow the panel at narrow window widths. Using
 /// `textLayout` with `.expand = .horizontal` lets the text reflow.
-pub const HELP_TEXT_COLOR: dvui.Color = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 };
+pub fn helpTextColor() dvui.Color { return style.labelDim(); }
 
 pub fn settingsHelpText(text: []const u8) void {
     // dvui's textLayout draws a selection / focus ring by default
@@ -250,8 +250,8 @@ pub fn settingsHelpText(text: []const u8) void {
         .expand = .horizontal,
         .background = false,
         .border = .all(0),
-        .color_border = HELP_TEXT_COLOR,
-        .color_text = HELP_TEXT_COLOR,
+        .color_border = helpTextColor(),
+        .color_text = helpTextColor(),
     });
     defer tl.deinit();
     tl.addText(text, .{});
@@ -338,7 +338,7 @@ pub fn renderLoginPopup(frame: *Frame) void {
                 "donor-tier downloads; RPDL is a community-run torrent " ++
                 "mirror that f69 falls back to when DDL isn't available.",
             .{},
-            .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
+            .{ .expand = .horizontal, .color_text = helpTextColor() },
         );
     }
 
@@ -442,7 +442,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
         });
         defer log_box.deinit();
         dvui.labelNoFmt(@src(), "Log", .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
 
@@ -461,7 +461,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
         defer scroll.deinit();
         const log_text = state.launch_diag_log_buf[0..state.launch_diag_log_len];
         if (log_text.len == 0) {
-            dvui.label(@src(), "(no further detail)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.label(@src(), "(no further detail)", .{}, .{ .color_text = helpTextColor() });
         } else {
             // `labelNoFmt` is single-line and clips at the right edge.
             // `textLayout` wraps long lines + handles user text
@@ -573,7 +573,7 @@ fn renderF95LoginCard(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, .{});
     if (!state.login_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = helpTextColor() });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -631,7 +631,7 @@ fn renderRpdlLoginCard(frame: *Frame) void {
             "an F95 download has no DDL — sign in if you have an account, " ++
             "or create one at dl.rpdl.net.",
         .{},
-        .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
+        .{ .expand = .horizontal, .color_text = helpTextColor() },
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -644,7 +644,7 @@ fn renderRpdlLoginCard(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, .{});
     if (!state.rpdl_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = helpTextColor() });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -779,7 +779,7 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
                 dvui.labelNoFmt(@src(), e.old_version, .{}, .{
                     .id_extra = e.thread_id,
                     .gravity_y = 0.5,
-                    .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+                    .color_text = style.labelDim(),
                 });
                 _ = dvui.spacer(@src(), .{ .id_extra = e.thread_id, .min_size_content = .{ .w = 6, .h = 1 } });
                 dvui.icon(@src(), "diff-arrow", entypo.arrow_right, .{}, .{
@@ -941,7 +941,7 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
         .err => "[x] ",
     };
     const text_color: dvui.Color = switch (t.kind) {
-        .info => HELP_TEXT_COLOR,
+        .info => helpTextColor(),
         .success => .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
         .warn => .{ .r = 0xE0, .g = 0xC0, .b = 0x70 },
         .err => .{ .r = 0xFF, .g = 0x80, .b = 0x80 },

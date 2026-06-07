@@ -64,6 +64,11 @@ pub fn cardFill() dvui.Color {
     return tokens.toDvui(tokens.active.bg1, dvui.Color);
 }
 
+/// Muted label / field-caption text — follows the active theme.
+pub fn labelDim() dvui.Color {
+    return tokens.toDvui(tokens.active.ink3, dvui.Color);
+}
+
 /// Letterbox / cover-empty fill behind aspect-preserved images.
 pub const letterbox_fill: dvui.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00 };
 

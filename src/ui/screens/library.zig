@@ -700,7 +700,7 @@ fn sidebar(state: *State) void {
                 dvui.label(@src(),
                     "Master tag list not refreshed yet. Open Settings → Library → Tags → Refresh.",
                     .{},
-                    .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } },
+                    .{ .color_text = style.labelDim() },
                 );
             } else {
                 renderTagCheckboxFilter(state);
@@ -797,7 +797,7 @@ fn renderTagCheckboxFilter(state: *State) void {
     dvui.label(@src(),
         "Click to cycle: off → include → exclude → off",
         .{},
-        .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } },
+        .{ .color_text = style.labelDim() },
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
 
@@ -854,7 +854,7 @@ fn renderTagCheckboxFilter(state: *State) void {
         var more_buf: [80]u8 = undefined;
         const more = std.fmt.bufPrint(&more_buf, "showing first {d} matches — narrow with the filter above", .{HARD_CAP}) catch "…";
         dvui.labelNoFmt(@src(), more, .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -1274,7 +1274,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         dvui.labelNoFmt(@src(), dev, .{}, .{
             .expand = .horizontal,
             .max_size_content = .{ .w = 0, .h = 14 },
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
             .font = dev_font,
             .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
