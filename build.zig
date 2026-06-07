@@ -476,6 +476,13 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("util_reltime", util_reltime_mod);
     if (dvui_dep_opt != null) ui_mod.addImport("ui_comp", ui_comp_mod);
 
+    // Per-engine palette — pure (library.Engine → tokens.Color); the
+    // distinctness property is unit-tested here.
+    const ui_engine_palette_mod = mod(b, "ui_engine_palette", "src/ui/engine_palette.zig", target, optimize);
+    ui_engine_palette_mod.addImport("library", library_mod);
+    ui_engine_palette_mod.addImport("ui_tokens", ui_tokens_mod);
+    ui_mod.addImport("ui_engine_palette", ui_engine_palette_mod);
+
     // Theme persistence module — used by both main (load at startup) and the
     // settings screen (save on change).
     const ui_theme_store_mod = mod(b, "ui_theme_store", "src/ui/theme_store.zig", target, optimize);
@@ -488,6 +495,7 @@ pub fn build(b: *std.Build) void {
     const test_targets = [_]*std.Build.Module{
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
         util_reltime_mod,  ui_comp_mod,       ui_theme_store_mod,  util_ratelimit_mod,
+        ui_engine_palette_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,

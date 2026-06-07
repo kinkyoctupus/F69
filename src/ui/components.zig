@@ -14,6 +14,7 @@ const state_mod = @import("state.zig");
 const actions = @import("actions.zig");
 const style = @import("style.zig");
 const tokens = @import("ui_tokens");
+const engine_palette = @import("ui_engine_palette");
 
 const Frame = types.Frame;
 
@@ -85,23 +86,8 @@ pub fn devStatusColor(s: library.DevStatus) dvui.Color {
 /// branding (Ren'Py teal, Unity dark, Unreal navy, etc.) while staying
 /// distinguishable at chip scale on top of an arbitrary cover image.
 pub fn engineBadgeColor(e: library.Engine) dvui.Color {
-    return switch (e) {
-        .renpy => .{ .r = 0x12, .g = 0x6E, .b = 0x82 }, // teal
-        .rpgm_mv => .{ .r = 0xD8, .g = 0x4A, .b = 0x2C }, // RPG-Maker red
-        .rpgm_mz => .{ .r = 0xC0, .g = 0x39, .b = 0x4F }, // crimson
-        .rpgm_vx => .{ .r = 0x9E, .g = 0x35, .b = 0x6F }, // mauve
-        .unity => .{ .r = 0x33, .g = 0x33, .b = 0x33 }, // graphite
-        .unreal => .{ .r = 0x1E, .g = 0x2D, .b = 0x4A }, // navy
-        .html => .{ .r = 0xE3, .g = 0x4F, .b = 0x26 }, // HTML5 orange
-        .flash => .{ .r = 0xC2, .g = 0x18, .b = 0x18 }, // red
-        .java => .{ .r = 0xB0, .g = 0x6A, .b = 0x1A }, // amber-brown
-        .wolf_rpg => .{ .r = 0x3E, .g = 0x7C, .b = 0x47 }, // forest green
-        .qsp => .{ .r = 0x6A, .g = 0x3C, .b = 0x9E }, // purple
-        .tyranobuilder => .{ .r = 0xC9, .g = 0xA2, .b = 0x27 }, // gold
-        .twine => .{ .r = 0x55, .g = 0x86, .b = 0x55 }, // sage
-        .other => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey
-        .unknown => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey (unused — gated above)
-    };
+    const c = engine_palette.badgeColor(e);
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
 }
 
 /// Toolbar icon size — pinned to the global style so every icon
