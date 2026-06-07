@@ -1103,10 +1103,12 @@ pub fn shouldSandbox(state: *const State, game: *const library.Game) bool {
     };
 }
 
-/// Resolve the effective auto-update decision for `game`. Twin of
-/// `shouldSandbox`: `.always` / `.never` wins; `.use_default` falls
-/// back to `state.auto_update_default`.
+/// Resolve the effective auto-update decision for `game`. A version pin
+/// wins over everything — a pinned game is held on its version and never
+/// auto-updated (the user clears the pin to resume tracking). Otherwise:
+/// `.always` / `.never` wins; `.use_default` falls back to the global.
 pub fn shouldAutoUpdate(state: *const State, game: *const library.Game) bool {
+    if (game.pinned_version != null) return false;
     return switch (game.auto_update) {
         .always => true,
         .never => false,

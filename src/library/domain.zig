@@ -252,6 +252,10 @@ pub const Game = struct {
     /// Compared with `util_version.compare`. NULL means the user
     /// has never logged a played session against this game.
     last_played_version: ?[]const u8 = null,
+    /// User-pinned version. When set, the game is held here: auto-update is
+    /// suppressed (a newer release shows as available but isn't downloaded
+    /// automatically). Cleared by a manual update. NULL = track latest.
+    pinned_version: ?[]const u8 = null,
 
     pub fn weightedRating(self: *const Game, library_mean: f32, prior_weight: f32) ?f32 {
         const r = self.rating orelse return null;
