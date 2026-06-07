@@ -990,13 +990,13 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
     const state = frame.state;
     const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
 
+    // `.given` must be set on the scroll-info STRUCT: GridWidget only copies
+    // scroll_opts.vertical onto its body scroll-info when no scroll_info is
+    // passed. With `.given`, the body honors the virtual_size the
+    // VirtualScroller computes from the full row count (full-length scrollbar).
+    state.lib_grid_scroll.vertical = .given;
     var grid = dvui.grid(@src(), .colWidths(&state.lib_col_widths), .{
-        // The body scroll area and the VirtualScroller below MUST share the
-        // same scroll_info, else viewport.h stays 0 and only 1 row renders.
-        // `.given`: honor the virtual_size the VirtualScroller computes from the
-        // full row count. `.auto` would resize to only the rendered rows, so the
-        // scrollbar thumb wouldn't reflect the full list.
-        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical = .given, .vertical_bar = .show },
+        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical_bar = .show },
     }, .{ .expand = .both, .background = true });
     defer grid.deinit();
 
@@ -1053,7 +1053,7 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                     .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
                     .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
                     .scale = 0.75,
-                }, .{ .gravity_y = 0.5, .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 }, .corner_radius = .all(2) });
+                }, .{ .expand = .horizontal, .gravity_y = 0.5, .padding = .{ .x = 3, .y = 1, .w = 3, .h = 1 }, .corner_radius = .all(2) });
             }
         }
         // Rating
