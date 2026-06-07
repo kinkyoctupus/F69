@@ -1141,6 +1141,13 @@ fn colResize(state: anytype, col: usize) dvui.GridWidget.HeaderResizeWidget.Init
     return .{ .sizes = &state.lib_col_widths, .num = col, .min_size = 50, .max_size = 800 };
 }
 
+/// Open the detail screen for a game. Called from every list-table cell so
+/// the whole row is clickable, not just the Name cell.
+fn goDetail(state: anytype, g: *const library.Game) void {
+    state.screen = .detail;
+    state.selected_thread = g.f95_thread_id;
+}
+
 fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
     const state = frame.state;
     const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
@@ -1184,16 +1191,46 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
         const g = &games[filtered[row]];
         var cell_num = dvui.GridWidget.Cell.colRow(0, row);
 
-        // Name (click → detail)
+        // Name: progress dot + name + NEW chip (whole row clickable).
         {
             defer cell_num.col_num += 1;
             var cell = grid.bodyCell(@src(), cell_num, .{});
             defer cell.deinit();
-            dvui.labelNoFmt(@src(), g.name, .{}, .{ .gravity_y = 0.5 });
-            if (dvui.clicked(cell.data(), .{})) {
-                state.screen = .detail;
-                state.selected_thread = g.f95_thread_id;
+            {
+                var nrow = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .id_extra = g.f95_thread_id,
+                    .expand = .horizontal,
+                    .gravity_y = 0.5,
+                });
+                defer nrow.deinit();
+
+                const sc = components.completionStatusColor(g.completion_status);
+                comp.dot(@src(), .{ .r = sc.r, .g = sc.g, .b = sc.b, .a = sc.a }, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 0, .y = 0, .w = 7, .h = 0 },
+                });
+                dvui.labelNoFmt(@src(), g.name, .{}, .{ .gravity_y = 0.5 });
+
+                const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(g.f95_thread_id) else null;
+                if (hasUnplayedUpdate(g, inst_v)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    const t = tokens.active;
+                    comp.chip(@src(), .{
+                        .label = "NEW",
+                        .fill = t.bg2,
+                        .text = t.accent2,
+                        .border = t.line,
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0xBB22,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
             }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
         // Engine
         {
@@ -1217,17 +1254,34 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                     .corner_radius = .all(3),
                 });
             }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
-        // Rating
+        // Rating (5 stars, filled to the rounded score)
         {
             defer cell_num.col_num += 1;
             var cell = grid.bodyCell(@src(), cell_num, .{});
             defer cell.deinit();
             if (g.rating) |r| {
-                var b: [8]u8 = undefined;
-                const s = std.fmt.bufPrint(&b, "{d:.1}", .{r}) catch "?";
-                dvui.labelNoFmt(@src(), s, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+                var srow = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                });
+                defer srow.deinit();
+                const filled: usize = @intFromFloat(@round(std.math.clamp(r, 0, 5)));
+                const acc = tokens.toDvui(tokens.active.acc, dvui.Color);
+                const dim = style.labelDim();
+                var i: usize = 0;
+                while (i < 5) : (i += 1) {
+                    const on = i < filled;
+                    dvui.icon(@src(), "star", if (on) entypo.star else entypo.star_outlined, .{}, .{
+                        .id_extra = i,
+                        .gravity_y = 0.5,
+                        .min_size_content = .{ .w = 12, .h = 12 },
+                        .color_text = if (on) acc else dim,
+                    });
+                }
             }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
         // Version
         {
@@ -1235,6 +1289,7 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
             var cell = grid.bodyCell(@src(), cell_num, .{});
             defer cell.deinit();
             dvui.labelNoFmt(@src(), g.latest_version orelse "", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
         // Updated
         {
@@ -1244,6 +1299,7 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
             var ub: [16]u8 = undefined;
             const us = reltime.ago(now_s, g.last_updated_at orelse 0, &ub);
             dvui.labelNoFmt(@src(), us, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
     }
 }
