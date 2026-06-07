@@ -234,6 +234,102 @@ pub const Library = struct {
         ) catch return errs.Error.DatabaseError;
     }
 
+    // ----- user labels -----
+
+    /// Create a label (idempotent on name). Returns the label's id whether
+    /// it was just inserted or already existed.
+    pub fn createLabel(self: *Library, name: []const u8, color: ?[]const u8) errs.Error!i64 {
+        self.conn.inner.exec(
+            "INSERT OR IGNORE INTO user_labels (name, color) VALUES (?, ?)",
+            .{ name, color },
+        ) catch return errs.Error.DatabaseError;
+        var row = (self.conn.inner.row("SELECT id FROM user_labels WHERE name = ?", .{name}) catch
+            return errs.Error.DatabaseError) orelse return errs.Error.DatabaseError;
+        defer row.deinit();
+        return row.int(0);
+    }
+
+    pub fn renameLabel(self: *Library, id: i64, name: []const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE user_labels SET name = ? WHERE id = ?", .{ name, id }) catch
+            return errs.Error.DatabaseError;
+    }
+
+    pub fn setLabelColor(self: *Library, id: i64, color: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE user_labels SET color = ? WHERE id = ?", .{ color, id }) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// Delete a label and all its game assignments.
+    pub fn deleteLabel(self: *Library, id: i64) errs.Error!void {
+        self.conn.inner.exec("DELETE FROM game_labels WHERE label_id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM user_labels WHERE id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// All labels, name-sorted. Caller frees via `freeLabels`.
+    pub fn listLabels(self: *Library) errs.Error![]dom.UserLabel {
+        var out: std.ArrayList(dom.UserLabel) = .empty;
+        errdefer {
+            for (out.items) |l| {
+                self.alloc.free(l.name);
+                if (l.color) |c| self.alloc.free(c);
+            }
+            out.deinit(self.alloc);
+        }
+        var rows = self.conn.inner.rows(
+            "SELECT id, name, color FROM user_labels ORDER BY name COLLATE NOCASE",
+            .{},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| {
+            const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
+            errdefer self.alloc.free(name);
+            const color: ?[]u8 = if (r.nullableText(2)) |c|
+                (self.alloc.dupe(u8, c) catch return errs.Error.OutOfMemory)
+            else
+                null;
+            out.append(self.alloc, .{ .id = r.int(0), .name = name, .color = color }) catch
+                return errs.Error.OutOfMemory;
+        }
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    pub fn freeLabels(self: *Library, labels: []dom.UserLabel) void {
+        for (labels) |l| {
+            self.alloc.free(l.name);
+            if (l.color) |c| self.alloc.free(c);
+        }
+        self.alloc.free(labels);
+    }
+
+    pub fn addGameLabel(self: *Library, game_thread_id: u64, label_id: i64) errs.Error!void {
+        self.conn.inner.exec(
+            "INSERT OR IGNORE INTO game_labels (game_thread_id, label_id) VALUES (?, ?)",
+            .{ @as(i64, @intCast(game_thread_id)), label_id },
+        ) catch return errs.Error.DatabaseError;
+    }
+
+    pub fn removeGameLabel(self: *Library, game_thread_id: u64, label_id: i64) errs.Error!void {
+        self.conn.inner.exec(
+            "DELETE FROM game_labels WHERE game_thread_id = ? AND label_id = ?",
+            .{ @as(i64, @intCast(game_thread_id)), label_id },
+        ) catch return errs.Error.DatabaseError;
+    }
+
+    /// Label ids assigned to a game. Caller frees the slice via `alloc.free`.
+    pub fn labelsForGame(self: *Library, game_thread_id: u64) errs.Error![]i64 {
+        var out: std.ArrayList(i64) = .empty;
+        errdefer out.deinit(self.alloc);
+        var rows = self.conn.inner.rows(
+            "SELECT label_id FROM game_labels WHERE game_thread_id = ?",
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| out.append(self.alloc, r.int(0)) catch return errs.Error.OutOfMemory;
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
@@ -1226,6 +1322,22 @@ const migrations = [_]Migration{
         \\ALTER TABLE games ADD COLUMN pinned_version TEXT;
         ,
     },
+    .{
+        .id = 18,
+        .sql =
+        \\CREATE TABLE user_labels (
+        \\  id INTEGER PRIMARY KEY,
+        \\  name TEXT NOT NULL UNIQUE,
+        \\  color TEXT
+        \\);
+        \\CREATE TABLE game_labels (
+        \\  game_thread_id INTEGER NOT NULL,
+        \\  label_id INTEGER NOT NULL,
+        \\  PRIMARY KEY (game_thread_id, label_id)
+        \\);
+        \\CREATE INDEX game_labels_label ON game_labels(label_id);
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1668,6 +1780,60 @@ test "library: migration 16 — games.last_played_version column exists" {
     const g = (try lib.getGame(1)).?;
     defer lib.freeGame(g);
     try std.testing.expectEqual(@as(?[]const u8, null), g.last_played_version);
+}
+
+test "library: user labels create/assign/list/delete" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    const alloc = std.testing.allocator;
+
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G1" });
+    try lib.upsertGame(&.{ .f95_thread_id = 2, .name = "G2" });
+
+    const fav = try lib.createLabel("Favorites", "#1FA39A");
+    const todo = try lib.createLabel("To Play", null);
+    // Idempotent on name.
+    try std.testing.expectEqual(fav, try lib.createLabel("Favorites", null));
+
+    try lib.addGameLabel(1, fav);
+    try lib.addGameLabel(1, todo);
+    try lib.addGameLabel(2, fav);
+    try lib.addGameLabel(1, fav); // dup ignored
+
+    {
+        const ids = try lib.labelsForGame(1);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 2), ids.len);
+    }
+
+    {
+        const labels = try lib.listLabels();
+        defer lib.freeLabels(labels);
+        try std.testing.expectEqual(@as(usize, 2), labels.len);
+        // name-sorted: "Favorites" < "To Play"
+        try std.testing.expectEqualStrings("Favorites", labels[0].name);
+        try std.testing.expectEqualStrings("#1FA39A", labels[0].color.?);
+        try std.testing.expectEqual(@as(?[]const u8, null), labels[1].color);
+    }
+
+    try lib.removeGameLabel(1, todo);
+    {
+        const ids = try lib.labelsForGame(1);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 1), ids.len);
+        try std.testing.expectEqual(fav, ids[0]);
+    }
+
+    // Deleting a label cascades to assignments.
+    try lib.deleteLabel(fav);
+    {
+        const ids = try lib.labelsForGame(2);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 0), ids.len);
+        const labels = try lib.listLabels();
+        defer lib.freeLabels(labels);
+        try std.testing.expectEqual(@as(usize, 1), labels.len);
+    }
 }
 
 test "library: setPinnedVersion round-trips and clears" {

@@ -6,6 +6,16 @@
 
 const std = @import("std");
 
+/// User-defined label. Distinct from F95 `tags` (scraped) — these are the
+/// user's own organizational buckets ("favorites", "to play", "finished
+/// 100%"), assigned to games via the `game_labels` join table and usable as
+/// library filters. `color` is an optional hex string ("#1FA39A") for the chip.
+pub const UserLabel = struct {
+    id: i64,
+    name: []const u8,
+    color: ?[]const u8 = null,
+};
+
 pub const CompletionStatus = enum {
     not_started,
     in_queue,
