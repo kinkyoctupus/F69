@@ -1053,7 +1053,14 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                     .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
                     .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
                     .scale = 0.75,
-                }, .{ .expand = .horizontal, .gravity_y = 0.5, .padding = .{ .x = 3, .y = 1, .w = 3, .h = 1 }, .corner_radius = .all(2) });
+                }, .{
+                    .expand = .horizontal,
+                    .gravity_y = 0.5,
+                    // uniform gap from the column edges + taller "label" feel
+                    .margin = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
+                    .padding = .{ .x = 6, .y = 3, .w = 6, .h = 3 },
+                    .corner_radius = .all(3),
+                });
             }
         }
         // Rating
