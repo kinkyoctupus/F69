@@ -191,6 +191,7 @@ pub const presets = struct {
     pub fn byName(name: []const u8) ?Theme {
         if (std.mem.eql(u8, name, "console")) return console;
         if (std.mem.eql(u8, name, "obsidian")) return obsidian;
+        if (std.mem.eql(u8, name, "midnight")) return midnight;
         return null;
     }
 
@@ -207,6 +208,13 @@ pub const presets = struct {
         .ink = hex("#ecebe9"),  .ink2 = hex("#b6b5b0"),     .ink3 = hex("#7d7c85"),      .ink_on_acc = hex("#1a1206"),
         .acc = hex("#e8a13c"),  .acc_dim = hex("#7a5a22"),  .acc_wash = hex("#241b0d"),  .accent2 = hex("#e0567f"),
         .ok = hex("#5fb87a"),   .warn = hex("#e8a13c"),     .danger = hex("#e2604f"),    .info = hex("#5aa6d6"),
+    };
+    pub const midnight = Theme{
+        .bg0 = hex("#0b1020"),  .bg1 = hex("#11162a"),      .bg2 = hex("#181f3a"),       .bg3 = hex("#222b4d"),
+        .surface = hex("#0f1426"), .line = hex("#283256"),  .line_soft = hex("#1c2342"),
+        .ink = hex("#e6e9f5"),  .ink2 = hex("#aab2d6"),     .ink3 = hex("#6b74a0"),      .ink_on_acc = hex("#0a0f1f"),
+        .acc = hex("#6c8cff"),  .acc_dim = hex("#2f3d7a"),  .acc_wash = hex("#141a36"),  .accent2 = hex("#8be9fd"),
+        .ok = hex("#5fb87a"),   .warn = hex("#e6b24a"),     .danger = hex("#e2604f"),    .info = hex("#6c8cff"),
     };
 };
 
@@ -287,6 +295,11 @@ test "console preset carries the Design B palette" {
 
 test "obsidian preset carries the Design A accent" {
     try std.testing.expectEqual(Color{ .r = 0xe8, .g = 0xa1, .b = 0x3c, .a = 0xff }, presets.obsidian.acc);
+}
+
+test "midnight preset is dark indigo and resolves by name" {
+    try std.testing.expectEqual(Color{ .r = 0x6c, .g = 0x8c, .b = 0xff, .a = 0xff }, presets.midnight.acc);
+    try std.testing.expectEqual(presets.midnight, presets.byName("midnight").?);
 }
 
 test "Color.lerp blends each channel at t" {
