@@ -27,6 +27,7 @@ pub const Mod = dom.Mod;
 pub const ModInstall = dom.ModInstall;
 pub const CompletionStatus = dom.CompletionStatus;
 pub const Engine = dom.Engine;
+pub const UserLabel = dom.UserLabel;
 pub const DevStatus = dom.DevStatus;
 pub const CensoredState = dom.CensoredState;
 pub const SandboxOverride = dom.SandboxOverride;
