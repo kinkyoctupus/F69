@@ -104,14 +104,9 @@ pub fn runMainLoop(
     fonts.registerBundled(&win);
     fonts.scanUserFonts(&win, gpa, init.io, info.exe_dir);
     // dvui's Theme exposes four font slots: body, heading, title, mono.
-    // Point body / heading / title at the nerd font so the full UI
-    // (labels, buttons, popovers) picks up the broader glyph coverage.
-    // `font_mono` stays on the original mono family — the existing
-    // mono-font use sites (diagnostics, archive paths, etc.) are
-    // already in monospace and don't need the icon glyph set.
-    win.theme.font_body = win.theme.font_body.withFamily(fonts.DEFAULT_FAMILY);
-    win.theme.font_heading = win.theme.font_heading.withFamily(fonts.DEFAULT_FAMILY);
-    win.theme.font_title = win.theme.font_title.withFamily(fonts.DEFAULT_FAMILY);
+    // Design B: body/caption → IBM Plex Sans, heading/title → Archivo,
+    // mono → IBM Plex Mono.
+    applyDesignBFonts(&win.theme);
 
     // Library snapshot — held by runMainLoop, reloaded when the
     // importer or delete sets `state.reload_requested`.
@@ -390,10 +385,18 @@ pub fn runMainLoop(
 /// to `tokens.active` take effect live.
 fn themedForActive() dvui.Theme {
     var t = types.consoleTheme(.dark);
-    t.font_body = t.font_body.withFamily(fonts.DEFAULT_FAMILY);
-    t.font_heading = t.font_heading.withFamily(fonts.DEFAULT_FAMILY);
-    t.font_title = t.font_title.withFamily(fonts.DEFAULT_FAMILY);
+    applyDesignBFonts(&t);
     return t;
+}
+
+/// Map the four dvui theme font slots onto the bundled Design B families:
+/// Archivo for headings/titles, IBM Plex Sans for body, IBM Plex Mono for
+/// mono. Keeps sizes/weights from the base theme — only the family changes.
+fn applyDesignBFonts(t: *dvui.Theme) void {
+    t.font_body = t.font_body.withFamily(fonts.FAMILY_BODY);
+    t.font_heading = t.font_heading.withFamily(fonts.FAMILY_HEADING);
+    t.font_title = t.font_title.withFamily(fonts.FAMILY_HEADING);
+    t.font_mono = t.font_mono.withFamily(fonts.FAMILY_MONO);
 }
 
 fn guiFrame(frame: *Frame) !bool {
