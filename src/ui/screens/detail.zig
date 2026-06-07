@@ -536,6 +536,26 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         }
     }
 
+    // Engine tools — RPG Maker MV/MZ asset decryption (writes decrypted
+    // copies next to the originals; non-destructive).
+    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Tools", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+        if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{ .gravity_y = 0.5 })) {
+            actions.decryptRpgmAssets(frame, game.f95_thread_id);
+        }
+    }
+
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
