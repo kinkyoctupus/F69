@@ -749,6 +749,11 @@ pub const State = struct {
     /// decide which row range to actually render. Lives across frames
     /// so the scroll position survives toggles.
     lib_scroll_info: dvui.ScrollInfo = .{},
+    /// Library list-view dvui.grid: resizable per-column widths (the grid
+    /// mutates these on drag) + the grid's own scroll info (VirtualScroller).
+    /// Columns: Name, Engine, Rating, Version, Updated.
+    lib_col_widths: [5]f32 = .{ 360, 120, 90, 130, 120 },
+    lib_grid_scroll: dvui.ScrollInfo = .{},
     /// Last Sync action's status. Reset to `.idle` when entering detail.
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).
