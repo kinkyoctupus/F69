@@ -994,9 +994,10 @@ fn kanbanCardLayout() GridLayout {
     return .{ .cols = 1, .card_w = card_w, .card_h = cover_h + CARD_TEXT_CHROME_H, .cover_h = cover_h };
 }
 
-/// Status columns, left→right. `unknown` last as a catch-all bucket.
-const KANBAN_ORDER = [_]library.DevStatus{
-    .in_progress, .completed, .on_hold, .abandoned, .orphaned, .unknown,
+/// Kanban groups by the *player's* progress (CompletionStatus), not the
+/// game's dev state. Columns left→right follow a natural backlog→done flow.
+const KANBAN_ORDER = [_]library.CompletionStatus{
+    .not_started, .in_queue, .in_progress, .replaying, .waiting_for_update, .completed, .abandoned,
 };
 
 fn renderKanban(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
@@ -1021,7 +1022,7 @@ fn renderKanbanColumn(
     frame: *Frame,
     games: []const library.Game,
     filtered: []const u32,
-    status: library.DevStatus,
+    status: library.CompletionStatus,
     layout: GridLayout,
 ) void {
     const state = frame.state;
@@ -1039,7 +1040,7 @@ fn renderKanbanColumn(
     // Count games in this column (for the header badge).
     var count: usize = 0;
     for (filtered) |gi| {
-        if (games[gi].dev_status == status) count += 1;
+        if (games[gi].completion_status == status) count += 1;
     }
 
     // Header: status chip + count.
@@ -1051,9 +1052,9 @@ fn renderKanbanColumn(
         });
         defer hdr.deinit();
 
-        const fill = components.devStatusColor(status);
+        const fill = components.completionStatusColor(status);
         comp.chip(@src(), .{
-            .label = components.devStatusShortLabel(status),
+            .label = components.completionStatusShortLabel(status),
             .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
             .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
             .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
@@ -1072,8 +1073,15 @@ fn renderKanbanColumn(
         });
     }
 
-    // Body: each column scrolls on its own.
-    state.lib_kanban_scroll[sidx].vertical = .auto;
+    // Body: each column scrolls on its own AND is virtualized like the grid
+    // view — otherwise kanban over the whole library renders thousands of
+    // cards (with cover decodes) per frame. We render only the on-screen
+    // window plus top/bottom spacers that reserve the full scroll height.
+    const pitch: f32 = layout.card_h + CARD_CHROME_H;
+    const virtual_h: f32 = @max(@as(f32, @floatFromInt(count)) * pitch, 1.0);
+    state.lib_kanban_scroll[sidx].vertical = .given;
+    state.lib_kanban_scroll[sidx].virtual_size.h = virtual_h;
+
     var sc = dvui.scrollArea(@src(), .{
         .scroll_info = &state.lib_kanban_scroll[sidx],
     }, .{
@@ -1083,11 +1091,38 @@ fn renderKanbanColumn(
     });
     defer sc.deinit();
 
+    const vp_y: f32 = state.lib_kanban_scroll[sidx].viewport.y;
+    const vp_h: f32 = @max(state.lib_kanban_scroll[sidx].viewport.h, 1.0);
+    const overscan_px: f32 = @as(f32, @floatFromInt(OVERSCAN_ROWS)) * pitch;
+    const visible_top: f32 = @max(0.0, vp_y - overscan_px);
+    const visible_bot: f32 = vp_y + vp_h + overscan_px;
+    const start_idx: usize = @intFromFloat(@floor(visible_top / pitch));
+    const end_idx: usize = @min(count, @as(usize, @intFromFloat(@ceil(visible_bot / pitch))));
+
+    const top_h: f32 = @as(f32, @floatFromInt(@min(start_idx, count))) * pitch;
+    const rem: usize = if (end_idx < count) count - end_idx else 0;
+    const bot_h: f32 = @as(f32, @floatFromInt(rem)) * pitch;
+
+    if (top_h > 0.5) _ = dvui.spacer(@src(), .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = top_h },
+    });
+
+    // Walk the filtered set, counting matches; render only those whose
+    // match-index falls in the on-screen window.
+    var matched: usize = 0;
     for (filtered) |gi| {
         const g = &games[gi];
-        if (g.dev_status != status) continue;
+        if (g.completion_status != status) continue;
+        defer matched += 1;
+        if (matched < start_idx or matched >= end_idx) continue;
         renderCard(frame, g, layout);
     }
+
+    if (bot_h > 0.5) _ = dvui.spacer(@src(), .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = bot_h },
+    });
 }
 
 // ----- dvui.grid-based list view (sortable / resizable columns) -----
