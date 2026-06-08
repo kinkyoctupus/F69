@@ -61,6 +61,31 @@ pub fn modsScreen(frame: *Frame) !bool {
         renderModsInstallPicker(frame, game);
         renderModsBackupModePicker(frame, game);
         renderModJobBanner(frame);
+
+        // Resolver explanation — why the installed mod set won't resolve.
+        if (actions.modsPageCache(frame, game)) |cache| {
+            if (cache.resolve_explanation) |msg| {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+                var warn = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .expand = .horizontal,
+                    .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+                    .background = true,
+                    .corner_radius = .all(4),
+                    .color_fill = .{ .r = 0x3A, .g = 0x22, .b = 0x14 },
+                });
+                defer warn.deinit();
+                dvui.icon(@src(), "resolve-warn", dvui.entypo.help, .{}, .{
+                    .gravity_y = 0.5,
+                    .min_size_content = .{ .w = 14, .h = 14 },
+                    .color_text = .{ .r = 0xE0, .g = 0xA0, .b = 0x40 },
+                });
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+                dvui.labelNoFmt(@src(), msg, .{}, .{
+                    .gravity_y = 0.5,
+                    .color_text = .{ .r = 0xE6, .g = 0xC8, .b = 0x9A },
+                });
+            }
+        }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 

@@ -97,6 +97,43 @@ pub const SolveResult = union(enum) {
     }
 };
 
+/// Render a failed `SolveResult` as a one-line human explanation, or null
+/// for `.ok`. Pure — formats into the caller's buffer. Used by the mods page
+/// to tell the user *why* a mod plan won't resolve.
+pub fn explain(buf: []u8, result: SolveResult) ?[]const u8 {
+    return switch (result) {
+        .ok => null,
+        .conflict => |c| std.fmt.bufPrint(
+            buf,
+            "Conflict: '{s}' and '{s}' are incompatible ({s}).",
+            .{ c.a, c.b, @tagName(c.reason) },
+        ) catch null,
+        .missing => |m| if (m.constraint.len > 0)
+            std.fmt.bufPrint(buf, "'{s}' requires '{s}' {s}, which isn't available.", .{ m.wanted_by, m.missing_id, m.constraint }) catch null
+        else
+            std.fmt.bufPrint(buf, "'{s}' requires '{s}', which isn't available.", .{ m.wanted_by, m.missing_id }) catch null,
+        .version_mismatch => |v| std.fmt.bufPrint(
+            buf,
+            "'{s}' needs version {s} but found {s}.",
+            .{ v.mod_id, v.wanted_constraint, v.found_version },
+        ) catch null,
+        .cycle => std.fmt.bufPrint(buf, "These mods form a dependency cycle.", .{}) catch null,
+    };
+}
+
+test "explain renders each failure variant; null for ok" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expect(explain(&buf, .{ .ok = .{ .steps = &.{} } }) == null);
+    try std.testing.expectEqualStrings(
+        "'modA' requires 'modB' >=2.0, which isn't available.",
+        explain(&buf, .{ .missing = .{ .wanted_by = "modA", .missing_id = "modB", .constraint = ">=2.0", .chain = &.{} } }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "These mods form a dependency cycle.",
+        explain(&buf, .cycle).?,
+    );
+}
+
 /// Compatibility shim — collapses the explained variants into errs.
 pub fn solve(alloc: std.mem.Allocator, in: Input) errs.Error!domain.Plan {
     var r = try solveExplained(alloc, in);
