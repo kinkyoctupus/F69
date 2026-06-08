@@ -1,28 +1,36 @@
-// XDG path helpers + project-specific path conventions.
+// XDG path helpers (Windows known-folders) + project-specific path conventions.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Error = error{ NoHomeDir, OutOfMemory };
 
-/// `$XDG_CONFIG_HOME` or `$HOME/.config`. Caller frees.
+/// Config base: `%APPDATA%` on Windows; `$XDG_CONFIG_HOME` or `$HOME/.config` elsewhere. Caller frees.
 pub fn configHome(alloc: std.mem.Allocator) Error![]u8 {
+    if (builtin.os.tag == .windows) {
+        return std.process.getEnvVarOwned(alloc, "APPDATA") catch Error.NoHomeDir;
+    }
     if (std.process.getEnvVarOwned(alloc, "XDG_CONFIG_HOME")) |x| return x else |_| {}
     const h = std.process.getEnvVarOwned(alloc, "HOME") catch return Error.NoHomeDir;
     defer alloc.free(h);
     return std.fmt.allocPrint(alloc, "{s}/.config", .{h}) catch Error.OutOfMemory;
 }
 
-/// `$XDG_CACHE_HOME` or `$HOME/.cache`. Caller frees.
+/// Cache base: `%LOCALAPPDATA%` on Windows; `$XDG_CACHE_HOME` or `$HOME/.cache` elsewhere. Caller frees.
 pub fn cacheHome(alloc: std.mem.Allocator) Error![]u8 {
+    if (builtin.os.tag == .windows) {
+        return std.process.getEnvVarOwned(alloc, "LOCALAPPDATA") catch Error.NoHomeDir;
+    }
     if (std.process.getEnvVarOwned(alloc, "XDG_CACHE_HOME")) |x| return x else |_| {}
     const h = std.process.getEnvVarOwned(alloc, "HOME") catch return Error.NoHomeDir;
     defer alloc.free(h);
     return std.fmt.allocPrint(alloc, "{s}/.cache", .{h}) catch Error.OutOfMemory;
 }
 
-/// `$HOME`. Caller frees.
+/// Home dir: `%USERPROFILE%` on Windows; `$HOME` elsewhere. Caller frees.
 pub fn home(alloc: std.mem.Allocator) Error![]u8 {
-    return std.process.getEnvVarOwned(alloc, "HOME") catch Error.NoHomeDir;
+    const key = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
+    return std.process.getEnvVarOwned(alloc, key) catch Error.NoHomeDir;
 }
 
 /// `<library_root>/<game_id>/<version>/`. Caller frees.

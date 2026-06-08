@@ -3,6 +3,7 @@
 // sync / downloads / installer pipelines that surround it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.ui_actions);
 const library = @import("library");
 const recipe = @import("recipe");
@@ -269,9 +270,13 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     };
 
     if (result.pid > 0) {
-        var _now_ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
-        const now_s: i64 = _now_ts.sec;
+        // POSIX realtime clock; on Windows result.pid is always 0 (launch is M2) so this
+        // block never runs — keep it comptime-clean there.
+        const now_s: i64 = if (builtin.os.tag == .windows) 0 else blk: {
+            var _now_ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
+            break :blk _now_ts.sec;
+        };
 
         // One install lookup, reused for both install_id and version.
         // `version_owned` stays null when we have nothing to dupe — that's
@@ -1533,6 +1538,12 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
         return;
     };
     const pid = entry.pid;
+    if (builtin.os.tag == .windows) {
+        // Native game launch + stop is M2; nothing is tracked-running on Windows yet.
+        _ = m.remove(game.f95_thread_id);
+        state.setLaunchMsg("Stopping a running game isn't supported on Windows yet.");
+        return;
+    }
     std.posix.kill(@intCast(pid), .TERM) catch |e| switch (e) {
         error.ProcessNotFound => {
             // Already dead; just clean up state.
@@ -1560,6 +1571,9 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
 /// until reaped). `waitpid(WNOHANG)` both detects the exit AND
 /// reaps the zombie in a single non-blocking call.
 pub fn drainRunningGames(frame: *Frame) void {
+    // Reaps tracked game pids via waitpid — POSIX-only. Native game launch is M2 on Windows,
+    // so nothing is ever tracked-running there; skip the whole reaper (keeps std.c.* off Windows).
+    if (builtin.os.tag == .windows) return;
     if (frame.state.running_games == null) return;
     const m = runningGamesMap(frame) orelse return;
 

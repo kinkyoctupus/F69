@@ -98,7 +98,9 @@ pub fn build(b: *std.Build) void {
     util_archive_mod.linkSystemLibrary("lz4", .{});    // lz4 filter
     util_archive_mod.linkSystemLibrary("nettle", .{}); // AES / SHA / HMAC
     util_archive_mod.linkSystemLibrary("xml2", .{});   // .xar metadata
-    util_archive_mod.linkSystemLibrary("acl", .{});    // POSIX ACL restore
+    // POSIX ACL restore — no POSIX ACLs and no mingw libacl on Windows; libarchive
+    // built for mingw doesn't reference the acl symbols, so skip the link there.
+    if (target.result.os.tag != .windows) util_archive_mod.linkSystemLibrary("acl", .{}); // POSIX ACL restore
 
     // util_file_picker: Zig binding around vendored NFDe
     // (`zig-pkg/nfde/`). Wayland-correct file picker via XDG portal
@@ -186,6 +188,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // NOTE: the Windows target must be built with -Doptimize=ReleaseFast (not ReleaseSafe).
+    // ReleaseSafe enables _FORTIFY_SOURCE, which turns on MinGW's fortified <wchar.h> inlines
+    // (wcscat/wcscpy); zig 0.16 translate-c mis-translates those into an unused `extern_local_*`
+    // const that fails compilation in every @cImport (avif, SDL3, dvui). ReleaseFast avoids it.
     image_mod.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
     image_mod.linkSystemLibrary("dav1d", .{ .preferred_link_mode = .static });
 

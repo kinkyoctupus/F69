@@ -9,3 +9,9 @@ build.log
 
 # Local-only docs (restored from git history; not tracked).
 docs/
+results/
+*creds*.env
+
+# Build artifacts + local runtime state.
+dist/
+.claude/scheduled_tasks.lock
