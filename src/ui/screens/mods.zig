@@ -122,7 +122,7 @@ fn renderModsHeader(frame: *Frame, game: *const library.Game) void {
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
     if (style.button(@src(), "Manage install patterns...", .{}, .{ .gravity_y = 0.5 })) {
-        actions.openSettingsTab(state, .mod_presets);
+        actions.openSettingsTab(state, .presets);
     }
 }
 

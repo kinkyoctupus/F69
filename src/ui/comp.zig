@@ -101,6 +101,66 @@ pub fn button(src: std.builtin.SourceLocation, label: []const u8, variant: Varia
     return dvui.button(src, label, .{}, layout.override(skin).override(opts));
 }
 
+// ----- toggle switch + segmented control -----
+
+/// iOS-style on/off switch (Design B). Returns true on the frame it's clicked —
+/// caller flips the bound bool. 40×22 pill, teal when on, knob slides right.
+pub fn toggle(src: std.builtin.SourceLocation, on: bool, opts: dvui.Options) bool {
+    const t = tokens.active;
+    var track = dvui.box(src, .{ .dir = .horizontal }, (dvui.Options{
+        .background = true,
+        .color_fill = c(if (on) t.acc_wash else t.bg3),
+        .color_border = c(if (on) t.acc_dim else t.line),
+        .border = dvui.Rect.all(1),
+        .corner_radius = dvui.Rect.all(11),
+        .min_size_content = .{ .w = 40, .h = 22 },
+        .padding = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
+    }).override(opts));
+    defer track.deinit();
+    // knob pinned left (off) or right (on) via a leading/trailing spacer.
+    if (on) _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+    var knob = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = c(if (on) t.acc else t.ink3),
+        .corner_radius = dvui.Rect.all(8),
+        .min_size_content = .{ .w = 16, .h = 16 },
+        .gravity_y = 0.5,
+    });
+    knob.deinit();
+    if (!on) _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+    return dvui.clicked(track.data(), .{});
+}
+
+/// Segmented control (Design B) — a row of mutually-exclusive options. Active
+/// segment is filled with the accent. Returns the clicked index, or null.
+pub fn segmented(src: std.builtin.SourceLocation, labels: []const []const u8, active: usize, opts: dvui.Options) ?usize {
+    const t = tokens.active;
+    var row = dvui.box(src, .{ .dir = .horizontal }, (dvui.Options{
+        .background = true,
+        .color_fill = c(t.bg1),
+        .color_border = c(t.line),
+        .border = dvui.Rect.all(1),
+        .corner_radius = dvui.Rect.all(tokens.r),
+    }).override(opts));
+    defer row.deinit();
+    var hit: ?usize = null;
+    for (labels, 0..) |lab, i| {
+        const is_on = i == active;
+        if (dvui.button(@src(), lab, .{}, .{
+            .id_extra = i,
+            .background = is_on,
+            .color_fill = c(t.acc),
+            .color_text = c(if (is_on) t.ink_on_acc else t.ink2),
+            .color_border = c(t.line),
+            .border = .{ .x = if (i == 0) 0 else 1, .y = 0, .w = 0, .h = 0 },
+            .corner_radius = dvui.Rect.all(0),
+            .padding = .{ .x = 13, .y = 0, .w = 13, .h = 0 },
+            .min_size_content = .{ .w = 0, .h = 27 },
+        })) hit = i;
+    }
+    return hit;
+}
+
 // ----- progress + section header -----
 
 /// Horizontal progress bar. `frac` 0..1; `width` is the track width in px.
