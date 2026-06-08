@@ -59,7 +59,10 @@ pub fn main(init: std.process.Init) !void {
     // CLI flags — handled before any setup so `f69 --version` works
     // even if the data root can't be created (e.g. read-only mount).
     {
-        var it = init.minimal.args.iterate();
+        // iterateAllocator is the cross-platform arg iterator (the no-alloc iterate()
+        // @compileErrors on Windows/WASI, which need the command line decoded via an allocator).
+        var it = try init.minimal.args.iterateAllocator(gpa);
+        defer it.deinit();
         _ = it.next(); // skip argv[0]
         while (it.next()) |arg| {
             if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
@@ -261,7 +264,17 @@ pub fn main(init: std.process.Init) !void {
     // otherwise. Failures fall through to `.none` (Launch then surfaces
     // a clear backend-unavailable error). HostInfo carries the display
     // / audio / fontconfig env snapshot.
-    var sandbox = sandbox_mod.pickBackend(gpa, init.io, init.minimal.environ);
+    // Sandboxie Start.exe override (Windows): the persisted Settings file-picker
+    // value (<data_root>/sandboxie_path) wins; F69_SANDBOXIE_PATH env is the
+    // fallback. Both empty → detection probes %ProgramFiles%\Sandboxie-Plus\.
+    const sbie_path_file = try std.fmt.allocPrint(gpa, "{s}/sandboxie_path", .{data_root});
+    defer gpa.free(sbie_path_file);
+    const sbie_from_file = util_setting.readSingleLine(init.io, gpa, sbie_path_file) catch null;
+    defer if (sbie_from_file) |s| gpa.free(s);
+    const sbie_from_env = init.minimal.environ.getAlloc(gpa, "F69_SANDBOXIE_PATH") catch null;
+    defer if (sbie_from_env) |s| gpa.free(s);
+    const sbie_override: []const u8 = sbie_from_file orelse (sbie_from_env orelse "");
+    var sandbox = sandbox_mod.pickBackend(gpa, init.io, init.minimal.environ, sbie_override);
     defer sandbox.deinit();
     log.info("sandbox   backend={s}", .{sandbox.backendName()});
 
@@ -707,6 +720,15 @@ fn resolveExeDir(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Enviro
 fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) ![]u8 {
     // Tier 1: explicit override.
     if (environ.getAlloc(gpa, "F69_DATA_DIR")) |x| return x else |_| {}
+
+    // Windows: roaming app data at %APPDATA%\f69 — the platform convention, and independent of
+    // exe-dir resolution (which can fail when launched from a UNC/redirected path).
+    if (builtin.os.tag == .windows) {
+        if (environ.getAlloc(gpa, "APPDATA")) |appdata| {
+            defer gpa.free(appdata);
+            return std.fmt.allocPrint(gpa, "{s}/f69", .{appdata});
+        } else |_| {}
+    }
 
     const exe_dir = resolveExeDir(gpa, io, environ) catch {
         log.warn("resolveDataRoot: exe dir undeterminable; falling back to ./data", .{});

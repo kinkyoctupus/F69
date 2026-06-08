@@ -2,10 +2,13 @@
 // downloads / mod-presets / convert-presets / about.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
+const file_picker = @import("util_file_picker");
+const atomic_io = @import("util_atomic_io");
 
 const tokens = @import("ui_tokens");
 const comp = @import("ui_comp");
@@ -250,6 +253,74 @@ fn renderSandboxDefaultSection(frame: *Frame) void {
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     _ = dvui.checkbox(@src(), &state.sandbox_default, "Sandbox games by default", .{});
+
+    // Windows: let the user point at a portable / non-standard Sandboxie
+    // Start.exe when auto-detection (%ProgramFiles%) doesn't apply.
+    if (builtin.os.tag == .windows) {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 14 } });
+        const cur = frame.sandbox.sandboxiePath();
+        if (cur.len > 0) {
+            var buf: [768]u8 = undefined;
+            components.settingsHelpText(
+                std.fmt.bufPrint(&buf, "Sandboxie Start.exe in use:\n{s}", .{cur}) catch "Sandboxie Start.exe is configured.",
+            );
+        } else {
+            components.settingsHelpText(
+                "Sandboxie not detected. Install Sandboxie-Plus, or browse to a portable Start.exe below. " ++
+                    "Without it, games launch unsandboxed.",
+            );
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        if (dvui.button(@src(), "Browse to Sandboxie Start.exe\u{2026}", .{}, .{})) {
+            pickSandboxieStartExe(frame);
+        }
+        if (cur.len > 0) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+            if (dvui.button(@src(), "Clear override", .{}, .{})) {
+                clearSandboxieOverride(frame);
+            }
+        }
+    }
+}
+
+/// Windows: file-pick a Sandboxie `Start.exe` (portable / non-standard
+/// install), persist it to `<data_root>/sandboxie_path`, and hot-swap the
+/// live backend so it takes effect immediately.
+fn pickSandboxieStartExe(frame: *Frame) void {
+    const alloc = frame.lib.alloc;
+    const filters = [_]file_picker.FilterItem{.{ .name = "Sandboxie Start", .spec = "exe" }};
+    const picked = (file_picker.open(alloc, &filters, null) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "File picker failed: {s}", .{@errorName(e)}) catch "File picker failed");
+        return;
+    }) orelse return; // user cancelled
+    defer alloc.free(picked);
+
+    if (!frame.sandbox.applySandboxiePath(alloc, frame.io, picked)) {
+        var buf: [768]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "Not a usable Start.exe: {s}", .{picked}) catch "Not a usable Start.exe");
+        return;
+    }
+    // Persist so the choice survives a restart.
+    const file = std.fmt.allocPrint(alloc, "{s}/sandboxie_path", .{frame.info.data_root}) catch return;
+    defer alloc.free(file);
+    atomic_io.writeFileAtomic(frame.io, file, picked) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyWarn(std.fmt.bufPrint(&buf, "Applied for now, but couldn't save: {s}", .{@errorName(e)}) catch "Applied, but couldn't save");
+        return;
+    };
+    frame.state.notifyOk("Sandboxie Start.exe set — games will launch sandboxed.");
+}
+
+/// Windows: forget the persisted Start.exe override. Auto-detection resumes
+/// on the next launch (we don't re-probe %ProgramFiles% live — that needs the
+/// process environ, which the UI frame doesn't carry).
+fn clearSandboxieOverride(frame: *Frame) void {
+    const alloc = frame.lib.alloc;
+    const file = std.fmt.allocPrint(alloc, "{s}/sandboxie_path", .{frame.info.data_root}) catch return;
+    defer alloc.free(file);
+    std.Io.Dir.cwd().deleteFile(frame.io, file) catch {};
+    frame.state.notifyInfo("Sandboxie override cleared — auto-detect resumes on next launch.");
 }
 
 /// "Auto-convert new installs" checkbox. When on, post-install

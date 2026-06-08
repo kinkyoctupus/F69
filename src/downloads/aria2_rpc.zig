@@ -15,6 +15,7 @@
 //   defer status.deinit(alloc);
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const log = std.log.scoped(.aria2);
 const errs = @import("errors.zig");
@@ -196,30 +197,34 @@ pub const Daemon = struct {
             // kill+wait, which races with anything else waiting on the
             // same pid and panics with ECHILD). Then one blocking wait
             // reaps the corpse.
-            const pid = c.id orelse {
-                self.child = null;
-                self.freeTransports();
-                self.* = undefined;
-                return;
-            };
-            const tick = std.Io.Duration.fromMilliseconds(50);
-            const pid_usize: usize = @intCast(pid);
-            var reaped = false;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                var status: u32 = 0;
-                const ret = std.os.linux.waitpid(pid, &status, std.os.linux.W.NOHANG);
-                if (ret == pid_usize) {
-                    reaped = true;
-                    break;
+            // Linux keeps the hand-rolled non-blocking waitpid poll + direct SIGKILL
+            // (avoids std.process.Child.kill's internal kill+wait racing other waiters).
+            // Windows (HANDLE pid, no waitpid/SIGKILL): the shutdown RPC should have stopped
+            // aria2; force-kill + reap portably via std.process.Child.kill.
+            if (builtin.os.tag == .linux) {
+                if (c.id) |pid| {
+                    const tick = std.Io.Duration.fromMilliseconds(50);
+                    const pid_usize: usize = @intCast(pid);
+                    var reaped = false;
+                    var i: usize = 0;
+                    while (i < 20) : (i += 1) {
+                        var status: u32 = 0;
+                        const ret = std.os.linux.waitpid(pid, &status, std.os.linux.W.NOHANG);
+                        if (ret == pid_usize) {
+                            reaped = true;
+                            break;
+                        }
+                        std.Io.sleep(self.io, tick, .awake) catch break;
+                    }
+                    if (!reaped) {
+                        log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
+                        _ = std.os.linux.kill(pid, std.os.linux.SIG.KILL);
+                        var status: u32 = 0;
+                        _ = std.os.linux.waitpid(pid, &status, 0);
+                    }
                 }
-                std.Io.sleep(self.io, tick, .awake) catch break;
-            }
-            if (!reaped) {
-                log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
-                _ = std.os.linux.kill(pid, std.os.linux.SIG.KILL);
-                var status: u32 = 0;
-                _ = std.os.linux.waitpid(pid, &status, 0);
+            } else {
+                c.kill(self.io);
             }
             // Hand-reaped — don't let std.process.Child.wait/kill run
             // again from a destructor or stray path.
