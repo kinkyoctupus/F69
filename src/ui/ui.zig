@@ -552,18 +552,26 @@ fn guiFrame(frame: *Frame) !bool {
     screens.renderSyncBanner(frame);
 
     const t0 = types.startLatency(frame.io);
-    const result = switch (frame.state.screen) {
-        .library => screens.libraryScreen(frame),
-        .detail => screens.detailScreen(frame),
-        .settings => screens.settingsScreen(frame),
-        .import_urls => screens.importUrlsScreen(frame),
-        .import_folder => screens.importFolderScreen(frame),
-        .import_f95_review => screens.importF95CheckerReviewScreen(frame),
-        .downloads => screens.downloadsScreen(frame),
-        .diagnostics => screens.diagnosticsScreen(frame),
-        .recipe_editor => screens.recipeEditorScreen(frame),
-        .mods_for_game => screens.modsScreen(frame),
-        .universal_mods => screens.universalModsScreen(frame),
+    // Design-B shell: left icon rail (primary nav) + screen content.
+    const result = blk: {
+        var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+        defer shell.deinit();
+        screens.renderIconRail(frame);
+        var content = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
+        defer content.deinit();
+        break :blk switch (frame.state.screen) {
+            .library => screens.libraryScreen(frame),
+            .detail => screens.detailScreen(frame),
+            .settings => screens.settingsScreen(frame),
+            .import_urls => screens.importUrlsScreen(frame),
+            .import_folder => screens.importFolderScreen(frame),
+            .import_f95_review => screens.importF95CheckerReviewScreen(frame),
+            .downloads => screens.downloadsScreen(frame),
+            .diagnostics => screens.diagnosticsScreen(frame),
+            .recipe_editor => screens.recipeEditorScreen(frame),
+            .mods_for_game => screens.modsScreen(frame),
+            .universal_mods => screens.universalModsScreen(frame),
+        };
     };
     // End-of-batch sync recap popup. Sits on top of whichever screen
     // is active so the user always sees the "what changed" list,
