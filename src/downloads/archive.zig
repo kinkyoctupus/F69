@@ -1,8 +1,13 @@
 // Archive extraction.
-//   .zip / .tar.gz       → Zig stdlib (pure Zig, no FFI)
-//   .7z / .tar.bz2 /
-//   .tar.xz / .rar       → libarchive via util_archive (statically
+//   .tar.gz              → Zig stdlib (pure Zig, no FFI)
+//   .zip / .7z /
+//   .tar.bz2 / .tar.xz /
+//   .rar                 → libarchive via util_archive (statically
 //                           linked through pkgs.libarchive-static)
+//
+// .zip used to go through std.zip but that's too strict for real-world
+// F95 game zips (ZipMismatchVersionNeeded, no zip64/deflate64); libarchive
+// handles them.
 //
 // No more shellouts — `p7zip`, `unrar`, `bzip2`, `xz` CLI tools are
 // not required at runtime. libarchive's static .a bundles the
@@ -52,17 +57,6 @@ pub fn extract(
     std.Io.Dir.cwd().createDirPath(io, dest_dir) catch return errs.Error.ExtractionFailed;
 
     switch (fmt) {
-        .zip => {
-            // Need `.iterate = true` so the post-extract strip pass
-            // below can walk the top-level entries to find the
-            // wrapper folder to promote.
-            var dest = std.Io.Dir.cwd().openDir(io, dest_dir, .{ .iterate = true }) catch return errs.Error.ExtractionFailed;
-            defer dest.close(io);
-            extractZip(alloc, io, archive_path, dest, opts.strip) catch |e| {
-                log.warn("zip extract failed for {s}: {s}", .{ archive_path, @errorName(e) });
-                return errs.Error.ExtractionFailed;
-            };
-        },
         .tar_gz => {
             var dest = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return errs.Error.ExtractionFailed;
             defer dest.close(io);
@@ -71,7 +65,12 @@ pub fn extract(
                 return errs.Error.ExtractionFailed;
             };
         },
-        .sevenz, .tar_bz2, .tar_xz, .rar => {
+        // .zip routes through libarchive (not std.zip): std.zip is strict —
+        // it errors with ZipMismatchVersionNeeded on many real F95 game zips
+        // (and lacks zip64 / deflate64), while libarchive extracts them and
+        // does native path-strip. Found extracting EvasEcstasy-1.3-pc.zip
+        // (2.35 GB) on the cachyos VM. (`extractZip` kept for reference.)
+        .zip, .sevenz, .tar_bz2, .tar_xz, .rar => {
             // libarchive opens the archive itself + writes to disk
             // via its own write-disk pipeline; no Zig std.Io.Dir
             // needed. Pass dest_dir as a slice; the binding does the
