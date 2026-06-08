@@ -768,15 +768,17 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
     {
         const path = state.manualInstallPathSlice();
         const version = state.manualInstallVersionSlice();
-        if (path.len > 0 and version.len == 0) {
-            const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
-            const base_with_ext = if (slash == 0) path else path[slash + 1 ..];
-            const dot = std.mem.lastIndexOfScalar(u8, base_with_ext, '.') orelse base_with_ext.len;
-            const stem = base_with_ext[0..dot];
-            if (version_mod.extractFromTitle(stem)) |guess| {
+        // Derive the version from the archive the user pointed at, when the
+        // field is empty OR still holds the auto-filled `latest_version`
+        // placeholder. A real user edit (autofilled=false, non-empty) is
+        // never clobbered. Fixes §2.12 #10: installing an older archive
+        // while the row was pre-filled with the thread's latest version.
+        if (path.len > 0 and (version.len == 0 or state.manual_install_version_autofilled)) {
+            if (version_mod.fromArchivePath(path)) |guess| {
                 const n = @min(guess.len, state.manual_install_version_buf.len - 1);
                 @memcpy(state.manual_install_version_buf[0..n], guess[0..n]);
                 state.manual_install_version_buf[n] = 0;
+                state.manual_install_version_autofilled = false;
             }
         }
     }
@@ -803,8 +805,8 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     manualInstallPathRow(frame);
-    manualInstallRow("Version", &state.manual_install_version_buf, 2);
-    manualInstallRow("Name (optional)", &state.manual_install_name_buf, 3);
+    manualInstallRow("Version", &state.manual_install_version_buf, 2, &state.manual_install_version_autofilled);
+    manualInstallRow("Name (optional)", &state.manual_install_name_buf, 3, null);
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -871,19 +873,23 @@ fn manualInstallPathRow(frame: *Frame) void {
             const n = @min(p.len, state.manual_install_path_buf.len - 1);
             @memcpy(state.manual_install_path_buf[0..n], p[0..n]);
 
-            if (state.manualInstallVersionSlice().len == 0) {
+            // Exact recipe match by archive hash wins (authoritative) over
+            // both the latest-version placeholder and the filename guess the
+            // render block derives. Skip only when the user typed a version.
+            if (state.manualInstallVersionSlice().len == 0 or state.manual_install_version_autofilled) {
                 if (actions.lookupVersionFromArchiveSha(frame, p)) |hit| {
                     defer frame.lib.alloc.free(hit);
                     const vn = @min(hit.len, state.manual_install_version_buf.len - 1);
                     @memcpy(state.manual_install_version_buf[0..vn], hit[0..vn]);
                     state.manual_install_version_buf[vn] = 0;
+                    state.manual_install_version_autofilled = false;
                 }
             }
         }
     }
 }
 
-fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
+fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32, autofill_flag: ?*bool) void {
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = id_extra,
         .expand = .horizontal,
@@ -900,6 +906,11 @@ fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
         .min_size_content = .{ .w = 240, .h = 24 },
         .gravity_y = 0.5,
     });
+    // A keystroke in this field means the value is now a user choice —
+    // stop archive detection from overriding it.
+    if (autofill_flag) |f| {
+        if (te.text_changed) f.* = false;
+    }
     te.deinit();
 }
 

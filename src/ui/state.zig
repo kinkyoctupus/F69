@@ -834,6 +834,13 @@ pub const State = struct {
     manual_install_path_buf: [1024]u8 = [_]u8{0} ** 1024,
     manual_install_version_buf: [64]u8 = [_]u8{0} ** 64,
     manual_install_name_buf: [64]u8 = [_]u8{0} ** 64,
+    /// True while the version buffer holds an auto-filled placeholder
+    /// (the thread's `latest_version`, pre-filled by the Update flow)
+    /// rather than a value the user typed or one derived from the picked
+    /// archive. Lets archive detection override the placeholder while
+    /// never clobbering a real user edit — fixes "install older archive,
+    /// row still shows latest version" (§2.12 #10).
+    manual_install_version_autofilled: bool = false,
     /// Accumulated "version changed" entries collected during a
     /// sync-all / updates-check batch. Lazy-init ArrayList of
     /// `SyncRecapEntry` (defined in actions/sync.zig). When the batch
@@ -1773,6 +1780,7 @@ pub const State = struct {
         @memset(&self.manual_install_path_buf, 0);
         @memset(&self.manual_install_version_buf, 0);
         @memset(&self.manual_install_name_buf, 0);
+        self.manual_install_version_autofilled = false;
     }
 
     pub fn browserMsg(self: *const State) []const u8 {
