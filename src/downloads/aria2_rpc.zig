@@ -672,8 +672,31 @@ pub const Daemon = struct {
             input_arg = std.fmt.allocPrint(self.alloc, "--input-file={s}", .{sp}) catch return errs.Error.OutOfMemory;
         }
 
+        // Portable-bundle support: when a bundled glibc loader sits next to
+        // aria2c (`<dir>/lib/ld-linux-x86-64.so.2`), invoke aria2c THROUGH it
+        // with the bundle's lib/ on --library-path. The bundled aria2c keeps
+        // its build-host (nix-store) PT_INTERP, which doesn't exist on other
+        // distros, so a direct exec dies with "cannot execute: required file
+        // not found". f69 itself is launched the same way by run.sh. No-op for
+        // a system aria2c on $PATH (no sibling lib/ld-linux).
+        var loader_path: ?[]u8 = null;
+        var libpath_arg: ?[]u8 = null;
+        defer if (loader_path) |s| self.alloc.free(s);
+        defer if (libpath_arg) |s| self.alloc.free(s);
+        if (std.fs.path.dirname(self.aria2_path)) |dir| {
+            const cand = std.fmt.allocPrint(self.alloc, "{s}/lib/ld-linux-x86-64.so.2", .{dir}) catch return errs.Error.OutOfMemory;
+            if (std.Io.Dir.cwd().access(self.io, cand, .{})) |_| {
+                loader_path = cand;
+                libpath_arg = std.fmt.allocPrint(self.alloc, "{s}/lib", .{dir}) catch return errs.Error.OutOfMemory;
+                log.info("aria2c: launching via bundled loader {s}", .{cand});
+            } else |_| self.alloc.free(cand);
+        }
+
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.alloc);
+        if (loader_path) |lp| {
+            argv.appendSlice(self.alloc, &[_][]const u8{ lp, "--library-path", libpath_arg.? }) catch return errs.Error.OutOfMemory;
+        }
         argv.appendSlice(self.alloc, &[_][]const u8{
             self.aria2_path,
             "--enable-rpc=true",
