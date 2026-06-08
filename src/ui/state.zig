@@ -719,10 +719,14 @@ pub const State = struct {
     /// slider takes effect immediately. Persisted to
     /// Rebuilt once per library-screen render: every f95_thread_id
     /// that has at least one install row. Used by the grid/list-view
-    /// installed indicator and the `installed` filter. Reset each
-    /// frame the library screen rebuilds it; never referenced off
-    /// the library-screen render path.
+    /// installed indicator and the `installed` filter. Rebuilt only when
+    /// `Library.install_generation` advances (see `installed_set_gen`), not
+    /// every frame; never referenced off the library-screen render path.
     installed_set: ?*owned.InstalledSet = null,
+    /// `Library.install_generation` the `installed_set` was last built at.
+    /// The set only changes when an install is added/removed, so we skip the
+    /// per-frame SELECT + rebuild while the generation is unchanged.
+    installed_set_gen: u64 = 0,
     /// `<data_root>/ui_scale`.
     ui_scale: f32 = 1.25,
     /// Tracks the last persisted value so we don't rewrite the file
