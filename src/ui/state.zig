@@ -882,6 +882,9 @@ pub const State = struct {
     /// Library filter: only games whose dev-status changed recently (sets
     /// `status_changed_at`). Pairs with the "status changed" chip.
     filter_status_changed: bool = false,
+    /// Library filter: only games with a newer F95 release than what's
+    /// installed. Pairs with the "UPDATE" chip.
+    filter_update_available: bool = false,
     /// Snapshot cache: `thread_id → *Game` lookup map. Invalidated
     /// when the frame's `games` slice ptr or len changes (a fresh
     /// `listGames` allocation invalidates every cached pointer).
