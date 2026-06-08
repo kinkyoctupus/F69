@@ -1210,6 +1210,8 @@ pub fn openManualInstallForUpdate(state: *State, latest_version: []const u8) voi
         const n = @min(latest_version.len, state.manual_install_version_buf.len - 1);
         @memcpy(state.manual_install_version_buf[0..n], latest_version[0..n]);
         state.manual_install_version_buf[n] = 0;
+        // Placeholder, not a user choice — archive detection may override it.
+        state.manual_install_version_autofilled = true;
     }
 }
 
