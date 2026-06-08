@@ -44,48 +44,134 @@ pub fn settingsScreen(frame: *Frame) !bool {
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
-    // ----- tab bar -----
+    // ----- body: left category list + right scrollable content (Design B) -----
     {
-        var tabs = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .padding = .{ .x = 12, .y = 8, .w = 12, .h = 4 },
+        var split = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+        defer split.deinit();
+
+        // category sidebar — grouped Look / Content / System
+        {
+            var nav = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .min_size_content = .{ .w = 190, .h = 0 },
+                .expand = .vertical,
+                .background = true,
+                .color_fill = dcol(tokens.active.bg1),
+                .padding = .{ .x = 8, .y = 12, .w = 8, .h = 12 },
+            });
+            defer nav.deinit();
+            catGroup(0, "LOOK");
+            catItem(state, "Appearance", .appearance);
+            catGroup(1, "CONTENT");
+            catItem(state, "Library", .library);
+            catItem(state, "Updates", .updates);
+            catItem(state, "Downloads", .downloads);
+            catItem(state, "Games & Launch", .games_launch);
+            catGroup(2, "SYSTEM");
+            catItem(state, "Accounts", .accounts);
+            catItem(state, "Presets", .presets);
+            catItem(state, "About", .about);
+        }
+        _ = dvui.separator(@src(), .{ .expand = .vertical });
+
+        // content pane
+        var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+        defer scroll.deinit();
+        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
         });
-        defer tabs.deinit();
+        defer body.deinit();
 
-        if (components.tabButton("General", state.settings_tab == .general)) state.settings_tab = .general;
-        if (components.tabButton("Sync", state.settings_tab == .sync)) state.settings_tab = .sync;
-        if (components.tabButton("Accounts", state.settings_tab == .accounts)) state.settings_tab = .accounts;
-        if (components.tabButton("Library", state.settings_tab == .library)) state.settings_tab = .library;
-        if (components.tabButton("Downloads", state.settings_tab == .downloads)) state.settings_tab = .downloads;
-        if (components.tabButton("Mod presets", state.settings_tab == .mod_presets)) state.settings_tab = .mod_presets;
-        if (components.tabButton("Convert presets", state.settings_tab == .convert_presets)) state.settings_tab = .convert_presets;
-        if (components.tabButton("Appearance", state.settings_tab == .appearance)) state.settings_tab = .appearance;
-        if (components.tabButton("About", state.settings_tab == .about)) state.settings_tab = .about;
-    }
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-
-    // ----- body — scrollable per-tab area -----
-    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
-    defer scroll.deinit();
-
-    var body = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
-    });
-    defer body.deinit();
-
-    switch (state.settings_tab) {
-        .general => renderSettingsGeneral(frame),
-        .sync => renderSettingsSync(frame),
-        .accounts => renderSettingsAccounts(frame),
-        .library => renderSettingsLibrary(frame),
-        .downloads => renderSettingsDownloads(frame),
-        .mod_presets => renderSettingsModPresets(frame),
-        .convert_presets => renderSettingsConvertPresets(frame),
-        .appearance => renderSettingsAppearance(frame),
-        .about => renderSettingsAbout(frame),
+        switch (state.settings_tab) {
+            .appearance => renderCatAppearance(frame),
+            .library => renderSettingsLibrary(frame),
+            .updates => renderCatUpdates(frame),
+            .downloads => renderSettingsDownloads(frame),
+            .games_launch => renderCatGamesLaunch(frame),
+            .accounts => renderSettingsAccounts(frame),
+            .presets => renderCatPresets(frame),
+            .about => renderSettingsAbout(frame),
+        }
     }
 
     return true;
+}
+
+/// tokens.Color → dvui.Color (local sugar, mirrors comp.zig).
+fn dcol(col: tokens.Color) dvui.Color {
+    return tokens.toDvui(col, dvui.Color);
+}
+
+/// Small dimmed group heading in the category sidebar.
+fn catGroup(key: u32, label: []const u8) void {
+    var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .id_extra = key });
+    defer box.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    const mono = dvui.Font.theme(.mono);
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .color_text = dcol(tokens.active.ink3),
+        .padding = .{ .x = 10, .y = 0, .w = 0, .h = 5 },
+        .font = mono.withSize(mono.size * 0.82),
+    });
+}
+
+/// One category row in the sidebar. Active = accent wash + left accent bar.
+fn catItem(state: *State, label: []const u8, cat: state_mod.SettingsTab) void {
+    const t = tokens.active;
+    const on = state.settings_tab == cat;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = @intFromEnum(cat),
+        .expand = .horizontal,
+        .background = on,
+        .color_fill = dcol(t.acc_wash),
+        .border = if (on) .{ .x = 2, .y = 0, .w = 0, .h = 0 } else dvui.Rect.all(0),
+        .color_border = dcol(t.acc),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .padding = .{ .x = 10, .y = 7, .w = 10, .h = 7 },
+        .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+    });
+    defer row.deinit();
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = dcol(if (on) t.acc else t.ink2),
+    });
+    if (dvui.clicked(row.data(), .{})) state.settings_tab = cat;
+}
+
+/// Design-B labelled toggle: title + switch on one row, optional wrapping
+/// description below. Returns true the frame it's clicked (caller flips the
+/// bound bool). `key` must be unique per call site in a frame — it disambiguates
+/// the shared @src() ids (incl. the help-text parent box).
+fn toggleRow(key: u32, on: bool, title: []const u8, desc: []const u8) bool {
+    var hit = false;
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = key, .expand = .horizontal, .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 } });
+        defer row.deinit();
+        dvui.labelNoFmt(@src(), title, .{}, .{ .gravity_y = 0.5, .color_text = dcol(tokens.active.ink) });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        hit = comp.toggle(@src(), on, .{ .id_extra = key, .gravity_y = 0.5 });
+    }
+    if (desc.len > 0) {
+        var dbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .id_extra = key, .expand = .horizontal });
+        defer dbox.deinit();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 3 } });
+        components.settingsHelpText(desc);
+    }
+    return hit;
+}
+
+/// Appearance category — theme picker + UI scale.
+fn renderCatAppearance(frame: *Frame) void {
+    renderSettingsAppearance(frame);
+    settingsSectionDivider(20);
+    renderUiScaleSection(frame);
+}
+
+/// Presets category — mod-install + convert-strategy preset managers.
+fn renderCatPresets(frame: *Frame) void {
+    renderSettingsModPresets(frame);
+    settingsSectionDivider(27);
+    renderSettingsConvertPresets(frame);
 }
 
 /// Appearance tab — live theme picker (Design B). Preset buttons + accent
@@ -93,26 +179,20 @@ pub fn settingsScreen(frame: *Frame) !bool {
 /// frame so changes show instantly.
 fn renderSettingsAppearance(frame: *Frame) void {
     var changed = false;
-    dvui.labelNoFmt(@src(), "Theme preset", .{}, .{});
+    dvui.label(@src(), "Theme", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 6, .w = 0, .h = 10 } });
-        defer row.deinit();
-        const choices = .{
-            .{ "Console", tokens.presets.console },
-            .{ "Obsidian", tokens.presets.obsidian },
-            .{ "Midnight", tokens.presets.midnight },
-            .{ "Paper (light)", tokens.presets.paper },
-        };
-        inline for (choices, 0..) |ch, i| {
-            const is_active = std.meta.eql(tokens.active, ch[1]);
-            const opts: dvui.Options = if (is_active)
-                .{ .id_extra = i, .style = .highlight }
-            else
-                .{ .id_extra = i };
-            if (style.button(@src(), ch[0], .{}, opts)) {
-                tokens.active = ch[1];
-                changed = true;
-            }
+        const labels = [_][]const u8{ "Console", "Obsidian", "Midnight", "Paper" };
+        const presets = [_]tokens.Theme{ tokens.presets.console, tokens.presets.obsidian, tokens.presets.midnight, tokens.presets.paper };
+        var active_idx: usize = 0;
+        for (presets, 0..) |p, i| {
+            if (std.meta.eql(tokens.active, p)) active_idx = i;
+        }
+        var prow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 0, .w = 0, .h = 10 } });
+        defer prow.deinit();
+        if (comp.segmented(@src(), &labels, active_idx, .{})) |hit| {
+            tokens.active = presets[hit];
+            changed = true;
         }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
@@ -173,16 +253,14 @@ fn renderSettingsAppearance(frame: *Frame) void {
 }
 
 /// General tab — UI scale + browser path.
-fn renderSettingsGeneral(frame: *Frame) void {
-    renderUiScaleSection(frame);
-    settingsSectionDivider(1);
-    renderBrowserSection(frame);
-    settingsSectionDivider(8);
-    renderAutoConvertSection(frame);
-    settingsSectionDivider(9);
+/// Games & Launch category — everything about running/installing a game:
+/// sandbox, post-install convert, link-opening, playtime threshold.
+fn renderCatGamesLaunch(frame: *Frame) void {
     renderSandboxDefaultSection(frame);
-    settingsSectionDivider(10);
-    renderAutoUpdateDefaultSection(frame);
+    settingsSectionDivider(9);
+    renderAutoConvertSection(frame);
+    settingsSectionDivider(8);
+    renderBrowserSection(frame);
     settingsSectionDivider(11);
     renderMinSessionSecondsSection(frame);
 }
@@ -193,17 +271,15 @@ fn renderSettingsGeneral(frame: *Frame) void {
 /// detail-page dropdown can override this.
 fn renderAutoUpdateDefaultSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Auto-download updates", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    components.settingsHelpText(
-        "When sync finds a newer version, automatically download + install it. " ++
-            "Only fires from batch sync (Sync All / scheduled update-check), never from a single-game sync. " ++
-            "Manual installs without a recipe are skipped — they need a fresh archive to update.",
-    );
+    dvui.label(@src(), "On new versions", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.auto_update_default, "Auto-download updates on batch sync", .{});
+    if (toggleRow(1, state.auto_update_default, "Auto-download updates on batch sync", "When sync finds a newer version, download + install it automatically. Only from Sync All / scheduled checks, never a single-game sync. Manual installs without a recipe are skipped — they need a fresh archive.")) {
+        state.auto_update_default = !state.auto_update_default;
+    }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    _ = dvui.checkbox(@src(), &state.desktop_notifications, "Desktop notification when a sync finds updates", .{});
+    if (toggleRow(2, state.desktop_notifications, "Desktop notification when updates are found", "")) {
+        state.desktop_notifications = !state.desktop_notifications;
+    }
 }
 
 /// Minimum session duration (seconds) that counts as a "played" session.
@@ -245,14 +321,11 @@ fn renderMinSessionSecondsSection(frame: *Frame) void {
 /// SandboxOverride wins over this — only `.use_default` consults it.
 fn renderSandboxDefaultSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Sandbox on launch", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    components.settingsHelpText(
-        "Run games inside a sandbox by default (bwrap on Linux, Sandboxie on Windows). " ++
-            "Each game's detail page can override this with always / never.",
-    );
+    dvui.label(@src(), "Sandbox", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.sandbox_default, "Sandbox games by default", .{});
+    if (toggleRow(3, state.sandbox_default, "Sandbox games by default", "bwrap on Linux, Sandboxie on Windows. Each game's detail page can override with always / never. Falls back to unsandboxed when unavailable.")) {
+        state.sandbox_default = !state.sandbox_default;
+    }
 
     // Windows: let the user point at a portable / non-standard Sandboxie
     // Start.exe when auto-detection (%ProgramFiles%) doesn't apply.
@@ -329,29 +402,28 @@ fn clearSandboxieOverride(frame: *Frame) void {
 /// because Convert pulls SDKs and can be slow.
 fn renderAutoConvertSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Auto-convert new installs", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    components.settingsHelpText(
-        "When a download finishes and extracts, automatically run Convert (Ren'Py / RPGM Win→Linux). " ++
-            "Requires a recipe with a `convert_linux` block — games without one need manual Convert.",
-    );
+    dvui.label(@src(), "After install", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.auto_convert, "Convert new installs automatically", .{});
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    components.settingsHelpText(
-        "After Convert, scan compat recipes and apply any blockers automatically. Re-applies recipes whose bundled version has changed. All compat fixes are reversible via the Fix Compat / Undo UI.",
-    );
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    _ = dvui.checkbox(@src(), &state.auto_apply_compat, "Apply compat fixes automatically after Convert", .{});
+    if (toggleRow(4, state.auto_convert, "Convert new installs automatically", "When a download extracts, run Convert (Ren'Py / RPGM Win→Linux). Needs a recipe with a `convert_linux` block — games without one need manual Convert.")) {
+        state.auto_convert = !state.auto_convert;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    if (toggleRow(5, state.auto_apply_compat, "Apply compat fixes after Convert", "Scan compat recipes and apply blockers automatically; re-applies recipes whose bundled version changed. Reversible via Fix Compat / Undo.")) {
+        state.auto_apply_compat = !state.auto_apply_compat;
+    }
 }
 
 /// Sync tab — auto-check preferences, refresh backend toggle, the
 /// parallelism knobs, and the F95 rate-limit info row.
-fn renderSettingsSync(frame: *Frame) void {
-    renderAutoCheckSection(frame);
-    settingsSectionDivider(2);
+/// Updates category — all update-checking cadence + refresh machinery
+/// in one place: backend, schedule, auto-download/notify, concurrency.
+fn renderCatUpdates(frame: *Frame) void {
     renderRefreshBackendSection(frame);
     settingsSectionDivider(3);
+    renderAutoCheckSection(frame);
+    settingsSectionDivider(2);
+    renderAutoUpdateDefaultSection(frame);
+    settingsSectionDivider(12);
     renderParallelismSection(frame);
     settingsSectionDivider(4);
     dvui.label(@src(), "Network", .{}, .{ .style = .highlight });

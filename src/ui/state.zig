@@ -172,7 +172,7 @@ pub const LaunchFixId = enum {
     /// `state.launch_diag_compat_recipe_buf`.
     compat_recipe,
 };
-pub const SettingsTab = enum { general, sync, accounts, library, downloads, mod_presets, convert_presets, appearance, about };
+pub const SettingsTab = enum { appearance, library, updates, downloads, games_launch, accounts, presets, about };
 
 /// Recipe-wizard modal phases. The wizard renders one page per step,
 /// with Back/Next driving the transition. `review` is terminal — save
@@ -676,7 +676,7 @@ pub const State = struct {
     /// Session-only — not persisted across restarts.
     mods_view_filter: ModsViewFilter = .{},
     /// Active tab on the Settings screen.
-    settings_tab: SettingsTab = .general,
+    settings_tab: SettingsTab = .library,
     /// dvui ScrollInfo backing the detail-screen outer scrollArea.
     /// State-owned so we preserve the user's scroll position across
     /// tab switches (the body has a 500px min-height floor so a tab
