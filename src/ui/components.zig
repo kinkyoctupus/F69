@@ -972,6 +972,61 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
     return bw.clicked();
 }
 
+/// tokens.Color → dvui.Color.
+fn td(col: tokens.Color) dvui.Color {
+    return tokens.toDvui(col, dvui.Color);
+}
+
+/// Design-B left icon rail — primary screen navigation. Fixed-width vertical
+/// column of icon buttons that switch `state.screen`; the active screen gets the
+/// accent wash + an inset accent bar. Rendered once by guiFrame, left of the
+/// screen content. Screen-specific actions stay in each screen's own top bar.
+pub fn renderIconRail(frame: *Frame) void {
+    const state = frame.state;
+    var rail = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .min_size_content = .{ .w = 54, .h = 0 },
+        .expand = .vertical,
+        .background = true,
+        .color_fill = td(tokens.active.bg1),
+        .color_border = td(tokens.active.line),
+        .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
+        .padding = .{ .x = 0, .y = 10, .w = 0, .h = 10 },
+    });
+    defer rail.deinit();
+
+    railItem(state, 0, "Library", entypo.home, .library);
+    railItem(state, 1, "Mods", entypo.tools, .universal_mods);
+    railItem(state, 2, "Downloads", entypo.download, .downloads);
+    railItem(state, 3, "Import", entypo.plus, .import_folder);
+    _ = dvui.spacer(@src(), .{ .expand = .vertical });
+    railItem(state, 4, "Settings", entypo.cog, .settings);
+    railItem(state, 5, "Diagnostics", entypo.help, .diagnostics);
+}
+
+fn railItem(state: *state_mod.State, key: u32, name: []const u8, icon: []const u8, screen: state_mod.Screen) void {
+    const t = tokens.active;
+    const on = state.screen == screen;
+    var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = key,
+        .min_size_content = .{ .w = 38, .h = 38 },
+        .gravity_x = 0.5,
+        .background = on,
+        .color_fill = td(t.acc_wash),
+        .border = if (on) .{ .x = 2, .y = 0, .w = 0, .h = 0 } else dvui.Rect.all(0),
+        .color_border = td(t.acc),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .margin = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+    });
+    defer cell.deinit();
+    dvui.icon(@src(), name, icon, .{}, .{
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 19, .h = 19 },
+        .color_text = td(if (on) t.acc else t.ink3),
+    });
+    if (dvui.clicked(cell.data(), .{})) state.screen = screen;
+}
+
 pub fn renderSyncBanner(frame: *Frame) void {
     const state = frame.state;
     const has_active = state.anyActiveSync();
