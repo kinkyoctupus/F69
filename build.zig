@@ -886,6 +886,17 @@ fn makePortable(b: *std.Build, mode: PortableMode) !void {
             .make_path = false,
             .replace = true,
         });
+        // The Nix-built binary bakes a `/nix/store/.../glibc/ld-linux` as its
+        // ELF interpreter, which doesn't exist on non-NixOS distros — so the
+        // kernel can't even start it (run.sh's `exec ./f69` → "cannot execute:
+        // required file not found"). Repoint the interpreter to the x86-64
+        // ABI-standard path, which is present on every glibc distro, so the
+        // host's own loader runs the slim binary. (Verified on CachyOS: with
+        // this, `./run.sh` launches; the host glibc just needs to be ≥ the
+        // build's — see DEPS.md.)
+        runQuiet(b, &.{ "patchelf", "--set-interpreter", "/lib64/ld-linux-x86-64.so.2", dst_bin }) catch |e| {
+            std.log.warn("portable-slim: patchelf --set-interpreter failed ({s}) — slim binary keeps the Nix interpreter and won't run off NixOS", .{@errorName(e)});
+        };
         try writeFileEnsureDir(b, run_sh_path, RUN_SH_SLIM, true);
         const deps_path = try std.fmt.allocPrint(alloc, "{s}/DEPS.md", .{dist_dir});
         defer alloc.free(deps_path);
