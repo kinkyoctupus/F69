@@ -78,14 +78,8 @@ pub fn libraryScreen(frame: *Frame) !bool {
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
 
-        // === nav group: status → config → exit ===
-        var dl_label_buf: [32]u8 = undefined;
-        const dl_label = if (frame.dl_mgr.jobCount() > 0)
-            std.fmt.bufPrint(&dl_label_buf, "Downloads ({d})", .{frame.dl_mgr.jobCount()}) catch "Downloads"
-        else
-            "Downloads";
-        if (components.iconButton(@src(), dl_label, entypo.download, .{})) state.screen = .downloads;
-        if (components.iconButton(@src(), "Settings", entypo.cog, .{})) state.screen = .settings;
+        // Downloads + Settings now live on the icon rail (primary nav).
+        // Only screen-specific actions remain here: account + quit.
         // Account button — sign-in state + opens the Accounts popup.
         {
             const f95_in = state.login_status == .logged_in;
