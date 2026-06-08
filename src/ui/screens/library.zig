@@ -423,6 +423,15 @@ fn hasUnplayedUpdate(g: *const library.Game, install_v: ?[]const u8) bool {
     return true; // installed but never played → counts as unplayed update
 }
 
+/// True when the scraped latest F95 version is newer than what's installed —
+/// i.e. a new release is available to download. Requires an install (you can't
+/// "update" a game you don't have).
+fn hasUpdateAvailable(g: *const library.Game, install_v: ?[]const u8) bool {
+    const inst_v = install_v orelse return false;
+    const latest = g.latest_version orelse return false;
+    return version_mod.compare(latest, inst_v) == .gt;
+}
+
 /// Virtualize the library scroll: only emit cards/rows for the
 /// portion of the (filtered) list that's actually within the viewport
 /// (plus an overscan band). Off-screen rows collapse to a single
@@ -599,6 +608,11 @@ fn sidebar(frame: *Frame) void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF23 });
         defer row.deinit();
         _ = dvui.checkbox(@src(), &state.filter_status_changed, "Status changed", .{});
+    }
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF24 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_update_available, "Update available", .{});
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
@@ -1288,6 +1302,21 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                         .corner_radius = .all(2),
                     });
                 }
+                if (hasUpdateAvailable(g, inst_v)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    comp.chip(@src(), .{
+                        .label = "UPDATE",
+                        .fill = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff }, // cyan
+                        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                        .border = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0x09DA,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
             }
             if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
         }
@@ -1456,6 +1485,21 @@ fn renderListWindow(
                     .corner_radius = .all(2),
                 });
             }
+            if (hasUpdateAvailable(g, inst_v)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                comp.chip(@src(), .{
+                    .label = "UPDATE",
+                    .fill = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                    .border = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                    .scale = 0.75,
+                }, .{
+                    .id_extra = g.f95_thread_id ^ 0x09DA,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                });
+            }
         }
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
@@ -1597,6 +1641,7 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     // generation counter so a new install immediately re-evaluates.
     hasher.update(std.mem.asBytes(&state.filter_unplayed_updates));
     hasher.update(std.mem.asBytes(&state.filter_status_changed));
+    hasher.update(std.mem.asBytes(&state.filter_update_available));
     hasher.update(std.mem.asBytes(&state.snapshot_install_gen));
     // Label filter — selected ids. (Re-assigning a label to a game while the
     // filter is active needs a manual refresh; the common case of toggling
@@ -1648,6 +1693,11 @@ fn cardVisible(
     }
 
     if (state.filter_status_changed and !statusRecentlyChanged(g, now_s)) return false;
+
+    if (state.filter_update_available) {
+        const inst_v: ?[]const u8 = if (install_versions) |m| m.get(g.f95_thread_id) else null;
+        if (!hasUpdateAvailable(g, inst_v)) return false;
+    }
 
     return true;
 }
