@@ -328,6 +328,20 @@ pub fn build(b: *std.Build) void {
     exe.build_id = .sha1;
     b.installArtifact(exe);
 
+    // Desktop integration — a `.desktop` entry + icon so f69 appears in
+    // application menus / launchers. Lands under share/, so the native
+    // packages (which run `zig build install --prefix /usr`) pick them up
+    // automatically; the portable bundle copies only bin/, ignoring these.
+    {
+        const wf = b.addWriteFiles();
+        const desktop = wf.add("f69.desktop", DESKTOP_ENTRY);
+        const icon = wf.add("f69.svg", ICON_SVG);
+        const di = b.addInstallFile(desktop, "share/applications/f69.desktop");
+        const ii = b.addInstallFile(icon, "share/icons/hicolor/scalable/apps/f69.svg");
+        b.getInstallStep().dependOn(&di.step);
+        b.getInstallStep().dependOn(&ii.step);
+    }
+
     // Compat resources — directories the compat module's recipes
     // resolve at runtime. Each one is a Nix-built lib bundle landed
     // under `<install>/bin/data/compat-resources/<id>/`. The flake's
@@ -2040,6 +2054,33 @@ const RUN_SH_SLIM =
     \\export __EGL_VENDOR_LIBRARY_DIRS
     \\
     \\exec "$DIR/f69" "$@"
+    \\
+;
+
+// XDG desktop entry — installed to share/applications/f69.desktop.
+const DESKTOP_ENTRY =
+    \\[Desktop Entry]
+    \\Type=Application
+    \\Name=f69
+    \\GenericName=Game Library Manager
+    \\Comment=F95Zone-focused game and mod library manager
+    \\Exec=f69
+    \\Icon=f69
+    \\Terminal=false
+    \\Categories=Game;
+    \\Keywords=games;library;f95zone;mods;visual novel;
+    \\StartupNotify=true
+    \\
+;
+
+// App icon (Design B — electric teal "f69" on graphite). Scalable SVG,
+// installed to share/icons/hicolor/scalable/apps/f69.svg.
+const ICON_SVG =
+    \\<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+    \\  <rect width="256" height="256" rx="48" fill="#16212a"/>
+    \\  <rect x="20" y="20" width="216" height="216" rx="36" fill="none" stroke="#1fa39a" stroke-width="6"/>
+    \\  <text x="128" y="168" font-family="sans-serif" font-size="118" font-weight="700" fill="#1fa39a" text-anchor="middle">f69</text>
+    \\</svg>
     \\
 ;
 
