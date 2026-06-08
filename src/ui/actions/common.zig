@@ -721,6 +721,12 @@ fn installedSetPtr(frame: *Frame) ?*InstalledSet {
 /// indicator + filter reflect a fresh snapshot (post-install
 /// completions land in the table between renders).
 pub fn refreshInstalledSet(frame: *Frame) void {
+    // Cache by Library.install_generation — the installed-thread set only
+    // changes when an install row is added/removed, never per frame. Mirrors
+    // the install_versions snapshot in ui.zig. Skips a per-frame SELECT +
+    // HashMap rebuild that otherwise ran on every mouse-motion wakeup.
+    const gen = frame.lib.install_generation;
+    if (frame.state.installed_set != null and frame.state.installed_set_gen == gen) return;
     const set = installedSetPtr(frame) orelse return;
     set.clearRetainingCapacity();
     const ids = frame.lib.fetchInstalledThreadIds() catch |e| {
@@ -729,6 +735,7 @@ pub fn refreshInstalledSet(frame: *Frame) void {
     };
     defer frame.lib.alloc.free(ids);
     for (ids) |tid| set.put(tid, {}) catch {};
+    frame.state.installed_set_gen = gen;
 }
 
 /// Read-only probe — true iff `thread_id` had at least one install
