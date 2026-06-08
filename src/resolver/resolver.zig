@@ -15,6 +15,7 @@ pub const SolveResult = slv.SolveResult;
 pub const solve = slv.solve;
 pub const solveExplained = slv.solveExplained;
 pub const formatChain = slv.formatChain;
+pub const explain = slv.explain;
 
 // Test discovery — pull in nested test {} blocks (Zig 0.16 doesn't
 // walk transitive imports for tests).

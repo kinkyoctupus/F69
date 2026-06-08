@@ -120,6 +120,10 @@ pub const ModsPageCache = struct {
     archive_paths: []?[]u8,
     installed: []bool,
     load_index: []?u32,
+    /// Human-readable reason the current mod set won't resolve (conflict /
+    /// missing dep / version mismatch / cycle), or null when it's fine.
+    /// Owned by `alloc`. Surfaced as a warning banner in the mods page.
+    resolve_explanation: ?[]u8 = null,
     alloc: std.mem.Allocator,
 };
 
