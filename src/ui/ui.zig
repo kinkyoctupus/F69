@@ -206,16 +206,10 @@ pub fn runMainLoop(
     } else {
         state.rpdl_status = .logged_out;
     }
-    // Open the login popup at startup when the user is not signed
-    // into F95. The popup also nudges RPDL sign-in. Dismissed via
-    // Skip (set `login_popup_skipped` so we don't re-open this
-    // session) or by completing a login. Donor-status probe runs
-    // once at startup if we already have an F95 cookie so the
-    // Download button's enabled-state is correct before the user
-    // clicks anything.
-    if (state.login_status == .logged_out) {
-        state.login_popup_open = true;
-    }
+    // No startup modal — the Accounts popup is opened on demand from the
+    // toolbar account button (see library.zig). The donor-status probe still
+    // runs once at startup below when an F95 cookie is already present so the
+    // Download button's enabled-state is correct before the user clicks.
     defer {
         // Modfile cache + clash modal both own heap state — release
         // them on shutdown so DebugAllocator doesn't flag leaks.

@@ -86,6 +86,19 @@ pub fn libraryScreen(frame: *Frame) !bool {
             "Downloads";
         if (components.iconButton(@src(), dl_label, entypo.download, .{})) state.screen = .downloads;
         if (components.iconButton(@src(), "Settings", entypo.cog, .{})) state.screen = .settings;
+        // Account button — sign-in state + opens the Accounts popup.
+        {
+            const f95_in = state.login_status == .logged_in;
+            const rpdl_in = state.rpdl_status == .logged_in;
+            const acct_label: []const u8 = if (f95_in or rpdl_in) blk: {
+                const u = state.f95UserSlice();
+                break :blk if (f95_in and u.len > 0) u else "Account";
+            } else "Sign in";
+            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight } else .{};
+            if (components.iconButton(@src(), acct_label, entypo.user, acct_opts)) {
+                state.login_popup_open = !state.login_popup_open;
+            }
+        }
         if (components.iconButton(@src(), "Quit", entypo.cross, .{ .style = .err })) return false;
     }
 

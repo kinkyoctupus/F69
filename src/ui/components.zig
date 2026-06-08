@@ -326,66 +326,29 @@ pub fn humanRate(buf: []u8, bytes_per_sec: u64) []const u8 {
 /// Modal login overlay. Idempotent — render every frame while
 /// `state.login_popup_open` is true; close via Skip, RPDL login, or
 /// successful F95 login (auth.zig auto-closes on the latter).
+/// Accounts popup — compact floating panel opened from the toolbar account
+/// button (no longer a startup modal). Stacks the two account cards (F95Zone +
+/// RPDL); each shows its signed-in identity + Sign out, or an inline sign-in
+/// form.
 pub fn renderLoginPopup(frame: *Frame) void {
     const state = frame.state;
     if (!state.login_popup_open) return;
-    // If the user logged into F95 in some other way (e.g. cookie
-    // loaded after popup opened), self-dismiss.
-    if (state.login_status == .logged_in) {
-        state.login_popup_open = false;
-        return;
-    }
 
     var win = dvui.floatingWindow(@src(), .{ .open_flag = &state.login_popup_open }, .{
-        .min_size_content = .{ .w = 520, .h = 360 },
+        .min_size_content = .{ .w = 340, .h = 0 },
     });
     defer win.deinit();
-    _ = dvui.windowHeader("Sign in to F95Zone", "", &state.login_popup_open);
+    _ = dvui.windowHeader("Accounts", "", &state.login_popup_open);
 
-    {
-        var msg_box = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
-        });
-        defer msg_box.deinit();
-        dvui.labelNoFmt(
-            @src(),
-            "f69 works best when you're signed in. F95Zone unlocks " ++
-                "donor-tier downloads; RPDL is a community-run torrent " ++
-                "mirror that f69 falls back to when DDL isn't available.",
-            .{},
-            .{ .expand = .horizontal, .color_text = helpTextColor() },
-        );
-    }
-
-    // Responsive: side-by-side via flexbox justify=.start; narrow
-    // windows get auto-wrapping by the layout. Each card declares
-    // a fixed min width so the flexbox can decide whether to fit
-    // them in a single row or stack.
-    var forms = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .horizontal,
-        .padding = .{ .x = 16, .y = 4, .w = 16, .h = 12 },
+        .padding = .{ .x = 10, .y = 6, .w = 10, .h = 12 },
     });
-    defer forms.deinit();
+    defer col.deinit();
 
     renderF95LoginCard(frame);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     renderRpdlLoginCard(frame);
-
-    // Footer with Skip button — full-width row aligned right.
-    {
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-        var footer = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
-            .gravity_x = 1.0,
-        });
-        defer footer.deinit();
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (style.button(@src(), "Skip for now", .{}, .{ .gravity_x = 1.0 })) {
-            state.login_popup_open = false;
-            state.login_popup_skipped = true;
-        }
-    }
 }
 
 // ============================================================
@@ -565,7 +528,7 @@ fn renderF95LoginCard(frame: *Frame) void {
     const state = frame.state;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCB00,
-        .min_size_content = .{ .w = 240, .h = 200 },
+        .expand = .horizontal,
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
@@ -592,6 +555,19 @@ fn renderF95LoginCard(frame: *Frame) void {
         dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = helpTextColor() });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    // Signed in → show identity + Sign out instead of the form.
+    if (state.login_status == .logged_in) {
+        const u = state.f95UserSlice();
+        if (u.len > 0) {
+            dvui.label(@src(), "Signed in as {s}", .{u}, .{ .color_text = helpTextColor() });
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        }
+        if (style.button(@src(), "Sign out of F95Zone", .{}, .{ .style = .err, .expand = .horizontal })) {
+            actions.doLogout(frame);
+        }
+        return;
+    }
 
     // Form: user / pass / Sign in.
     {
@@ -628,7 +604,7 @@ fn renderRpdlLoginCard(frame: *Frame) void {
     const state = frame.state;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCC00,
-        .min_size_content = .{ .w = 240, .h = 200 },
+        .expand = .horizontal,
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
