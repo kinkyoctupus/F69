@@ -240,6 +240,9 @@ pub fn tabButton(label: []const u8, active: bool) bool {
         .color_text = if (active) highlight else null,
     };
     if (active) opts.style = .highlight;
+    // Tab labels are unique per detail page → use the label as a stable
+    // widget tag so headless Layer-2 tests can moveTo+click a given tab.
+    opts.tag = label;
     return style.button(@src(), label, .{}, opts);
 }
 
