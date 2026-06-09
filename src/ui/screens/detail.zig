@@ -72,7 +72,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
+        if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err, .tag = "detail-delete" })) {
             state.confirm_delete = true;
         }
     }
@@ -94,7 +94,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         const msg = std.fmt.bufPrint(&conf_buf, "Really delete \"{s}\"?", .{game.name}) catch "Really delete?";
         dvui.labelNoFmt(@src(), msg, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (components.iconButton(@src(), "Cancel", entypo.cross, .{})) state.confirm_delete = false;
+        if (components.iconButton(@src(), "Cancel", entypo.cross, .{ .tag = "detail-delete-cancel" })) state.confirm_delete = false;
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
             actions.deleteGameAndReturn(frame, game.f95_thread_id);
             return true;
