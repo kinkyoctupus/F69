@@ -763,8 +763,10 @@ test "layer2: clicking a toolbar button navigates screens (F0 interaction)" {
     _ = try dvui.testing.step(renderFrame);
     try std.testing.expectEqual(ui.Screen.library, h.state.screen);
 
-    // Click the "Global Mods" toolbar button → screen flips to universal_mods.
-    try dvui.testing.moveTo("lib-global-mods");
+    // Click the icon-rail "Mods" item → screen flips to universal_mods.
+    // (Global Mods moved from a toolbar button to the rail in the Design-B
+    // single-row top bar.)
+    try dvui.testing.moveTo("rail-universal_mods");
     try dvui.testing.click(.left);
     _ = try dvui.testing.step(renderFrame); // process click → state.screen mutates
     tlog("L2-nav: after click screen={s}", .{@tagName(h.state.screen)});

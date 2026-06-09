@@ -54,40 +54,66 @@ pub fn libraryScreen(frame: *Frame) !bool {
         });
         defer top.deinit();
 
-        // Design-B title: "Library" + a dim "N games · M updates" subtitle.
-        dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .style = .highlight });
+        // Design-B single top bar: title · games count …… [view toggles]
+        // [search] [Sync ▼] [+Add] [account]. (Quit removed — the window
+        // controls close; sort moved to clickable list headers; Global Mods
+        // lives on the icon rail.)
+        dvui.labelNoFmt(@src(), "Library", .{}, .{
+            .gravity_y = 0.5,
+            .color_text = tokens.toDvui(tokens.active.ink, dvui.Color),
+            .font = dvui.Font.theme(.title),
+        });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
         {
             var cnt_buf: [48]u8 = undefined;
             const cnt = std.fmt.bufPrint(&cnt_buf, "{d} games", .{games.len}) catch "";
             dvui.labelNoFmt(@src(), cnt, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
         }
+
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+        // view toggle (grid / list / kanban)
+        const grid_opts: dvui.Options = if (state.view == .grid)
+            .{ .id_extra = 1, .style = .highlight, .gravity_y = 0.5 }
+        else
+            .{ .id_extra = 1, .gravity_y = 0.5 };
+        const list_opts: dvui.Options = if (state.view == .list)
+            .{ .id_extra = 2, .style = .highlight, .gravity_y = 0.5 }
+        else
+            .{ .id_extra = 2, .gravity_y = 0.5 };
+        const kanban_opts: dvui.Options = if (state.view == .kanban)
+            .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
+        else
+            .{ .id_extra = 3, .gravity_y = 0.5 };
+        if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts.override(.{ .tag = "view-grid" }))) state.view = .grid;
+        if (components.iconOnly(@src(), "list", entypo.list, list_opts.override(.{ .tag = "view-list" }))) state.view = .list;
+        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts.override(.{ .tag = "view-kanban" }))) state.view = .kanban;
+
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
-        // Right-anchored, wrapping button cluster. `expand =
-        // .horizontal` claims the remaining width of the row so the
-        // flexbox knows where the right edge is; `justify_content =
-        // .end` packs the buttons against that right edge.
-        var actions_box = dvui.flexbox(@src(), .{ .justify_content = .end }, .{
-            .expand = .horizontal,
+        // search
+        dvui.icon(@src(), "search", entypo.magnifying_glass, .{}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 14, .h = 14 },
         });
-        defer actions_box.deinit();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        {
+            const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.search_buf } }, .{
+                .min_size_content = .{ .w = 220, .h = style.button_h },
+                .gravity_y = 0.5,
+                .tag = "lib-search",
+            });
+            te.deinit();
+        }
 
-        // === workflow group (in order of typical use frequency) ===
-        // Split-button "Check for updates" — primary click runs the
-        // cheap latest-updates walk; chevron menu has the
-        // full-library re-scrape option.
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+
         renderSyncSplitButton(frame);
-        // Split-button "Add" — primary opens the paste-import screen;
-        // chevron menu surfaces "Import all bookmarks (F95)" so the
-        // two acquisition paths share one entry point.
         renderAddSplitButton(frame);
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
 
-        // Downloads + Settings now live on the icon rail (primary nav).
-        // Only screen-specific actions remain here: account + quit.
-        // Account button — sign-in state + opens the Accounts popup.
+        // account button — sign-in state + opens the Accounts popup.
         {
             const f95_in = state.login_status == .logged_in;
             const rpdl_in = state.rpdl_status == .logged_in;
@@ -95,12 +121,11 @@ pub fn libraryScreen(frame: *Frame) !bool {
                 const u = state.f95UserSlice();
                 break :blk if (f95_in and u.len > 0) u else "Account";
             } else "Sign in";
-            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight, .tag = "acct-button" } else .{ .tag = "acct-button" };
+            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight, .gravity_y = 0.5, .tag = "acct-button" } else .{ .gravity_y = 0.5, .tag = "acct-button" };
             if (components.iconButton(@src(), acct_label, entypo.user, acct_opts)) {
                 state.login_popup_open = !state.login_popup_open;
             }
         }
-        if (components.iconButton(@src(), "Quit", entypo.cross, .{ .style = .err })) return false;
     }
 
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
@@ -126,76 +151,6 @@ pub fn libraryScreen(frame: *Frame) !bool {
         .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
     });
     defer main_box.deinit();
-
-    // View / search / sort toolbar — lives inside the main column so
-    // it spans only the grid+list area, not the sidebar. Every child
-    // gets `gravity_y = 0.5` so icons / dropdowns / text entry share
-    // a baseline regardless of their natural height.
-    {
-        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .padding = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
-        });
-        defer bar.deinit();
-
-        // Sort: column dropdown + asc/desc toggle. Pretty labels so
-        // the user sees "Sync state" rather than `sync_state`.
-        dvui.label(@src(), "sort:", .{}, .{ .gravity_y = 0.5 });
-        const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state", "Last played version" };
-        var sort_picked: usize = @intFromEnum(state.sort_column);
-        if (style.dropdown(@src(), sort_labels, .{ .choice = &sort_picked }, .{}, .{
-            .min_size_content = .{ .w = 130, .h = style.button_h },
-            .gravity_y = 0.5,
-        })) {
-            state.sort_column = @enumFromInt(sort_picked);
-        }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
-        const dir_tvg = if (state.sort_dir == .asc) entypo.chevron_up else entypo.chevron_down;
-        if (components.iconOnly(@src(), "sort-dir", dir_tvg, .{ .style = .highlight, .gravity_y = 0.5 })) {
-            state.sort_dir = if (state.sort_dir == .asc) .desc else .asc;
-        }
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 16, .h = 1 } });
-
-        // Search — fills all remaining horizontal space.
-        dvui.icon(@src(), "search", entypo.magnifying_glass, .{}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 14, .h = 14 },
-        });
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
-        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.search_buf } }, .{
-            .expand = .horizontal,
-            .gravity_y = 0.5,
-            .tag = "lib-search", // headless Layer-2 tests focus + type here
-        });
-        te.deinit();
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 16, .h = 1 } });
-
-        // Global (engine-wide) mods registry.
-        if (components.iconButton(@src(), "Global Mods", entypo.tools, .{ .gravity_y = 0.5, .tag = "lib-global-mods" })) {
-            state.screen = .universal_mods;
-        }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-
-        // View toggle on the right — interacted with rarely once
-        // you've picked a layout.
-        const grid_opts: dvui.Options = if (state.view == .grid)
-            .{ .id_extra = 1, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 1, .gravity_y = 0.5 };
-        const list_opts: dvui.Options = if (state.view == .list)
-            .{ .id_extra = 2, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 2, .gravity_y = 0.5 };
-        const kanban_opts: dvui.Options = if (state.view == .kanban)
-            .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 3, .gravity_y = 0.5 };
-        if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts.override(.{ .tag = "view-grid" }))) state.view = .grid;
-        if (components.iconOnly(@src(), "list", entypo.list, list_opts.override(.{ .tag = "view-list" }))) state.view = .list;
-        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts.override(.{ .tag = "view-kanban" }))) state.view = .kanban;
-    }
 
     const query = state.searchSlice();
     renderVirtualizedList(frame, games, query);
