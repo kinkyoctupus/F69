@@ -610,7 +610,7 @@ fn sidebar(frame: *Frame) void {
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF22 });
         defer row.deinit();
-        _ = dvui.checkbox(@src(), &state.filter_unplayed_updates, "Unplayed updates", .{});
+        _ = dvui.checkbox(@src(), &state.filter_unplayed_updates, "Unplayed updates", .{ .tag = "filter-unplayed" });
     }
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF23 });
@@ -631,7 +631,7 @@ fn sidebar(frame: *Frame) void {
             @as([]const u8, "Engine")
         else
             std.fmt.bufPrint(&lbl_buf, "Engine ({d})", .{eng.count()}) catch "Engine";
-        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
+        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal, .tag = "filter-engine-expander" })) {
             enumCheckbox(library.Engine, eng, .renpy, "Ren'Py");
             enumCheckbox(library.Engine, eng, .rpgm_mv, "RPGM MV");
             enumCheckbox(library.Engine, eng, .rpgm_mz, "RPGM MZ");
@@ -962,7 +962,8 @@ fn renderTagCheckboxFilter(state: *State) void {
 /// the set → insert/remove. Zero allocations.
 fn enumCheckbox(comptime E: type, set: *std.EnumSet(E), comptime tag: E, label: []const u8) void {
     var checked = set.contains(tag);
-    _ = dvui.checkbox(@src(), &checked, label, .{ .id_extra = @intFromEnum(tag) });
+    // Stable comptime tag so headless tests can expectVisible/click a child.
+    _ = dvui.checkbox(@src(), &checked, label, .{ .id_extra = @intFromEnum(tag), .tag = "flt-" ++ @tagName(tag) });
     if (checked) set.insert(tag) else set.remove(tag);
 }
 
