@@ -50,3 +50,4 @@ pub const renderLaunchDiagPopup = components.renderLaunchDiagPopup;
 pub const renderToasts = components.renderToasts;
 pub const renderSyncBanner = components.renderSyncBanner;
 pub const renderIconRail = components.renderIconRail;
+pub const renderStatusBar = components.renderStatusBar;
