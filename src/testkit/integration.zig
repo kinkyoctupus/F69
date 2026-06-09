@@ -17,6 +17,7 @@
 const std = @import("std");
 const ui = @import("ui");
 const dvui = @import("dvui");
+const library = @import("library");
 const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
 const util_setting = @import("util_setting");
@@ -145,4 +146,39 @@ test "headless: folder scan detects a Ren'Py game (F4.2)" {
 
     try std.testing.expect(std.mem.indexOf(u8, h.state.folderScanMsg(), "done") != null);
     try std.testing.expect(h.state.folder_scan_row_count >= 1);
+}
+
+// --- F3: library DB round-trip + engine filter ---------------------------
+//
+// A pure-DB slice (no Frame/window needed): insert games through the real
+// SQLite layer, read them back, and run the production filter predicate.
+// Shows that integration slices only spin up the full ui.Harness when they
+// need a Frame; DB/logic round-trips use the service directly.
+
+test "headless: engine filter selects matching games after a DB round-trip (F3)" {
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "headless-filter");
+    defer env.deinit();
+
+    const db_path = try env.path("f69.db");
+    defer gpa.free(db_path);
+
+    var lib = try library.Library.open(gpa, db_path);
+    defer lib.close();
+
+    _ = try lib.insertIfMissing(&.{ .f95_thread_id = 1, .name = "RenGame", .engine = .renpy });
+    _ = try lib.insertIfMissing(&.{ .f95_thread_id = 2, .name = "UniGame", .engine = .unity });
+
+    const games = try lib.listGames();
+    defer lib.freeGames(games);
+    try std.testing.expectEqual(@as(usize, 2), games.len);
+
+    // Filter to Ren'Py only → exactly one match.
+    var filters = ui.Filters{};
+    filters.engine.insert(.renpy);
+    var matched: usize = 0;
+    for (games) |*g| {
+        if (filters.match(g)) matched += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), matched);
 }
