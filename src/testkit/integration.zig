@@ -845,3 +845,49 @@ test "layer2: settings toggle click flips bound state (F10 interaction)" {
     try std.testing.expectEqual(!before, h.state.sandbox_default);
     tlog("L2-settings: OK", .{});
 }
+
+test "layer2: delete-confirm bar appears on click + cancels (F0 conditional)" {
+    tlog("START: L2-confirm", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-confirm");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 8, .name = "Confirm Game", .developer = "Dev", .engine = .renpy });
+    try h.reloadGames();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.selected_thread = 8;
+    h.state.screen = .detail;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(!h.state.confirm_delete);
+    tlog("L2-confirm: rendered, confirm_delete={}", .{h.state.confirm_delete});
+
+    // Click Delete → the confirm bar (with its Cancel button) appears.
+    try dvui.testing.moveTo("detail-delete");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame); // process click → confirm_delete = true
+    _ = try dvui.testing.step(renderFrame); // render the now-visible confirm bar
+    try std.testing.expect(h.state.confirm_delete);
+    try dvui.testing.expectVisible("detail-delete-cancel");
+    tlog("L2-confirm: confirm bar visible", .{});
+
+    // Click Cancel → bar dismisses, game untouched.
+    try dvui.testing.moveTo("detail-delete-cancel");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(!h.state.confirm_delete);
+    try std.testing.expectEqual(ui.Screen.detail, h.state.screen); // never deleted/left
+    tlog("L2-confirm: OK", .{});
+}
