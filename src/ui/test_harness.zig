@@ -170,8 +170,59 @@ pub const Harness = struct {
         return self;
     }
 
+    /// Pump every async-worker drain once. Each drain is a no-op when its
+    /// slot is empty, so this is safe to call repeatedly. Mirrors the set
+    /// runMainLoop calls each frame.
+    fn pumpDrains(f: *Frame) void {
+        actions.drainSync(f);
+        actions.drainFastCheck(f);
+        actions.drainImageQueue(f);
+        actions.drainSlideLoads(f);
+        actions.drainBookmarks(f);
+        actions.drainUpdateCheck(f);
+        actions.drainRefreshTags(f);
+        actions.drainDonorProbe(f);
+        actions.drainRpdlDownload(f);
+        actions.drainDonorDownload(f);
+        actions.drainCompletedDownloads(f);
+        actions.drainImport(f);
+        actions.drainModJobs(f);
+        actions.drainPostInstall(f);
+        actions.drainManualInstall(f);
+        actions.drainTestInstall(f);
+        actions.drainLaunchWatcher(f);
+        actions.drainRunningGames(f);
+    }
+
+    /// Pump drains until no worker is busy (or the bound trips). Use after
+    /// driving an async action (login → donor probe, sync, download, …) so
+    /// the result has landed before asserting. `max_ticks` * 20 ms is the
+    /// ceiling.
+    pub fn drainWorkers(self: *Harness, max_ticks: usize) void {
+        var f = self.frame();
+        var i: usize = 0;
+        while (i < max_ticks) : (i += 1) {
+            pumpDrains(&f);
+            if (!actions.workersBusy(&self.state)) return;
+            self.io.sleep(std.Io.Duration.fromMilliseconds(20), .real) catch {};
+        }
+    }
+
     pub fn deinit(self: *Harness) void {
         const gpa = self.gpa;
+        // Signal cancel to any worker the test left running, then pump the
+        // drains until they clear — otherwise tearing down the services
+        // races a live worker thread's next syscall (UAF). Mirrors
+        // runMainLoop's graceful-shutdown drain.
+        actions.cancelAllWorkers(&self.state);
+        {
+            var f = self.frame();
+            var i: usize = 0;
+            while (i < 300 and actions.workersBusy(&self.state)) : (i += 1) {
+                pumpDrains(&f);
+                self.io.sleep(std.Io.Duration.fromMilliseconds(20), .real) catch {};
+            }
+        }
         // Release every heap-owning bit of State, mirroring runMainLoop's
         // shutdown defer — otherwise actions that stash session/cache data
         // on State (folder scan, install jobs, caches) leak under the test
