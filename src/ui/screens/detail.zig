@@ -145,12 +145,12 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer tabs.deinit();
 
-        if (components.tabButton("Description", state.detail_tab == .overview)) state.detail_tab = .overview;
+        if (components.tabButton("Overview", state.detail_tab == .overview)) state.detail_tab = .overview;
         if (components.tabButton("Changelog", state.detail_tab == .changelog)) state.detail_tab = .changelog;
-        if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Downloads", state.detail_tab == .downloads)) state.detail_tab = .downloads;
-        if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
+        if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Journal", state.detail_tab == .journal)) state.detail_tab = .journal;
+        if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 

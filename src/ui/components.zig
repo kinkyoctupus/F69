@@ -206,45 +206,39 @@ pub fn iconOnly(
     });
 }
 
-/// Tab-shaped button: rounded only on top, flat-bottomed so the
-/// active tab visually merges with the panel below it. Inactive
-/// tabs sit a touch lower and use a quieter fill so the active one
-/// pops as the obvious "you are here" affordance.
+/// Underline tab (Design-B): plain text — teal + bold when active, dim
+/// otherwise — with a teal underline bar under the active tab. Click anywhere
+/// on the column selects it.
 pub fn tabButton(label: []const u8, active: bool) bool {
-    const active_fill: dvui.Color = tokens.toDvui(tokens.active.acc_wash, dvui.Color);
-    const inactive_fill: dvui.Color = style.cardFill();
-    const tab_border: dvui.Color = style.borderColor();
-    const highlight: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
-
-    const radius: dvui.Rect = .{ .x = 8, .y = 8, .w = 0, .h = 0 };
-    const margin: dvui.Rect = if (active)
-        .{ .x = 1, .y = 0, .w = 1, .h = 0 }
-    else
-        .{ .x = 1, .y = 4, .w = 1, .h = 0 };
-
-    var opts: dvui.Options = .{
+    const t = tokens.active;
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = @intFromPtr(label.ptr),
-        .padding = .{ .x = 12, .y = 6, .w = 12, .h = 6 },
-        .corner_radius = radius,
+        .margin = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
+        // Tab labels are unique per detail page → use the label as a stable
+        // widget tag so the headless + live GUI drivers can click a given tab.
+        .tag = label,
+    });
+    defer col.deinit();
+
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .padding = .{ .x = 4, .y = 8, .w = 4, .h = 7 },
+        .gravity_x = 0.5,
+        .min_size_content = .{ .w = 72, .h = 0 },
+        .color_text = td(if (active) t.acc else t.ink2),
+        .style = if (active) .highlight else .control,
+    });
+
+    // teal underline under the active tab; blends into the bg otherwise.
+    var bar = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 0, .h = 2 },
         .background = true,
-        .border = style.border_thin,
-        .margin = margin,
-        // Floor every tab to the same minimum content width so short
-        // labels ("Mods" / "Notes") don't read as tiny against the
-        // longer ones ("Description" / "Changelog"), and the row
-        // doesn't visibly resize as the user clicks between active /
-        // inactive tabs (the active tab pulls in slightly different
-        // text metrics from the highlight style).
-        .min_size_content = .{ .w = 88, .h = 22 },
-        .color_fill = if (active) active_fill else inactive_fill,
-        .color_border = tab_border,
-        .color_text = if (active) highlight else null,
-    };
-    if (active) opts.style = .highlight;
-    // Tab labels are unique per detail page → use the label as a stable
-    // widget tag so headless Layer-2 tests can moveTo+click a given tab.
-    opts.tag = label;
-    return style.button(@src(), label, .{}, opts);
+        .color_fill = td(if (active) t.acc else t.bg1),
+        .corner_radius = dvui.Rect.all(1),
+    });
+    bar.deinit();
+
+    return dvui.clicked(col.data(), .{});
 }
 
 /// Pink-muted, wrapping help text for Settings sections + other
