@@ -47,6 +47,8 @@ jobs:
             zlib1g-dev libxml2-dev libzstd-dev liblz4-dev nettle-dev libacl1-dev
       - name: Tests
         run: zig build test
+      - name: Headless integration tests (dvui testing backend)
+        run: zig build test-integration
 
   # ----- Portable bundle (full): binary + bundled libs + run.sh -----
   portable:
@@ -153,11 +155,13 @@ jobs:
           path: artifacts/
 
   # ----- Debian: native dpkg-buildpackage inside debian:bookworm-slim -----
-  # continue-on-error kept while dpkg-buildpackage tooling is polished.
+  # Targets Debian stable (bookworm). Native packages dynamically link
+  # system libs, so this .deb is correct for bookworm-based systems; users
+  # on newer/rolling derivatives (e.g. Debian sid) should use the portable
+  # bundle or rebuild on a matching base (F69_DEB_BASE / the deb container).
   debian:
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true
     container:
       image: debian:bookworm-slim
     env:
@@ -194,11 +198,13 @@ jobs:
           path: artifacts/
 
   # ----- Fedora: native rpmbuild inside fedora:latest -----
-  # Same continue-on-error caveat as debian.
+  # Targets current Fedora. The .rpm requires the build base's glibc, so it
+  # installs on Fedora >= the runner's version; older Fedora / atomic users
+  # should use the portable bundle or rebuild on a matching base
+  # (F69_RPM_BASE=fedora:<N>).
   fedora:
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true
     container:
       image: fedora:latest
     steps:
@@ -230,6 +236,35 @@ jobs:
           name: f69-fedora
           path: artifacts/
 
+  # ----- Windows: cross-compile f69.exe + DLL bundle (mingw via nix) -----
+  # scripts/build-windows.sh builds the mingw C-lib prefix from
+  # nix/windows-deps.nix, then `zig build -Dtarget=x86_64-windows-gnu`.
+  # package-windows.sh resolves the exact DLL closure (objdump BFS).
+  windows:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config binutils
+      - name: Cross-compile f69.exe (x86_64-windows-gnu)
+        run: bash scripts/build-windows.sh
+      - name: Package Windows zip (exe + DLL closure)
+        run: bash scripts/package-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: f69-windows
+          path: zig-out/f69-windows.zip
+
   # ----- Nix flake build -----
   nix:
     runs-on: ubuntu-latest
@@ -253,7 +288,7 @@ jobs:
   # ----- Release: aggregate artifacts on tag push -----
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, portable, portable-slim, arch, debian, fedora]
+    needs: [test, portable, portable-slim, arch, debian, fedora, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
