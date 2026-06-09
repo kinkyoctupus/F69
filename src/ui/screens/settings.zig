@@ -149,7 +149,17 @@ fn toggleRow(key: u32, on: bool, title: []const u8, desc: []const u8) bool {
         defer row.deinit();
         dvui.labelNoFmt(@src(), title, .{}, .{ .gravity_y = 0.5, .color_text = dcol(tokens.active.ink) });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        hit = comp.toggle(@src(), on, .{ .id_extra = key, .gravity_y = 0.5 });
+        // Stable per-toggle tag (keys are unique comptime literals at the call
+        // sites) so headless Layer-2 tests can moveTo+click a specific toggle.
+        const tag: []const u8 = switch (key) {
+            1 => "set-auto-update",
+            2 => "set-desktop-notif",
+            3 => "set-sandbox-default",
+            4 => "set-auto-convert",
+            5 => "set-auto-apply-compat",
+            else => "set-toggle",
+        };
+        hit = comp.toggle(@src(), on, .{ .id_extra = key, .gravity_y = 0.5, .tag = tag });
     }
     if (desc.len > 0) {
         var dbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .id_extra = key, .expand = .horizontal });
