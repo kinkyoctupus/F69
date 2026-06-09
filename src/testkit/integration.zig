@@ -694,3 +694,48 @@ test "layer2: library renders a game card (F0/F3)" {
     _ = try dvui.testing.step(renderFrame);
     tlog("L2-card: rendered card OK", .{});
 }
+
+test "layer2: typing in the search box drives filter state (F3 interaction)" {
+    tlog("START: L2-search", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-search");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    // Two games, neither named "Zzz" — a search for "Zzz" must filter both out.
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 1, .name = "Alpha", .developer = "Dev", .engine = .renpy });
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 2, .name = "Beta", .developer = "Dev", .engine = .renpy });
+    try h.reloadGames();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+
+    // Settle the initial layout so the tagged search box has a real rect.
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-search: settled, both games visible={d}", .{h.state.lib_filter_cache_indices.?.len});
+
+    // Focus the search box by clicking it, then type.
+    try dvui.testing.moveTo("lib-search");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame); // process focus
+    try dvui.testing.writeText("Zzz");
+    _ = try dvui.testing.step(renderFrame); // process text → buffer
+    _ = try dvui.testing.step(renderFrame); // re-render → refilter
+    tlog("L2-search: typed, searchSlice=\"{s}\" visible={d}", .{ h.state.searchSlice(), h.state.lib_filter_cache_indices.?.len });
+
+    // Widget → state: the keystrokes reached state.search_buf.
+    try std.testing.expectEqualStrings("Zzz", h.state.searchSlice());
+    // State → filter: no game matches "Zzz", so the filtered list is empty.
+    try std.testing.expectEqual(@as(usize, 0), h.state.lib_filter_cache_indices.?.len);
+    tlog("L2-search: OK", .{});
+}
