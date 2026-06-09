@@ -206,6 +206,43 @@ pub fn iconOnly(
     });
 }
 
+/// Centered empty-state card (Design-B): a dim icon + title + subtitle in a
+/// card, vertically centered in the available space. For screens with no
+/// content yet (mods / downloads / import) so they don't read as half-built.
+pub fn emptyState(icon: []const u8, title: []const u8, subtitle: []const u8) void {
+    const t = tokens.active;
+    var outer = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
+    defer outer.deinit();
+    _ = dvui.spacer(@src(), .{ .expand = .vertical });
+    {
+        var card = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .gravity_x = 0.5,
+            .background = true,
+            .border = style.border_thin,
+            .corner_radius = style.corner_radius,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
+            .padding = .{ .x = 36, .y = 30, .w = 36, .h = 30 },
+            .min_size_content = .{ .w = 380, .h = 0 },
+        });
+        defer card.deinit();
+        dvui.icon(@src(), "empty", icon, .{}, .{
+            .gravity_x = 0.5,
+            .min_size_content = .{ .w = 44, .h = 44 },
+            .color_text = td(t.ink3),
+        });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 14 } });
+        dvui.labelNoFmt(@src(), title, .{}, .{
+            .gravity_x = 0.5,
+            .color_text = td(t.ink),
+            .font = dvui.Font.theme(.title),
+        });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        dvui.labelNoFmt(@src(), subtitle, .{}, .{ .gravity_x = 0.5, .color_text = td(t.ink3) });
+    }
+    _ = dvui.spacer(@src(), .{ .expand = .vertical });
+}
+
 /// Underline tab (Design-B): plain text — teal + bold when active, dim
 /// otherwise — with a teal underline bar under the active tab. Click anywhere
 /// on the column selects it.

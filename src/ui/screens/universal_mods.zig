@@ -74,7 +74,7 @@ pub fn universalModsScreen(frame: *Frame) !bool {
     defer if (mods_opt) |m| frame.lib.freeUniversalMods(m);
     const mods = mods_opt orelse &.{};
     if (mods.len == 0) {
-        dvui.label(@src(), "No universal mods yet — add one above.", .{}, .{ .color_text = style.labelDim() });
+        components.emptyState(entypo.tools, "No universal mods yet", "Add a mod above to apply it to every game of an engine.");
         return true;
     }
 

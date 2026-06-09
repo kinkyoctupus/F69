@@ -147,7 +147,7 @@ pub fn downloadsScreen(frame: *Frame) !bool {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
 
     if (frame.dl_mgr.jobCount() == 0) {
-        dvui.label(@src(), "No downloads yet — paste a URL above or start one from a game's Download button.", .{}, .{});
+        components.emptyState(entypo.download, "No downloads yet", "Paste a URL above, or start one from a game's Download button.");
         return true;
     }
 
