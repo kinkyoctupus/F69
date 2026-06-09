@@ -27,6 +27,9 @@ pub const Screen = enum {
     diagnostics,
     recipe_editor,
     mods_for_game,
+    /// Engine-wide ("universal") mods registry — add/list/delete mods that
+    /// apply across all games of an engine. Reached from the library top bar.
+    universal_mods,
 };
 
 /// Per-import transfer mode. Applies to every import path: folder
@@ -131,11 +134,11 @@ pub const FolderImportRowState = struct {
 /// votes don't unfairly dominate over well-rated games. `sync_state`
 /// promotes already-synced rows above placeholder "(unsynced)" ones —
 /// previously this was implicit, now it's an explicit pick.
-pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_state };
+pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_state, last_played_version };
 pub const SortDir = enum { asc, desc };
 pub const LoginStatus = enum { unknown, logged_out, logged_in, logging_in, err };
-pub const View = enum { grid, list };
-pub const Tab = enum { overview, changelog, downloads, notes, guides };
+pub const View = enum { grid, list, kanban };
+pub const Tab = enum { overview, changelog, downloads, notes, guides, journal };
 
 /// Filter tabs for the Mods page. Each filters the master list of
 /// (archive, recipe) pairs by state:
@@ -169,7 +172,7 @@ pub const LaunchFixId = enum {
     /// `state.launch_diag_compat_recipe_buf`.
     compat_recipe,
 };
-pub const SettingsTab = enum { general, sync, accounts, library, downloads, mod_presets, convert_presets, about };
+pub const SettingsTab = enum { appearance, library, updates, downloads, games_launch, accounts, presets, about };
 
 /// Recipe-wizard modal phases. The wizard renders one page per step,
 /// with Back/Next driving the transition. `review` is terminal — save
@@ -673,7 +676,7 @@ pub const State = struct {
     /// Session-only — not persisted across restarts.
     mods_view_filter: ModsViewFilter = .{},
     /// Active tab on the Settings screen.
-    settings_tab: SettingsTab = .general,
+    settings_tab: SettingsTab = .library,
     /// dvui ScrollInfo backing the detail-screen outer scrollArea.
     /// State-owned so we preserve the user's scroll position across
     /// tab switches (the body has a 500px min-height floor so a tab
@@ -716,10 +719,14 @@ pub const State = struct {
     /// slider takes effect immediately. Persisted to
     /// Rebuilt once per library-screen render: every f95_thread_id
     /// that has at least one install row. Used by the grid/list-view
-    /// installed indicator and the `installed` filter. Reset each
-    /// frame the library screen rebuilds it; never referenced off
-    /// the library-screen render path.
+    /// installed indicator and the `installed` filter. Rebuilt only when
+    /// `Library.install_generation` advances (see `installed_set_gen`), not
+    /// every frame; never referenced off the library-screen render path.
     installed_set: ?*owned.InstalledSet = null,
+    /// `Library.install_generation` the `installed_set` was last built at.
+    /// The set only changes when an install is added/removed, so we skip the
+    /// per-frame SELECT + rebuild while the generation is unchanged.
+    installed_set_gen: u64 = 0,
     /// `<data_root>/ui_scale`.
     ui_scale: f32 = 1.25,
     /// Tracks the last persisted value so we don't rewrite the file
@@ -749,6 +756,15 @@ pub const State = struct {
     /// decide which row range to actually render. Lives across frames
     /// so the scroll position survives toggles.
     lib_scroll_info: dvui.ScrollInfo = .{},
+    /// Library list-view dvui.grid: resizable per-column widths (the grid
+    /// mutates these on drag) + the grid's own scroll info (VirtualScroller).
+    /// Columns: Name, Engine, Rating, Version, Updated.
+    lib_col_widths: [5]f32 = .{ 360, 120, 90, 130, 120 },
+    lib_grid_scroll: dvui.ScrollInfo = .{},
+    /// Kanban view: one independent scroll per status column so each
+    /// column scrolls on its own (and to its own height). Indexed by
+    /// `@intFromEnum(CompletionStatus)` — the player's progress, 7 variants.
+    lib_kanban_scroll: [7]dvui.ScrollInfo = [_]dvui.ScrollInfo{.{}} ** 7,
     /// Last Sync action's status. Reset to `.idle` when entering detail.
     sync_status: SyncStatus = .idle,
     /// Short message describing the last sync (success or error).
@@ -822,6 +838,13 @@ pub const State = struct {
     manual_install_path_buf: [1024]u8 = [_]u8{0} ** 1024,
     manual_install_version_buf: [64]u8 = [_]u8{0} ** 64,
     manual_install_name_buf: [64]u8 = [_]u8{0} ** 64,
+    /// True while the version buffer holds an auto-filled placeholder
+    /// (the thread's `latest_version`, pre-filled by the Update flow)
+    /// rather than a value the user typed or one derived from the picked
+    /// archive. Lets archive detection override the placeholder while
+    /// never clobbering a real user edit — fixes "install older archive,
+    /// row still shows latest version" (§2.12 #10).
+    manual_install_version_autofilled: bool = false,
     /// Accumulated "version changed" entries collected during a
     /// sync-all / updates-check batch. Lazy-init ArrayList of
     /// `SyncRecapEntry` (defined in actions/sync.zig). When the batch
@@ -862,6 +885,17 @@ pub const State = struct {
     /// shutdown and on each cache miss before the rebuild.
     snapshot_install_gen: u64 = 0,
     snapshot_install_versions: ?std.AutoHashMap(u64, []const u8) = null,
+    /// When true the library list only shows games where the latest
+    /// installed version is newer than the last-played version (or where
+    /// the game has been installed but never played). Bound to the
+    /// "Unplayed updates" sidebar checkbox.
+    filter_unplayed_updates: bool = false,
+    /// Library filter: only games whose dev-status changed recently (sets
+    /// `status_changed_at`). Pairs with the "status changed" chip.
+    filter_status_changed: bool = false,
+    /// Library filter: only games with a newer F95 release than what's
+    /// installed. Pairs with the "UPDATE" chip.
+    filter_update_available: bool = false,
     /// Snapshot cache: `thread_id → *Game` lookup map. Invalidated
     /// when the frame's `games` slice ptr or len changes (a fresh
     /// `listGames` allocation invalidates every cached pointer).
@@ -930,6 +964,13 @@ pub const State = struct {
     /// is atomic so the worker thread can bump after each fetch.
     image_done: std.atomic.Value(u32) = .init(0),
     image_total: u32 = 0,
+    /// dvui frame timestamp (ns) when image work first became visible
+    /// this batch; 0 = no work in flight. The banner image row waits
+    /// `IMAGE_BANNER_MIN_NS` past this before rendering, so a burst
+    /// that finishes near-instantly (every shot already on disk, or a
+    /// lone cache-fast fetch) can't flash a 0→100% bar. Set/cleared by
+    /// `components.renderSyncBanner`.
+    image_work_since_ns: i128 = 0,
     /// Set by `cancelSync` (or a dedicated cancel button on the banner)
     /// to bail every in-flight + queued image fetch. Worker checks
     /// between each image; drain clears the queue + resets to false
@@ -953,6 +994,14 @@ pub const State = struct {
     /// `notes_for_thread` changes. UI flushes back to DB on Save click.
     notes_buf: [4096]u8 = [_]u8{0} ** 4096,
     notes_for_thread: ?u64 = null,
+
+    /// Custom-launch editor (detail facts grid). Re-loaded from the latest
+    /// install whenever `launch_cfg_for_thread` changes; Save flushes to DB.
+    launch_exec_buf: [256]u8 = [_]u8{0} ** 256,
+    launch_args_buf: [256]u8 = [_]u8{0} ** 256,
+    launch_cfg_for_thread: u64 = 0,
+    launch_cfg_install_id: [36]u8 = [_]u8{0} ** 36,
+    launch_cfg_has_install: bool = false,
     /// Paste-area for the bookmark/thread-list importer (8 KiB cap).
     import_buf: [8192]u8 = [_]u8{0} ** 8192,
     /// Imported / skipped counts shown to the user post-import.
@@ -1062,6 +1111,20 @@ pub const State = struct {
     /// Editable buffer for the Settings → Downloads seed-ratio field.
     /// Float like "5.0". Floor 2.0 enforced on Save.
     aria2_seed_ratio_buf: [16]u8 = [_]u8{0} ** 16,
+    /// Detail-page "add label" text entry. Typing an existing name re-uses
+    /// it (createLabel is idempotent); a new name creates it.
+    label_input_buf: [48]u8 = [_]u8{0} ** 48,
+    /// Universal-mods screen add-form: name + selected engine (index into
+    /// the screen's engine list).
+    universal_mod_name_buf: [80]u8 = [_]u8{0} ** 80,
+    universal_mod_engine_idx: usize = 0,
+    /// Library label filter — selected label ids (union/OR semantics). Fixed
+    /// cap; toggled by the sidebar checkboxes. Empty = no label filtering.
+    label_filter: [64]i64 = undefined,
+    label_filter_len: usize = 0,
+    /// Editable seed-time cap (minutes) text buffer + last-saved value.
+    aria2_seed_time_buf: [16]u8 = [_]u8{0} ** 16,
+    aria2_seed_time_persisted: u32 = 0,
     aria2_seed_ratio_persisted: f32 = 5.0,
     aria2_seed_ratio_msg_buf: [80]u8 = [_]u8{0} ** 80,
     aria2_seed_ratio_msg_len: usize = 0,
@@ -1208,6 +1271,10 @@ pub const State = struct {
     /// under `<data_root>/auto_update_default`.
     auto_update_default: bool = false,
     auto_update_default_persisted: bool = false,
+    /// Fire a desktop notification when a sync batch finds updates.
+    /// Persisted under `<data_root>/desktop_notifications`.
+    desktop_notifications: bool = true,
+    desktop_notifications_persisted: bool = true,
     /// Source of game metadata during refresh. `.indexer` (default) hits
     /// `api.f95checker.dev`; `.scraper` parses f95zone.to thread pages
     /// directly. Toggle lives in Settings → Sync. Persisted under
@@ -1230,6 +1297,14 @@ pub const State = struct {
     /// dvui). Parsed + clamped on Save.
     max_parallel_sync_buf: [4]u8 = [_]u8{0} ** 4,
     max_parallel_image_buf: [4]u8 = [_]u8{0} ** 4,
+    /// Minimum session duration in seconds for `counts_as_played` to
+    /// be true. 0 = any successful launch counts; max 1800 (30 min).
+    /// Evaluated at session close — past `counts_as_played` values
+    /// are not re-derived when this changes.
+    min_session_seconds: u32 = 60,
+    min_session_seconds_persisted: u32 = 60,
+    /// TextEntry buffer for the Settings → min_session_seconds widget.
+    min_session_seconds_buf: [8]u8 = [_]u8{0} ** 8,
     /// Per-game F95-thread-id → host PID of the currently-launched
     /// game. Populated by `doLaunchGame`, consumed by `doStopGame` +
     /// the detail screen (Launch ↔ Stop button swap). Pruned each
@@ -1443,6 +1518,29 @@ pub const State = struct {
     pub fn searchSlice(self: *const State) []const u8 {
         const end = std.mem.indexOfScalar(u8, &self.search_buf, 0) orelse self.search_buf.len;
         return std.mem.trim(u8, self.search_buf[0..end], " \t");
+    }
+
+    pub fn labelFilterActive(self: *const State, id: i64) bool {
+        for (self.label_filter[0..self.label_filter_len]) |x| {
+            if (x == id) return true;
+        }
+        return false;
+    }
+
+    /// Toggle a label id in the library filter set (OR semantics). No-op
+    /// when adding past the fixed cap.
+    pub fn toggleLabelFilter(self: *State, id: i64) void {
+        for (self.label_filter[0..self.label_filter_len], 0..) |x, i| {
+            if (x == id) {
+                self.label_filter[i] = self.label_filter[self.label_filter_len - 1];
+                self.label_filter_len -= 1;
+                return;
+            }
+        }
+        if (self.label_filter_len < self.label_filter.len) {
+            self.label_filter[self.label_filter_len] = id;
+            self.label_filter_len += 1;
+        }
     }
 
     pub fn dlUrlSlice(self: *State) []u8 {
@@ -1686,6 +1784,7 @@ pub const State = struct {
         @memset(&self.manual_install_path_buf, 0);
         @memset(&self.manual_install_version_buf, 0);
         @memset(&self.manual_install_name_buf, 0);
+        self.manual_install_version_autofilled = false;
     }
 
     pub fn browserMsg(self: *const State) []const u8 {

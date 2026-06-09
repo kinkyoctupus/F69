@@ -55,9 +55,21 @@ pub const PostInstalledSet = std.AutoHashMap(u64, void);
 /// repeatedly-failing extract doesn't loop forever.
 pub const AttemptsMap = std.AutoHashMap(u64, u32);
 
-/// Map of f95_thread_id → child PID. Populated when "Run" launches
+/// Metadata carried per running game entry.
+/// `version` is `null` until a launch records a real install version; when
+/// non-null it owns a `lib.alloc`-duped string that must be freed on map
+/// removal. The optional disambiguates "no version recorded" from "heap-
+/// allocated empty string" so the free path is unambiguous.
+pub const RunningGameEntry = struct {
+    pid: i32,
+    session_id: i64 = -1,
+    started_at: i64 = 0,
+    version: ?[]u8 = null,
+};
+
+/// Map of f95_thread_id → RunningGameEntry. Populated when "Run" launches
 /// a game and consulted to grey-out the row and offer "Stop".
-pub const RunningGamesMap = std.AutoHashMap(u64, i32);
+pub const RunningGamesMap = std.AutoHashMap(u64, RunningGameEntry);
 
 /// Map of donor download_job_id → f95_thread_id. Used to correlate
 /// `downloads.Manager` events back to the game whose donor flow
@@ -108,6 +120,10 @@ pub const ModsPageCache = struct {
     archive_paths: []?[]u8,
     installed: []bool,
     load_index: []?u32,
+    /// Human-readable reason the current mod set won't resolve (conflict /
+    /// missing dep / version mismatch / cycle), or null when it's fine.
+    /// Owned by `alloc`. Surfaced as a warning banner in the mods page.
+    resolve_explanation: ?[]u8 = null,
     alloc: std.mem.Allocator,
 };
 

@@ -40,6 +40,30 @@ pub const Sandbox = union(enum) {
         }
     }
 
+    /// Active Sandboxie `Start.exe` path, or "" when the current backend
+    /// isn't Sandboxie. Shown in the Settings UI so the user can see (and
+    /// confirm) which install is in use.
+    pub fn sandboxiePath(self: *const Sandbox) []const u8 {
+        return switch (self.*) {
+            .sandboxie => |*s| s.start_exe,
+            else => "",
+        };
+    }
+
+    /// Point the sandbox at an explicit Sandboxie `Start.exe` (a portable or
+    /// non-standard install the user picked via the Settings file picker).
+    /// Frees the previous backend and hot-swaps in the new one so the change
+    /// takes effect without a restart. Returns false (leaving the current
+    /// backend untouched) when not on Windows or the path doesn't resolve to
+    /// an existing file — the caller surfaces a warning.
+    pub fn applySandboxiePath(self: *Sandbox, alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
+        if (builtin.os.tag != .windows) return false;
+        const sbie = Sandboxie.fromExplicitPath(alloc, io, path) orelse return false;
+        self.deinit();
+        self.* = .{ .sandboxie = sbie };
+        return true;
+    }
+
     /// Human-friendly tag for the active backend — Settings UI / logs.
     pub fn backendName(self: *const Sandbox) []const u8 {
         return switch (self.*) {
@@ -71,11 +95,12 @@ pub fn pickBackend(
     alloc: std.mem.Allocator,
     io: std.Io,
     environ: std.process.Environ,
+    sandboxie_override: []const u8,
 ) Sandbox {
     if (builtin.os.tag == .linux) {
         if (Bwrap.detect(alloc, io, environ)) |b| return .{ .bwrap = b };
     } else if (builtin.os.tag == .windows) {
-        if (Sandboxie.detect(alloc)) |s| return .{ .sandboxie = s };
+        if (Sandboxie.detect(alloc, io, environ, sandboxie_override)) |s| return .{ .sandboxie = s };
     }
     return .{ .none = NoSandbox.init(io, environ) };
 }
@@ -151,6 +176,11 @@ pub const NoSandbox = struct {
         // f69's own launch-diag dialog shows the same traceback,
         // so the user loses nothing by suppressing the second
         // window that would otherwise pop up behind f69.
+        // Linux-only env shimming: browser/editor suppression, the xdg-open
+        // no-op shim, and the `:`-separated PATH prepend. None of it applies
+        // on Windows (no /bin/true, no /tmp, and `:` would corrupt %PATH%),
+        // where games are native .exe with their own crash UX.
+        if (builtin.os.tag != .windows) {
         map.put("BROWSER", "/bin/true") catch return errs.Error.OutOfMemory;
         map.put("EDITOR", "/bin/true") catch return errs.Error.OutOfMemory;
         map.put("VISUAL", "/bin/true") catch return errs.Error.OutOfMemory;
@@ -175,6 +205,7 @@ pub const NoSandbox = struct {
             path_buf.appendSlice(alloc, hp) catch return errs.Error.OutOfMemory;
         };
         map.put("PATH", path_buf.items) catch return errs.Error.OutOfMemory;
+        }
         // Compat-recipe / caller-supplied env overrides. Applied after
         // HOME + BROWSER so a recipe can override either explicitly
         // if it really needs to.
@@ -265,7 +296,9 @@ pub const NoSandbox = struct {
             return errs.Error.LaunchFailed;
         };
 
-        return .{ .pid = if (child.id) |pid| @intCast(pid) else 0 };
+        // child.id is a numeric pid on POSIX but a HANDLE (*anyopaque) on Windows; native
+        // game launching + pid tracking is M2, so report 0 there for now.
+        return .{ .pid = if (builtin.os.tag == .windows) 0 else (if (child.id) |pid| @intCast(pid) else 0) };
     }
 };
 

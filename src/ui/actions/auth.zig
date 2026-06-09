@@ -5,6 +5,7 @@
 // the next launch picks them up without a re-login.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.ui_actions);
 const f95 = @import("f95");
 const downloads = @import("downloads");
@@ -228,7 +229,8 @@ fn persistRpdlToken(io: std.Io, path: []const u8, token: []const u8) !void {
     const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
     var tmp = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
     defer tmp.close(io);
-    try tmp.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
+    // 0600 is a POSIX file-mode nicety for the token file; not applicable on Windows.
+    if (builtin.os.tag != .windows) try tmp.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
     var fw_buf: [4096]u8 = undefined;
     var fw = tmp.writer(io, &fw_buf);
     try fw.interface.writeAll(token);
@@ -244,11 +246,10 @@ fn persistCookie(io: std.Io, path: []const u8, cookie: []const u8) !void {
     }
     var tmp_buf: [512]u8 = undefined;
     const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
-    var f = try std.Io.Dir.cwd().createFile(io, tmp_path, .{
-        .truncate = true,
-        .permissions = std.Io.File.Permissions.fromMode(0o600),
-    });
+    var f = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
     defer f.close(io);
+    // 0600 — POSIX file mode; Windows uses default ACLs.
+    if (builtin.os.tag != .windows) try f.setPermissions(io, std.Io.File.Permissions.fromMode(0o600));
     var fw_buf: [1024]u8 = undefined;
     var fw = f.writer(io, &fw_buf);
     try fw.interface.writeAll(cookie);

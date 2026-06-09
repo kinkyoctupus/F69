@@ -13,6 +13,7 @@
 // No file imports `ui.zig`, so there are no module cycles.
 
 const std = @import("std");
+const tokens = @import("ui_tokens");
 const library = @import("library");
 const f95 = @import("f95");
 const f95_indexer = @import("f95_indexer");
@@ -216,6 +217,9 @@ pub const RuntimeInfo = struct {
     /// Default false.
     auto_update_default_path: []const u8,
     initial_auto_update_default: bool,
+    /// `<data_root>/desktop_notifications` — single-line `true`/`false`.
+    desktop_notifications_path: []const u8,
+    initial_desktop_notifications: bool,
     /// `<data_root>/refresh_backend` — single-line `indexer` / `scraper`.
     /// Picks which backend the refresh worker uses. Default `.indexer`
     /// (F95Indexer cache at `api.f95checker.dev`). Settings → Sync row
@@ -232,6 +236,12 @@ pub const RuntimeInfo = struct {
     /// Default 4. Settings → Sync row writes here.
     max_parallel_image_path: []const u8,
     initial_max_parallel_image: u32,
+    /// `<data_root>/min_session_seconds` — single-line integer (0..1800).
+    /// Sessions shorter than this do not count as "played". Default 60.
+    /// Evaluated at session close; past counts_as_played values are not
+    /// retroactively updated when this setting changes.
+    min_session_seconds_path: []const u8,
+    initial_min_session_seconds: u32,
     /// `<data_root>/tags.txt` — cache of F95's master tag list.
     /// Newline-separated, first line `# fetched: <unix-secs>`.
     tags_master_path: []const u8,
@@ -249,6 +259,11 @@ pub const RuntimeInfo = struct {
     aria2_seed_ratio_path: []const u8,
     /// Aria2 seed-ratio target loaded from disk at startup.
     initial_aria2_seed_ratio: f32,
+    /// `<data_root>/aria2_seed_time` — BT seed-time cap in minutes
+    /// (0 = no cap). Applied live + via --seed-time at spawn.
+    aria2_seed_time_path: []const u8,
+    /// Aria2 seed-time cap (minutes) loaded from disk at startup.
+    initial_aria2_seed_time: u32,
     /// Snapshot of host env at process start — XDG_RUNTIME_DIR /
     /// WAYLAND_DISPLAY / DISPLAY / HOME. The sandbox backend uses
     /// these to wire display + audio + fontconfig binds.
@@ -262,6 +277,38 @@ pub const RuntimeInfo = struct {
 /// Pink palette. Hot rose for focus/highlight, deep wine for text-select,
 /// muted plum borders. Tuned to look at home on Adwaita Dark; Light mode
 /// gets a slightly toned-down version for legibility on white.
+/// Design B ("Console") dvui theme, sourced from the runtime `tokens.active`
+/// palette so it follows the user-chosen theme. Replaces pinkTheme as the
+/// installed theme. (Fonts stay adwaita's for now — bundling Archivo/IBM Plex
+/// is a separate step.)
+pub fn consoleTheme(scheme: anytype) dvui.Theme {
+    _ = scheme;
+    const k = tokens.active;
+    const tc = struct {
+        fn f(col: tokens.Color) dvui.Color {
+            return tokens.toDvui(col, dvui.Color);
+        }
+    }.f;
+    const is_light = tokens.luma(k.bg0) > 128;
+    var t = if (is_light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark;
+    t.name = "f69 console";
+    t.dark = !is_light;
+    t.focus = tc(k.acc);
+    t.text_select = tc(k.acc_wash);
+    t.fill = tc(k.bg1);
+    t.fill_hover = tc(k.bg2);
+    t.fill_press = tc(k.bg3);
+    t.text = tc(k.ink);
+    t.text_hover = tc(k.ink);
+    t.text_press = tc(k.ink);
+    t.border = tc(k.line);
+    t.control = .{ .fill = tc(k.bg2), .fill_hover = tc(k.bg3), .fill_press = tc(k.bg3), .text = tc(k.ink), .border = tc(k.line) };
+    t.window = .{ .fill = tc(k.bg0), .text = tc(k.ink), .border = tc(k.line) };
+    t.highlight = .{ .fill = tc(k.acc), .fill_hover = tc(k.acc), .fill_press = tc(k.acc_dim), .text = tc(k.ink_on_acc), .border = tc(k.acc) };
+    t.err = .{ .fill = tc(k.bg2), .text = tc(k.danger), .border = tc(k.line) };
+    return t;
+}
+
 pub fn pinkTheme(scheme: anytype) dvui.Theme {
     _ = scheme; // dvui.Theme has no built-in light variant of our pink
     // yet — keep dark base. Phase 1.5: per-scheme palette.

@@ -16,9 +16,11 @@ const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const comp = @import("ui_comp");
+const tokens = @import("ui_tokens");
 
 const Frame = types.Frame;
-const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+const helpTextColor = components.helpTextColor;
 
 // ============================================================
 //  detail screen
@@ -66,11 +68,11 @@ pub fn detailScreen(frame: *Frame) !bool {
             state.selected_thread = null;
             state.clearTransientToasts();
         }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        dvui.labelNoFmt(@src(), game.name, .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
+        if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err, .tag = "detail-delete" })) {
             state.confirm_delete = true;
         }
     }
@@ -84,15 +86,15 @@ pub fn detailScreen(frame: *Frame) !bool {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer bar.deinit();
         var conf_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&conf_buf, "Really delete \"{s}\"?", .{game.name}) catch "Really delete?";
         dvui.labelNoFmt(@src(), msg, .{}, .{ .gravity_y = 0.5 });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (components.iconButton(@src(), "Cancel", entypo.cross, .{})) state.confirm_delete = false;
+        if (components.iconButton(@src(), "Cancel", entypo.cross, .{ .tag = "detail-delete-cancel" })) state.confirm_delete = false;
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
             actions.deleteGameAndReturn(frame, game.f95_thread_id);
             return true;
@@ -108,15 +110,9 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer hdr.deinit();
 
-        renderCarousel(frame, game);
-
-        renderRibbon(frame, game);
+        renderBannerHero(frame, game);
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
-        renderIdentityPillRow(frame, game);
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
         renderActionRow(frame, game);
         renderMkxpZSettingsRow(frame, game);
@@ -154,6 +150,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Downloads", state.detail_tab == .downloads)) state.detail_tab = .downloads;
         if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
+        if (components.tabButton("Journal", state.detail_tab == .journal)) state.detail_tab = .journal;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -171,6 +168,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             .downloads => renderDownloadsTab(frame, game),
             .notes => renderNotesTab(frame, game),
             .guides => renderGuidesTab(frame, game),
+            .journal => renderJournalTab(frame, game),
         }
     }
 
@@ -190,7 +188,7 @@ pub fn detailScreen(frame: *Frame) !bool {
 // ============================================================
 
 fn renderRatingStars(rating: f32) void {
-    const accent: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const accent: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
     var n: u8 = 1;
     while (n <= 5) : (n += 1) {
         const filled = rating >= @as(f32, @floatFromInt(n)) - 0.5;
@@ -213,40 +211,30 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
 
     if (game.engine != .unknown) {
         const fill = components.engineBadgeColor(game.engine);
-        var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        comp.chip(@src(), .{
+            .label = components.engineShortLabel(game.engine),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        }, .{
             .id_extra = game.f95_thread_id ^ 0xE1,
             .gravity_y = 0.5,
             .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-            .corner_radius = .all(3),
-            .background = true,
-            .color_fill = fill,
-            .color_border = fill,
-            .border = style.border_thin,
-        });
-        defer pill.deinit();
-        dvui.labelNoFmt(@src(), components.engineShortLabel(game.engine), .{}, .{
-            .gravity_y = 0.5,
-            .color_text = dvui.Color.white,
         });
     }
 
     if (game.dev_status != .unknown) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         const fill = components.devStatusColor(game.dev_status);
-        var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        comp.chip(@src(), .{
+            .label = components.devStatusShortLabel(game.dev_status),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        }, .{
             .id_extra = game.f95_thread_id,
             .gravity_y = 0.5,
             .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-            .corner_radius = .all(3),
-            .background = true,
-            .color_fill = fill,
-            .color_border = fill,
-            .border = style.border_thin,
-        });
-        defer pill.deinit();
-        dvui.labelNoFmt(@src(), components.devStatusShortLabel(game.dev_status), .{}, .{
-            .gravity_y = 0.5,
-            .color_text = dvui.Color.white,
         });
     }
 
@@ -258,7 +246,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
         const s = std.fmt.bufPrint(&lbl_buf, "{d:.1} ({d} votes)", .{ r, game.vote_count orelse 0 }) catch "";
         dvui.labelNoFmt(@src(), s, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -269,9 +257,108 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
     if (style.button(@src(), tid_str, .{}, .{
         .gravity_y = 0.5,
         .style = .control,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     })) {
         actions.openInBrowser(frame, game.f95_thread_id);
+    }
+}
+
+/// Design-B banner hero — full-bleed cover banner with the title + developer +
+/// identity chips overlaid at the bottom over a scrim; clicking it opens the
+/// carousel popup. Replaces the old inline carousel + separate title + pill row.
+fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    const t = tokens.active;
+    const HERO_H: f32 = 230;
+
+    var hero = dvui.overlay(@src(), .{
+        .id_extra = game.f95_thread_id,
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 0, .h = HERO_H },
+        .max_size_content = .height(HERO_H),
+        .background = true,
+        .color_fill = tokens.toDvui(t.bg2, dvui.Color),
+        .corner_radius = dvui.Rect.all(tokens.r_lg),
+    });
+    defer hero.deinit();
+
+    // image layer — the cover, aspect-fit + centered.
+    if (actions.coverBytes(frame, game.f95_thread_id)) |bytes| {
+        _ = dvui.image(@src(), .{
+            .source = .{ .imageFile = .{ .bytes = bytes, .name = "hero" } },
+            .shrink = .ratio,
+        }, .{
+            .expand = .both,
+            .gravity_x = 0.5,
+            .gravity_y = 0.5,
+            .corner_radius = dvui.Rect.all(tokens.r_lg),
+        });
+    }
+
+    // bottom scrim for text legibility (semi-transparent dark band).
+    {
+        var scrim = dvui.box(@src(), .{}, .{
+            .gravity_y = 1.0,
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 0, .h = 92 },
+            .background = true,
+            .color_fill = .{ .r = 0x07, .g = 0x0b, .b = 0x0f, .a = 0xCC },
+        });
+        scrim.deinit();
+    }
+
+    // title + developer + chips, bottom-left.
+    {
+        var ov = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .gravity_y = 1.0,
+            .gravity_x = 0.0,
+            .expand = .horizontal,
+            .padding = .{ .x = 16, .y = 10, .w = 16, .h = 12 },
+        });
+        defer ov.deinit();
+
+        dvui.labelNoFmt(@src(), game.name, .{}, .{ .color_text = tokens.toDvui(t.ink, dvui.Color), .font = dvui.Font.theme(.title) });
+        if (game.developer) |dev| if (dev.len > 0) {
+            dvui.labelNoFmt(@src(), dev, .{}, .{ .color_text = tokens.toDvui(t.ink2, dvui.Color) });
+        };
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+        var chips = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer chips.deinit();
+        if (game.engine != .unknown) {
+            const fill = components.engineBadgeColor(game.engine);
+            comp.chip(@src(), .{
+                .label = components.engineShortLabel(game.engine),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            }, .{ .id_extra = game.f95_thread_id ^ 0xE1, .gravity_y = 0.5, .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 } });
+        }
+        if (game.dev_status != .unknown) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            const fill = components.devStatusColor(game.dev_status);
+            comp.chip(@src(), .{
+                .label = components.devStatusShortLabel(game.dev_status),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            }, .{ .id_extra = game.f95_thread_id ^ 0xE2, .gravity_y = 0.5, .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 } });
+        }
+        if (game.rating) |r| {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+            renderRatingStars(r);
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            var lbl_buf: [48]u8 = undefined;
+            const s = std.fmt.bufPrint(&lbl_buf, "{d:.1} ({d})", .{ r, game.vote_count orelse 0 }) catch "";
+            dvui.labelNoFmt(@src(), s, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink2, dvui.Color) });
+        }
+    }
+
+    // click → carousel popup.
+    if (dvui.clicked(hero.data(), .{})) {
+        state.image_popup_open = true;
+        state.carousel_for_thread = game.f95_thread_id;
+        state.carousel_index = 0;
     }
 }
 
@@ -286,6 +373,28 @@ fn saveOrToast(frame: *Frame, what: []const u8, err_opt: anyerror!void) void {
         const msg = std.fmt.bufPrint(&buf, "Save failed ({s}): {s}", .{ what, @errorName(e) }) catch "Save failed";
         frame.state.notifyErr(msg);
     };
+}
+
+fn findLabelById(all: []const library.UserLabel, id: i64) ?library.UserLabel {
+    for (all) |l| {
+        if (l.id == id) return l;
+    }
+    return null;
+}
+
+/// Create (or re-use by name) the label in the input buffer and assign it to
+/// `game`, then clear the buffer. No-op on a blank input.
+fn addLabelFromInput(frame: *Frame, game: *library.Game) void {
+    const buf = &frame.state.label_input_buf;
+    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    const name = std.mem.trim(u8, buf[0..end], " \t\r\n");
+    if (name.len == 0) return;
+    const id = frame.lib.createLabel(name, null) catch |e| {
+        saveOrToast(frame, "label", e);
+        return;
+    };
+    saveOrToast(frame, "label", frame.lib.addGameLabel(game.f95_thread_id, id));
+    @memset(buf, 0);
 }
 
 fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
@@ -320,7 +429,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Last synced", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         var dt_buf: [40]u8 = undefined;
         const dt = if (game.last_scraped_at) |ts|
@@ -349,7 +458,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Your status", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = completionStatusLabels();
         var picked: usize = @intFromEnum(game.completion_status);
@@ -372,7 +481,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Your rating", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const ur_int: u8 = if (game.user_rating) |r| @as(u8, @intFromFloat(@round(r))) else 0;
         var n: u8 = 1;
@@ -384,7 +493,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 22, .h = 22 },
                 .color_text = if (filled)
-                    dvui.Color{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                    tokens.toDvui(tokens.active.acc, dvui.Color)
                 else
                     null,
             })) {
@@ -404,7 +513,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Sandbox", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = sandboxOverrideLabels(frame.state.sandbox_default);
         var picked: usize = @intFromEnum(game.sandbox);
@@ -414,6 +523,170 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         })) {
             game.sandbox = @enumFromInt(picked);
             saveOrToast(frame, "game", frame.lib.upsertGame(game));
+        }
+    }
+
+    // Version pin — hold the game on its current version (suppresses
+    // auto-update). Pin/unpin writes a single column; we mirror the change
+    // in the in-memory snapshot so the row updates without a reload.
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Version pin", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+        if (game.pinned_version) |pv| {
+            var pbuf: [80]u8 = undefined;
+            const lbl = std.fmt.bufPrint(&pbuf, "Pinned to v{s}", .{pv}) catch "Pinned";
+            dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5 });
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+            if (components.iconButton(@src(), "Unpin", entypo.cross, .{ .gravity_y = 0.5 })) {
+                saveOrToast(frame, "pin", frame.lib.setPinnedVersion(game.f95_thread_id, null));
+                frame.lib.alloc.free(pv);
+                game.pinned_version = null;
+            }
+        } else if (game.latest_version) |lv| {
+            var pbuf: [80]u8 = undefined;
+            const lbl = std.fmt.bufPrint(&pbuf, "Pin to v{s}", .{lv}) catch "Pin";
+            if (components.iconButton(@src(), lbl, entypo.bookmark, .{ .gravity_y = 0.5 })) {
+                saveOrToast(frame, "pin", frame.lib.setPinnedVersion(game.f95_thread_id, lv));
+                game.pinned_version = frame.lib.alloc.dupe(u8, lv) catch null;
+            }
+        } else {
+            dvui.label(@src(), "no version known yet", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
+    }
+
+    // User labels — the user's own organizational tags (distinct from the
+    // scraped F95 tags). Assigned chips (removable) + an add box that creates
+    // a new label or re-uses an existing one by name.
+    {
+        const all_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
+        defer if (all_opt) |a| frame.lib.freeLabels(a);
+        const all: []const library.UserLabel = all_opt orelse &.{};
+        const assigned_opt: ?[]i64 = frame.lib.labelsForGame(game.f95_thread_id) catch null;
+        defer if (assigned_opt) |a| frame.lib.alloc.free(a);
+        const assigned: []const i64 = assigned_opt orelse &.{};
+
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Labels", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+
+        var flow = dvui.flexbox(@src(), .{}, .{ .expand = .horizontal });
+        defer flow.deinit();
+
+        for (assigned) |lid| {
+            const lbl = findLabelById(all, lid) orelse continue;
+            const id_extra: u64 = @bitCast(lid);
+            var chip_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .id_extra = id_extra,
+                .gravity_y = 0.5,
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 4 },
+            });
+            defer chip_row.deinit();
+            const col = if (lbl.color) |c| (tokens.parseHex(c) orelse tokens.active.acc) else tokens.active.acc;
+            comp.chip(@src(), .{
+                .label = lbl.name,
+                .fill = col,
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                .border = col,
+                .scale = 0.8,
+            }, .{
+                .id_extra = id_extra,
+                .gravity_y = 0.5,
+                .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
+                .corner_radius = .all(3),
+            });
+            if (components.iconOnly(@src(), "remove-label", entypo.cross, .{ .id_extra = id_extra, .gravity_y = 0.5 })) {
+                saveOrToast(frame, "label", frame.lib.removeGameLabel(game.f95_thread_id, lid));
+            }
+        }
+
+        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &frame.state.label_input_buf } }, .{
+            .min_size_content = .{ .w = 150, .h = 26 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        if (components.iconButton(@src(), "Add", entypo.plus, .{ .style = .highlight, .gravity_y = 0.5 })) {
+            addLabelFromInput(frame, game);
+        }
+    }
+
+    // Engine tools — per-engine mod helpers. Non-destructive.
+    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz or game.engine == .renpy) {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = row_id,
+            .expand = .horizontal,
+            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        });
+        defer row.deinit();
+        row_id += 1;
+        dvui.label(@src(), "Tools", .{}, .{
+            .min_size_content = .{ .w = 120, .h = 20 },
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+        if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
+            if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{ .gravity_y = 0.5 })) {
+                actions.decryptRpgmAssets(frame, game.f95_thread_id);
+            }
+        }
+        if (game.engine == .renpy) {
+            if (components.iconButton(@src(), "Enable Ren'Py console", entypo.tools, .{ .gravity_y = 0.5 })) {
+                actions.enableRenpyConsole(frame, game.f95_thread_id);
+            }
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            if (components.iconButton(@src(), "Extract .rpa", entypo.archive, .{ .gravity_y = 0.5 })) {
+                actions.extractRpaArchives(frame, game.f95_thread_id);
+            }
+        }
+    }
+
+    // Per-game universal-mod opt-outs — list the engine's universal mods with
+    // a checkbox each (checked = applied to this game).
+    {
+        const umods_opt: ?[]library.UniversalMod = frame.lib.listUniversalMods(game.engine) catch null;
+        defer if (umods_opt) |m| frame.lib.freeUniversalMods(m);
+        const umods = umods_opt orelse &.{};
+        if (umods.len > 0) {
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .id_extra = row_id,
+                .expand = .horizontal,
+                .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+            });
+            defer row.deinit();
+            row_id += 1;
+            dvui.label(@src(), "Universal mods", .{}, .{
+                .min_size_content = .{ .w = 120, .h = 20 },
+                .gravity_y = 0.5,
+                .color_text = style.labelDim(),
+            });
+            var col = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
+            defer col.deinit();
+            for (umods) |m| {
+                const disabled = frame.lib.isUniversalModDisabled(game.f95_thread_id, m.id) catch false;
+                var enabled = !disabled;
+                if (dvui.checkbox(@src(), &enabled, m.name, .{ .id_extra = @as(u64, @bitCast(m.id)) })) {
+                    frame.lib.setUniversalModDisabled(game.f95_thread_id, m.id, !enabled) catch {};
+                }
+            }
         }
     }
 
@@ -428,7 +701,7 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
         dvui.label(@src(), "Auto-update", .{}, .{
             .min_size_content = .{ .w = 120, .h = 20 },
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
         const labels = autoUpdateOverrideLabels(frame.state.auto_update_default);
         var picked: usize = @intFromEnum(game.auto_update);
@@ -439,6 +712,65 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             game.auto_update = @enumFromInt(picked);
             saveOrToast(frame, "game", frame.lib.upsertGame(game));
         }
+    }
+
+    renderCustomLaunchRow(frame, game);
+}
+
+/// Per-install custom launch override editor (applies to the latest install).
+/// Empty fields clear the override (back to the heuristic launcher).
+fn renderCustomLaunchRow(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    if (state.launch_cfg_for_thread != game.f95_thread_id) {
+        @memset(&state.launch_exec_buf, 0);
+        @memset(&state.launch_args_buf, 0);
+        state.launch_cfg_has_install = false;
+        if (frame.lib.latestInstallForGame(game.f95_thread_id) catch null) |inst| {
+            defer frame.lib.freeInstall(inst);
+            state.launch_cfg_install_id = inst.id;
+            state.launch_cfg_has_install = true;
+            if (inst.executable) |e| {
+                const n = @min(e.len, state.launch_exec_buf.len - 1);
+                @memcpy(state.launch_exec_buf[0..n], e[0..n]);
+            }
+            if (inst.launch_args) |a| {
+                const n = @min(a.len, state.launch_args_buf.len - 1);
+                @memcpy(state.launch_args_buf[0..n], a[0..n]);
+            }
+        }
+        state.launch_cfg_for_thread = game.f95_thread_id;
+    }
+    if (!state.launch_cfg_has_install) return;
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+    });
+    defer row.deinit();
+    dvui.label(@src(), "Custom launch", .{}, .{
+        .min_size_content = .{ .w = 120, .h = 20 },
+        .gravity_y = 0.5,
+        .color_text = style.labelDim(),
+    });
+    const te_exe = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_exec_buf } }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 170, .h = 26 },
+    });
+    te_exe.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    const te_args = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_args_buf } }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 170, .h = 26 },
+        .id_extra = 1,
+    });
+    te_args.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    if (style.button(@src(), "Save", .{}, .{ .gravity_y = 0.5 })) {
+        const exe = std.mem.trim(u8, std.mem.sliceTo(&state.launch_exec_buf, 0), " \t");
+        const args = std.mem.trim(u8, std.mem.sliceTo(&state.launch_args_buf, 0), " \t");
+        const id: []const u8 = &state.launch_cfg_install_id;
+        saveOrToast(frame, "launch", frame.lib.setInstallExecutable(id, if (exe.len > 0) exe else null));
+        saveOrToast(frame, "launch", frame.lib.setInstallLaunchArgs(id, if (args.len > 0) args else null));
     }
 }
 
@@ -487,7 +819,7 @@ fn factsRow(row_id: *u32, label: []const u8, value: FactsValue) void {
     dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 20 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     switch (value) {
         .text => |t| dvui.labelNoFmt(@src(), t, .{}, .{
@@ -529,15 +861,17 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
     {
         const path = state.manualInstallPathSlice();
         const version = state.manualInstallVersionSlice();
-        if (path.len > 0 and version.len == 0) {
-            const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse 0;
-            const base_with_ext = if (slash == 0) path else path[slash + 1 ..];
-            const dot = std.mem.lastIndexOfScalar(u8, base_with_ext, '.') orelse base_with_ext.len;
-            const stem = base_with_ext[0..dot];
-            if (version_mod.extractFromTitle(stem)) |guess| {
+        // Derive the version from the archive the user pointed at, when the
+        // field is empty OR still holds the auto-filled `latest_version`
+        // placeholder. A real user edit (autofilled=false, non-empty) is
+        // never clobbered. Fixes §2.12 #10: installing an older archive
+        // while the row was pre-filled with the thread's latest version.
+        if (path.len > 0 and (version.len == 0 or state.manual_install_version_autofilled)) {
+            if (version_mod.fromArchivePath(path)) |guess| {
                 const n = @min(guess.len, state.manual_install_version_buf.len - 1);
                 @memcpy(state.manual_install_version_buf[0..n], guess[0..n]);
                 state.manual_install_version_buf[n] = 0;
+                state.manual_install_version_autofilled = false;
             }
         }
     }
@@ -549,8 +883,8 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer panel.deinit();
 
@@ -564,8 +898,8 @@ fn renderManualInstallPanel(frame: *Frame, game: *const library.Game) void {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     manualInstallPathRow(frame);
-    manualInstallRow("Version", &state.manual_install_version_buf, 2);
-    manualInstallRow("Name (optional)", &state.manual_install_name_buf, 3);
+    manualInstallRow("Version", &state.manual_install_version_buf, 2, &state.manual_install_version_autofilled);
+    manualInstallRow("Name (optional)", &state.manual_install_name_buf, 3, null);
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -605,7 +939,7 @@ fn manualInstallPathRow(frame: *Frame) void {
     dvui.label(@src(), "Archive path", .{}, .{
         .min_size_content = .{ .w = 120, .h = 22 },
         .gravity_y = 0.5,
-        .color_text = HELP_TEXT_COLOR,
+        .color_text = helpTextColor(),
     });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.manual_install_path_buf } }, .{
         .expand = .horizontal,
@@ -632,19 +966,23 @@ fn manualInstallPathRow(frame: *Frame) void {
             const n = @min(p.len, state.manual_install_path_buf.len - 1);
             @memcpy(state.manual_install_path_buf[0..n], p[0..n]);
 
-            if (state.manualInstallVersionSlice().len == 0) {
+            // Exact recipe match by archive hash wins (authoritative) over
+            // both the latest-version placeholder and the filename guess the
+            // render block derives. Skip only when the user typed a version.
+            if (state.manualInstallVersionSlice().len == 0 or state.manual_install_version_autofilled) {
                 if (actions.lookupVersionFromArchiveSha(frame, p)) |hit| {
                     defer frame.lib.alloc.free(hit);
                     const vn = @min(hit.len, state.manual_install_version_buf.len - 1);
                     @memcpy(state.manual_install_version_buf[0..vn], hit[0..vn]);
                     state.manual_install_version_buf[vn] = 0;
+                    state.manual_install_version_autofilled = false;
                 }
             }
         }
     }
 }
 
-fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
+fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32, autofill_flag: ?*bool) void {
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = id_extra,
         .expand = .horizontal,
@@ -654,13 +992,18 @@ fn manualInstallRow(label: []const u8, buf: []u8, id_extra: u32) void {
     dvui.labelNoFmt(@src(), label, .{}, .{
         .min_size_content = .{ .w = 120, .h = 22 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     const te = style.textEntry(@src(), .{ .text = .{ .buffer = buf } }, .{
         .expand = .horizontal,
         .min_size_content = .{ .w = 240, .h = 24 },
         .gravity_y = 0.5,
     });
+    // A keystroke in this field means the value is now a user choice —
+    // stop archive detection from overriding it.
+    if (autofill_flag) |f| {
+        if (te.text_changed) f.* = false;
+    }
     te.deinit();
 }
 
@@ -672,8 +1015,8 @@ fn renderConvertHelp() void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer help.deinit();
 
@@ -691,7 +1034,7 @@ fn renderConvertHelp() void {
     for (help_lines) |line| {
         dvui.label(@src(), "- {s}", .{line}, .{
             .id_extra = std.hash.Wyhash.hash(0, line),
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
     }
 }
@@ -806,7 +1149,7 @@ fn renderRenameInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var ver_buf: [128]u8 = undefined;
     const ver_text = std.fmt.bufPrint(&ver_buf, "Version: {s} ({s})", .{ inst.version, @tagName(inst.source) }) catch inst.version;
-    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), ver_text, .{}, .{ .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
         "A name disambiguates two installs of the same version (e.g. \"vanilla\", \"modded\"). " ++
@@ -820,7 +1163,7 @@ fn renderRenameInstallPopup(frame: *Frame, inst: *const library.Install) void {
         dvui.label(@src(), "Name", .{}, .{
             .min_size_content = .{ .w = 80, .h = 24 },
             .gravity_y = 0.5,
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.manage_rename_buf } }, .{
             .expand = .horizontal,
@@ -886,7 +1229,7 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 
     var path_buf: [320]u8 = undefined;
     const path_text = std.fmt.bufPrint(&path_buf, "Path: {s}", .{inst.install_path}) catch inst.install_path;
-    dvui.labelNoFmt(@src(), path_text, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), path_text, .{}, .{ .color_text = helpTextColor() });
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
     {
@@ -1064,7 +1407,7 @@ fn renderInlineLineWithLinks(frame: *Frame, line: []const u8, id: u64) void {
 
     const body = dvui.Font.theme(.body);
     const bold_font = body.withWeight(.bold);
-    const link_color: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const link_color: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
 
     var cursor: usize = 0;
     while (cursor < line.len) {
@@ -1141,7 +1484,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
         defer bar.deinit();
         dvui.label(@src(), "Walkthroughs, guides, cheats, notes — managed copies in your library.", .{}, .{
             .gravity_y = 0.5,
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (components.iconButton(@src(), "Add guide", entypo.plus, .{ .style = .highlight })) {
@@ -1153,7 +1496,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
     // List of guides — re-walked every frame. Cheap because guides
     // dirs hold a handful of files at most.
     const guides = actions.listGuides(frame, game.f95_thread_id) catch {
-        dvui.label(@src(), "Couldn't read the guides directory.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "Couldn't read the guides directory.", .{}, .{ .color_text = helpTextColor() });
         return;
     };
     defer actions.freeGuides(alloc, guides);
@@ -1163,7 +1506,7 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
             @src(),
             "No guides yet. Click \"Add guide\" to pick a PDF / EPUB / HTML / TXT from anywhere — f69 will copy it into the game's library folder so it stays with the install.",
             .{},
-            .{ .color_text = HELP_TEXT_COLOR },
+            .{ .color_text = helpTextColor() },
         );
         return;
     }
@@ -1177,8 +1520,8 @@ fn renderGuidesTab(frame: *Frame, game: *const library.Game) void {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer row.deinit();
 
@@ -1265,7 +1608,7 @@ fn renderClashModal(frame: *Frame, game: *const library.Game) void {
 
     dvui.label(@src(), "Mod `{s}` overwrites paths owned by other installed mods.", .{m.recipe_id}, .{ .style = .err });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    dvui.label(@src(), "Last-applied wins — earlier mods' files will be replaced.", .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.label(@src(), "Last-applied wins — earlier mods' files will be replaced.", .{}, .{ .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     {
@@ -1305,11 +1648,13 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
     });
     defer row.deinit();
 
-    const launch_fill: dvui.Color = .{ .r = 0xFF, .g = 0x33, .b = 0x77 };
-    const launch_hover: dvui.Color = .{ .r = 0xFF, .g = 0x66, .b = 0xA0 };
-    const launch_press: dvui.Color = .{ .r = 0xCC, .g = 0x29, .b = 0x5E };
-    const launch_fill_off: dvui.Color = .{ .r = 0x3A, .g = 0x22, .b = 0x2A };
-    const launch_text_off: dvui.Color = .{ .r = 0x80, .g = 0x60, .b = 0x70 };
+    const tk = tokens.active;
+    const launch_fill: dvui.Color = tokens.toDvui(tk.acc, dvui.Color);
+    const launch_hover: dvui.Color = tokens.toDvui(tk.acc.lerp(.{}, 0.20), dvui.Color); // toward white
+    const launch_press: dvui.Color = tokens.toDvui(tk.acc_dim, dvui.Color);
+    const launch_fill_off: dvui.Color = tokens.toDvui(tk.bg3, dvui.Color);
+    const launch_text_off: dvui.Color = tokens.toDvui(tk.ink3, dvui.Color);
+    const launch_text: dvui.Color = tokens.toDvui(tk.ink_on_acc, dvui.Color);
 
     if (actions.isGameRunning(frame, game.f95_thread_id)) {
         if (components.iconButton(@src(), "Stop", entypo.cross, .{ .style = .err })) {
@@ -1321,7 +1666,7 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
             .color_fill = launch_fill,
             .color_fill_hover = launch_hover,
             .color_fill_press = launch_press,
-            .color_text = dvui.Color.white,
+            .color_text = launch_text,
             .color_border = launch_fill,
         } else .{
             .color_fill = launch_fill_off,
@@ -1349,7 +1694,7 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
             .color_fill = launch_fill,
             .color_fill_hover = launch_hover,
             .color_fill_press = launch_press,
-            .color_text = dvui.Color.white,
+            .color_text = launch_text,
             .color_border = launch_fill,
         })) {
             if (actions.hasAutoFetchableSource(frame, game.f95_thread_id)) {
@@ -1753,7 +2098,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id ^ 0xA0),
             .text = "Searching RPDL for a matching torrent…",
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = null,
             .view_link = false,
         });
@@ -1763,7 +2108,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id ^ 0xA1),
             .text = "Requesting signed URL from F95 donor DDL…",
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = null,
             .view_link = false,
         });
@@ -1774,7 +2119,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(job.id),
             .text = downloadStatusText(job),
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = downloadProgressPct(job),
             .view_link = true,
         });
@@ -1791,7 +2136,7 @@ fn renderDetailStatusLine(frame: *Frame, game: *const library.Game) void {
         renderStatusStrip(frame, .{
             .id = @intCast(game.f95_thread_id),
             .text = msg,
-            .accent = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .accent = tokens.toDvui(tokens.active.acc, dvui.Color),
             .progress = if (pct_opt) |p| @as(u32, p) else null,
             .view_link = false,
         });
@@ -1834,7 +2179,7 @@ fn renderIdleHint(id: u64, text: []const u8) void {
     defer row.deinit();
     dvui.labelNoFmt(@src(), text, .{}, .{
         .gravity_y = 0.5,
-        .color_text = HELP_TEXT_COLOR,
+        .color_text = helpTextColor(),
         .expand = .horizontal,
         .min_size_content = .{ .w = 0, .h = 20 },
     });
@@ -1857,8 +2202,8 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer wrap.deinit();
 
@@ -1870,7 +2215,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         defer line.deinit();
         dvui.labelNoFmt(@src(), args.text, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
             .expand = .horizontal,
             .min_size_content = .{ .w = 0, .h = 20 },
         });
@@ -1894,7 +2239,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
             .min_size_content = .{ .w = 1, .h = 10 },
             .border = style.border_thin,
             .corner_radius = .all(2),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .padding = .all(0),
         });
@@ -1907,7 +2252,7 @@ fn renderStatusStrip(frame: *Frame, args: StatusStripArgs) void {
         .min_size_content = .{ .w = 1, .h = 10 },
         .border = style.border_thin,
         .corner_radius = .all(2),
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .background = true,
         .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
     });
@@ -2016,7 +2361,7 @@ fn renderRibbon(frame: *Frame, game: *const library.Game) void {
 fn renderRibbonThumb(bytes_opt: ?[]const u8, idx: usize, is_active: bool, thread_id: u64) bool {
     const id_extra: usize = (@as(usize, @intCast(thread_id)) << 8) | (idx & 0xff) | 0x10000000_0000_0000;
     const border = if (is_active)
-        dvui.Color{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+        tokens.toDvui(tokens.active.acc, dvui.Color)
     else
         dvui.Color{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
 
@@ -2186,7 +2531,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
             .min_size_content = aspect_min,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return wd;
     }
@@ -2197,7 +2542,7 @@ fn renderSlideImage(frame: *Frame, bytes_opt: ?[]const u8, idx: usize, thread_id
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
     });
     defer slot.deinit();
@@ -2224,7 +2569,7 @@ fn renderCover(bytes_opt: ?[]const u8) void {
             .min_size_content = .{ .w = 220, .h = 320 },
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -2234,7 +2579,7 @@ fn renderCover(bytes_opt: ?[]const u8) void {
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
     });
     defer cover.deinit();
@@ -2255,7 +2600,7 @@ fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
             .min_size_content = .{ .w = 60, .h = 85 },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -2266,7 +2611,7 @@ fn renderCoverThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
         .border = style.border_thin,
         .corner_radius = .all(3),
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
     });
     defer thumb.deinit();
 }
@@ -2289,7 +2634,7 @@ fn renderTagChips(tags: []const []const u8) void {
             .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
             .margin = .{ .x = 0, .y = 0, .w = 2, .h = 2 },
             .color_fill = .{ .r = 0x3A, .g = 0x1A, .b = 0x28 },
-            .color_border = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .color_border = tokens.toDvui(tokens.active.acc, dvui.Color),
         });
         defer chip.deinit();
         dvui.labelNoFmt(@src(), tag, .{}, .{ .font = small });
@@ -2299,4 +2644,103 @@ fn renderTagChips(tags: []const []const u8) void {
 fn isPrintableTag(tag: []const u8) bool {
     if (tag.len == 0 or tag.len > 128) return false;
     return std.unicode.utf8ValidateSlice(tag);
+}
+
+// ============================================================
+//  Journal tab — per-version session history
+// ============================================================
+
+fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
+    const sessions = frame.lib.listPlaySessions(game.f95_thread_id) catch {
+        dvui.labelNoFmt(@src(), "Failed to load journal.", .{}, .{ .color_text = helpTextColor() });
+        return;
+    };
+    defer frame.lib.freePlaySessions(sessions);
+
+    if (sessions.len == 0) {
+        dvui.labelNoFmt(
+            @src(),
+            "No play sessions recorded yet. Sessions start counting from the first launch after this release.",
+            .{},
+            .{ .color_text = helpTextColor() },
+        );
+        return;
+    }
+
+    const alloc = frame.lib.alloc;
+    var seen: std.ArrayList([]const u8) = .empty;
+    defer seen.deinit(alloc);
+    for (sessions) |s| {
+        var found = false;
+        for (seen.items) |v| {
+            if (std.mem.eql(u8, v, s.version)) { found = true; break; }
+        }
+        if (!found) seen.append(alloc, s.version) catch break;
+    }
+    // Sort newest-first using util_version.compare.
+    std.sort.pdq([]const u8, seen.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return version_mod.compare(a, b) == .gt;
+        }
+    }.lt);
+
+    for (seen.items) |ver| {
+        var total_s: i64 = 0;
+        var count: usize = 0;
+        var last_end: ?i64 = null;
+        for (sessions) |s| {
+            if (!std.mem.eql(u8, s.version, ver)) continue;
+            count += 1;
+            if (s.counts_as_played) total_s += s.durationSeconds();
+            if (s.ended_at) |e| {
+                if (last_end == null or e > last_end.?) last_end = e;
+            }
+        }
+
+        var header_buf: [256]u8 = undefined;
+        // Raw unix-seconds for `last_end` matches the per-session row
+        // rendering (v1 — no time-formatting helper yet). "no end" only
+        // happens when every session for this version is still open.
+        const header = if (last_end) |le| std.fmt.bufPrint(
+            &header_buf,
+            "{s}   {d} session{s} · {d}h {d}m · last {d}",
+            .{
+                ver,
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+                @divTrunc(total_s, 3600),
+                @mod(@divTrunc(total_s, 60), 60),
+                le,
+            },
+        ) catch ver else std.fmt.bufPrint(
+            &header_buf,
+            "{s}   {d} session{s} · {d}h {d}m",
+            .{
+                ver,
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+                @divTrunc(total_s, 3600),
+                @mod(@divTrunc(total_s, 60), 60),
+            },
+        ) catch ver;
+        dvui.labelNoFmt(@src(), header, .{}, .{ .style = .highlight });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 2 } });
+
+        for (sessions) |s| {
+            if (!std.mem.eql(u8, s.version, ver)) continue;
+            var row_buf: [256]u8 = undefined;
+            const row = formatSessionRow(&row_buf, s);
+            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = helpTextColor() });
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    }
+}
+
+fn formatSessionRow(buf: *[256]u8, s: library.PlaySession) []const u8 {
+    if (s.ended_at) |end| {
+        const dur_m = @divTrunc(s.durationSeconds(), 60);
+        const note: []const u8 = if (s.counts_as_played) "" else "  (below threshold)";
+        return std.fmt.bufPrint(buf, "  {d} → {d}   {d}m{s}", .{ s.started_at, end, dur_m, note }) catch "session";
+    }
+    return std.fmt.bufPrint(buf, "  {d} → in progress", .{s.started_at}) catch "session";
 }

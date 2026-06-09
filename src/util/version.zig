@@ -57,6 +57,37 @@ pub fn extractFromTitle(title: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Best-effort version guess from an archive file PATH (the file the
+/// user actually picked, not the thread's latest). Strips the directory
+/// (handling both `/` and `\` separators) and the archive extension —
+/// including compound ones like `.tar.gz` — then runs `extractFromTitle`
+/// on the stem. Returns a slice into `path`, or null when the basename
+/// has no version-like token. Used by the manual-install panel so an
+/// install is labelled by the build on disk rather than F95's newest.
+pub fn fromArchivePath(path: []const u8) ?[]const u8 {
+    // Strip directory: last of either separator.
+    const fwd = std.mem.lastIndexOfScalar(u8, path, '/');
+    const back = std.mem.lastIndexOfScalar(u8, path, '\\');
+    const sep: ?usize = if (fwd) |f| (if (back) |b| @max(f, b) else f) else back;
+    const base = if (sep) |s| path[s + 1 ..] else path;
+
+    // Strip the extension. Compound archive extensions first so
+    // `Game-1.2.tar.gz` doesn't keep a stray `.tar` that the version
+    // scan would otherwise swallow.
+    const compound = [_][]const u8{ ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst" };
+    var stem = base;
+    for (compound) |ext| {
+        if (base.len >= ext.len and eqlAsciiCase(base[base.len - ext.len ..], ext)) {
+            stem = base[0 .. base.len - ext.len];
+            break;
+        }
+    } else {
+        const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
+        stem = base[0..dot];
+    }
+    return extractFromTitle(stem);
+}
+
 fn looksLikeVersion(seg: []const u8) bool {
     if (seg.len == 0) return false;
     if (std.ascii.isDigit(seg[0])) return true;
@@ -540,6 +571,27 @@ test "extractFromTitle: ignores letter-only trailers" {
 test "extractFromTitle: tokens separated by space or underscore" {
     try std.testing.expectEqualStrings("v0.5", extractFromTitle("Some Game v0.5").?);
     try std.testing.expectEqualStrings("v0.5", extractFromTitle("Some_Game_v0.5").?);
+}
+
+test "fromArchivePath: strips dir + extension, finds version" {
+    try std.testing.expectEqualStrings("1.0", fromArchivePath("/home/u/Downloads/ABitchJKInAnRPG-1.0-pc.zip").?);
+    try std.testing.expectEqualStrings("v0.5", fromArchivePath("Some-Game-v0.5.7z").?);
+    try std.testing.expectEqualStrings("0.9b", fromArchivePath("Foo-0.9b.rar").?);
+}
+
+test "fromArchivePath: handles Windows backslash paths" {
+    try std.testing.expectEqualStrings("0.9b", fromArchivePath("C:\\Users\\w10\\Downloads\\Some-Game-0.9b.zip").?);
+}
+
+test "fromArchivePath: strips compound archive extensions" {
+    try std.testing.expectEqualStrings("1.2", fromArchivePath("/x/My-Game-1.2.tar.gz").?);
+    try std.testing.expectEqualStrings("2.3", fromArchivePath("/x/My-Game-2.3.tar.bz2").?);
+    try std.testing.expectEqualStrings("1.0", fromArchivePath("Game-1.0.tgz").?);
+}
+
+test "fromArchivePath: no version returns null" {
+    try std.testing.expect(fromArchivePath("/home/u/JustAName.zip") == null);
+    try std.testing.expect(fromArchivePath("Readme.txt") == null);
 }
 
 test "compare: numeric ordering" {

@@ -19,9 +19,22 @@ const log = std.log.scoped(.fonts);
 
 pub const DEFAULT_FAMILY: []const u8 = "JetBrainsMono Nerd Font";
 
+// Design B font families (OFL, bundled). Headings/titles use Archivo
+// (geometric grotesque); body/caption use IBM Plex Sans; mono uses
+// IBM Plex Mono. ui.zig maps the theme's font slots onto these.
+pub const FAMILY_HEADING: []const u8 = "Archivo";
+pub const FAMILY_BODY: []const u8 = "IBM Plex Sans";
+pub const FAMILY_MONO: []const u8 = "IBM Plex Mono";
+
 const JETBRAINS_BYTES = @embedFile("assets/fonts/JetBrainsMonoNerdFont-Regular.ttf");
 const JETBRAINS_BOLD_BYTES = @embedFile("assets/fonts/JetBrainsMonoNerdFont-Bold.ttf");
 const FIRACODE_BYTES = @embedFile("assets/fonts/FiraCodeNerdFont-Regular.ttf");
+
+const ARCHIVO_BYTES = @embedFile("assets/fonts/Archivo-Regular.ttf");
+const ARCHIVO_BOLD_BYTES = @embedFile("assets/fonts/Archivo-Bold.ttf");
+const PLEX_SANS_BYTES = @embedFile("assets/fonts/IBMPlexSans-Regular.ttf");
+const PLEX_SANS_BOLD_BYTES = @embedFile("assets/fonts/IBMPlexSans-Bold.ttf");
+const PLEX_MONO_BYTES = @embedFile("assets/fonts/IBMPlexMono-Regular.ttf");
 
 /// Register the bundled fonts on `win`. Idempotent on the dvui side —
 /// re-registering an already-known family is a no-op. Errors are
@@ -49,6 +62,30 @@ pub fn registerBundled(win: *dvui.Window) void {
     }) catch |e| {
         log.warn("register JetBrainsMono Bold failed: {s}", .{@errorName(e)});
     };
+
+    // Design B families (Archivo / IBM Plex Sans / IBM Plex Mono).
+    registerFamily(win, FAMILY_HEADING, ARCHIVO_BYTES, ARCHIVO_BOLD_BYTES);
+    registerFamily(win, FAMILY_BODY, PLEX_SANS_BYTES, PLEX_SANS_BOLD_BYTES);
+    registerFamily(win, FAMILY_MONO, PLEX_MONO_BYTES, null);
+}
+
+/// Register a family's regular weight via `addFont`, then (if present) its
+/// bold weight directly in the database so dvui's exact (family, weight)
+/// lookup resolves bold text without the "Font ... Bold not in database" warn.
+fn registerFamily(win: *dvui.Window, name: []const u8, regular: []const u8, bold: ?[]const u8) void {
+    win.addFont(name, regular, null) catch |e| {
+        log.warn("addFont {s} failed: {s}", .{ name, @errorName(e) });
+        return;
+    };
+    if (bold) |b| {
+        win.fonts.database.append(win.gpa, .{
+            .family = dvui.Font.array(name),
+            .weight = .bold,
+            .style = .normal,
+            .bytes = b,
+            .allocator = null,
+        }) catch |e| log.warn("register {s} Bold failed: {s}", .{ name, @errorName(e) });
+    }
 }
 
 /// Scan `<exe_dir>/fonts/` for `.ttf` / `.otf` and register each with

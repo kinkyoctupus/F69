@@ -17,6 +17,7 @@
 // + std.process.spawn.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const log = std.log.scoped(.bwrap);
 const errs = @import("errors.zig");
@@ -90,7 +91,7 @@ pub const Bwrap = struct {
         };
         // Don't wait — game runs detached. Future round can return a
         // handle for "Stop" / "Logs" actions.
-        return .{ .pid = if (child.id) |pid| @intCast(pid) else 0 };
+        return .{ .pid = if (builtin.os.tag == .windows) 0 else (if (child.id) |pid| @intCast(pid) else 0) };
     }
 };
 

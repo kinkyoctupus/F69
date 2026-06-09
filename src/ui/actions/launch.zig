@@ -3,6 +3,7 @@
 // sync / downloads / installer pipelines that surround it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.ui_actions);
 const library = @import("library");
 const recipe = @import("recipe");
@@ -11,6 +12,7 @@ const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const downloads = @import("downloads");
 const version_mod = @import("util_version");
+const argv = @import("util_argv");
 const dvui = @import("dvui");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
@@ -109,7 +111,23 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     // the detected engine; `.none` means "nothing to do."
     var exe_buf: [512]u8 = undefined;
     var exe_storage: []const u8 = "";
-    if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf) == null) {
+    var custom_args: []const []const u8 = &.{};
+    var owns_custom_args = false;
+    defer if (owns_custom_args) argv.free(alloc, custom_args);
+
+    // Per-install custom launch override (installs.executable). When set, run it
+    // verbatim and skip the heuristic finder + auto-convert.
+    if (picked_install) |inst| if (inst.executable) |custom| if (custom.len > 0) {
+        exe_storage = custom;
+        const raw_args: []const u8 = inst.launch_args orelse "";
+        if (argv.tokenize(alloc, raw_args, .{ .install = install_path, .exe = custom })) |toks| {
+            custom_args = toks;
+            owns_custom_args = true;
+        } else |_| {}
+        log.info("launch: custom override '{s}' under {s}", .{ custom, install_path });
+    };
+
+    if (exe_storage.len == 0 and findLinuxLauncher(frame.io, alloc, install_path, &exe_buf) == null) {
         const conv_spec = mods_act.resolveConvertSpec(frame, install_path);
         if (conv_spec != .none) {
             state.setLaunchMsg("Converting before launch...");
@@ -124,30 +142,32 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
 
     // Second pass post-convert (or first pass when no convert was
     // needed). The launcher should exist now if everything worked.
-    if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf)) |found| {
-        exe_storage = found;
-        log.info("launch: auto-picked launcher '{s}' under {s}", .{ found, install_path });
-    } else {
-        // Nothing Linux-native on disk. Look for a Windows .exe so we
-        // can give an actionable message.
-        if (findWindowsExe(frame.io, alloc, install_path, &exe_buf)) |win_exe| {
-            var buf: [320]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                "Found Windows binary ({s}) — click Convert to translate it for Linux first.",
-                .{win_exe},
-            ) catch "Windows build — click Convert first.";
-            state.notifyErr(msg);
+    if (exe_storage.len == 0) {
+        if (findLinuxLauncher(frame.io, alloc, install_path, &exe_buf)) |found| {
+            exe_storage = found;
+            log.info("launch: auto-picked launcher '{s}' under {s}", .{ found, install_path });
         } else {
-            var buf: [384]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                "No runnable found under {s}. Either the archive didn't extract cleanly (re-download), or the install layout is non-standard (open the folder and check what's there).",
-                .{install_path},
-            ) catch "No runnable found in the install dir.";
-            state.notifyErr(msg);
+            // Nothing Linux-native on disk. Look for a Windows .exe so we
+            // can give an actionable message.
+            if (findWindowsExe(frame.io, alloc, install_path, &exe_buf)) |win_exe| {
+                var buf: [320]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "Found Windows binary ({s}) — click Convert to translate it for Linux first.",
+                    .{win_exe},
+                ) catch "Windows build — click Convert first.";
+                state.notifyErr(msg);
+            } else {
+                var buf: [384]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "No runnable found under {s}. Either the archive didn't extract cleanly (re-download), or the install layout is non-standard (open the folder and check what's there).",
+                    .{install_path},
+                ) catch "No runnable found in the install dir.";
+                state.notifyErr(msg);
+            }
+            return;
         }
-        return;
     }
 
     // Sandbox config used to pull `network` / `bind_extra` from the
@@ -223,6 +243,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         .sandbox_home = sandbox_home,
         .install_path = install_path,
         .executable = exe_storage,
+        .launch_args = custom_args,
         .host = frame.info.host,
         .env_extra = launch_envs,
     };
@@ -249,7 +270,60 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     };
 
     if (result.pid > 0) {
-        if (runningGamesMap(frame)) |rm| rm.put(game.f95_thread_id, result.pid) catch {};
+        // POSIX realtime clock; on Windows result.pid is always 0 (launch is M2) so this
+        // block never runs — keep it comptime-clean there.
+        const now_s: i64 = if (builtin.os.tag == .windows) 0 else blk: {
+            var _now_ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
+            break :blk _now_ts.sec;
+        };
+
+        // One install lookup, reused for both install_id and version.
+        // `version_owned` stays null when we have nothing to dupe — that's
+        // the unambiguous "no version" sentinel; non-null is always a heap
+        // allocation owned by lib.alloc.
+        var install_id_opt: ?[36]u8 = null;
+        var version_owned: ?[]u8 = null;
+        if (frame.lib.latestInstallForGame(game.f95_thread_id) catch null) |inst| {
+            defer frame.lib.freeInstall(inst);
+            var id: [36]u8 = undefined;
+            @memcpy(&id, &inst.id);
+            install_id_opt = id;
+            if (inst.version.len > 0) {
+                version_owned = frame.lib.alloc.dupe(u8, inst.version) catch null;
+            }
+        } else if (game.latest_version) |lv| {
+            if (lv.len > 0) {
+                version_owned = frame.lib.alloc.dupe(u8, lv) catch null;
+            }
+        }
+
+        const sid = frame.lib.insertSession(.{
+            .game_thread_id = game.f95_thread_id,
+            .install_id = install_id_opt,
+            .version = version_owned orelse "",
+            .started_at = now_s,
+        }) catch -1;
+
+        // Ownership of version_owned transfers to the map entry.
+        // It will be freed in drainRunningGames after reap (or in
+        // shutdown cleanup — see Task 9).
+        if (runningGamesMap(frame)) |rm| {
+            rm.put(game.f95_thread_id, .{
+                .pid = result.pid,
+                .session_id = sid,
+                .started_at = now_s,
+                .version = version_owned,
+            }) catch {
+                // put() failed — we still own version_owned. Free it
+                // and accept that this launch isn't tracked in-memory
+                // (the DB row was already inserted; it stays open and
+                // gets the "incomplete" treatment).
+                if (version_owned) |v| frame.lib.alloc.free(v);
+            };
+        } else {
+            if (version_owned) |v| frame.lib.alloc.free(v);
+        }
     }
     // Early-failure detection now flows through `drainRunningGames` →
     // `notifyOnAbnormalExit` which opens the launch diag dialog on a
@@ -1034,10 +1108,12 @@ pub fn shouldSandbox(state: *const State, game: *const library.Game) bool {
     };
 }
 
-/// Resolve the effective auto-update decision for `game`. Twin of
-/// `shouldSandbox`: `.always` / `.never` wins; `.use_default` falls
-/// back to `state.auto_update_default`.
+/// Resolve the effective auto-update decision for `game`. A version pin
+/// wins over everything — a pinned game is held on its version and never
+/// auto-updated (the user clears the pin to resume tracking). Otherwise:
+/// `.always` / `.never` wins; `.use_default` falls back to the global.
 pub fn shouldAutoUpdate(state: *const State, game: *const library.Game) bool {
+    if (game.pinned_version != null) return false;
     return switch (game.auto_update) {
         .always => true,
         .never => false,
@@ -1134,6 +1210,8 @@ pub fn openManualInstallForUpdate(state: *State, latest_version: []const u8) voi
         const n = @min(latest_version.len, state.manual_install_version_buf.len - 1);
         @memcpy(state.manual_install_version_buf[0..n], latest_version[0..n]);
         state.manual_install_version_buf[n] = 0;
+        // Placeholder, not a user choice — archive detection may override it.
+        state.manual_install_version_autofilled = true;
     }
 }
 
@@ -1457,10 +1535,17 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
         state.setLaunchMsg("Game is not tracked as running.");
         return;
     };
-    const pid = m.get(game.f95_thread_id) orelse {
+    const entry = m.get(game.f95_thread_id) orelse {
         state.setLaunchMsg("Game is not tracked as running.");
         return;
     };
+    const pid = entry.pid;
+    if (builtin.os.tag == .windows) {
+        // Native game launch + stop is M2; nothing is tracked-running on Windows yet.
+        _ = m.remove(game.f95_thread_id);
+        state.setLaunchMsg("Stopping a running game isn't supported on Windows yet.");
+        return;
+    }
     std.posix.kill(@intCast(pid), .TERM) catch |e| switch (e) {
         error.ProcessNotFound => {
             // Already dead; just clean up state.
@@ -1488,14 +1573,24 @@ pub fn doStopGame(frame: *Frame, game: *const library.Game) void {
 /// until reaped). `waitpid(WNOHANG)` both detects the exit AND
 /// reaps the zombie in a single non-blocking call.
 pub fn drainRunningGames(frame: *Frame) void {
+    // Reaps tracked game pids via waitpid — POSIX-only. Native game launch is M2 on Windows,
+    // so nothing is ever tracked-running there; skip the whole reaper (keeps std.c.* off Windows).
+    if (builtin.os.tag == .windows) return;
     if (frame.state.running_games == null) return;
     const m = runningGamesMap(frame) orelse return;
 
-    var doomed: std.ArrayList(struct { tid: u64, status: u32, pid: i32 }) = .empty;
+    var doomed: std.ArrayList(struct {
+        tid: u64,
+        status: u32,
+        pid: i32,
+        session_id: i64,
+        started_at: i64,
+        version: ?[]u8,
+    }) = .empty;
     defer doomed.deinit(frame.lib.alloc);
     var it = m.iterator();
     while (it.next()) |entry| {
-        const pid: std.c.pid_t = @intCast(entry.value_ptr.*);
+        const pid: std.c.pid_t = @intCast(entry.value_ptr.*.pid);
         // libc waitpid(WNOHANG) returns:
         //   >0  → child exited; we just reaped it.
         //    0  → child still running.
@@ -1511,16 +1606,52 @@ pub fn drainRunningGames(frame: *Frame) void {
                 .tid = entry.key_ptr.*,
                 .status = @bitCast(status),
                 .pid = pid,
+                .session_id = entry.value_ptr.*.session_id,
+                .started_at = entry.value_ptr.*.started_at,
+                .version = entry.value_ptr.*.version,
             }) catch break;
         }
     }
     for (doomed.items) |d| {
         _ = m.remove(d.tid);
+        // Close the session row. Early-fail mirrors the dialog rule:
+        // exited cleanly with code 0 → !early_fail; anything else within
+        // EARLY_FAIL_S → early_fail.
+        const EARLY_FAIL_S: i64 = 5;
+        var _now_ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &_now_ts);
+        const now_s: i64 = _now_ts.sec;
+        const duration_s: i64 = @max(0, now_s - d.started_at);
+        const W = std.posix.W;
+        const exited_clean: bool = W.IFEXITED(d.status) and W.EXITSTATUS(d.status) == 0;
+        const early_fail: bool = !exited_clean and duration_s < EARLY_FAIL_S;
+
+        if (d.session_id > 0) {
+            frame.lib.closeSession(.{
+                .session_id = d.session_id,
+                .ended_at = now_s,
+                .early_fail = early_fail,
+                .min_session_seconds = frame.state.min_session_seconds,
+            }) catch |e| log.warn("closeSession failed: {s}", .{@errorName(e)});
+
+            // last_played_version monotonic update (only when counted).
+            const counts_as_played = !early_fail and duration_s >= @as(i64, frame.state.min_session_seconds);
+            if (counts_as_played) {
+                if (d.version) |v| {
+                    frame.lib.setLastPlayedVersionIfNewer(d.tid, v, version_mod.compare)
+                        catch |e| log.warn("setLastPlayedVersionIfNewer failed: {s}", .{@errorName(e)});
+                }
+            }
+        }
+
         // Only surface a notification when the exit code is non-zero
         // (a clean exit means the user quit the game normally). The
         // ECHILD case (rc == -1) collapses into status = 0 here so
         // it stays silent too — those are stale entries, not crashes.
         notifyOnAbnormalExit(frame, d.tid, d.status);
+
+        // Free the version string we duped at launch time.
+        if (d.version) |v| frame.lib.alloc.free(v);
     }
 }
 
@@ -1709,6 +1840,10 @@ fn readFilePrefix(io: std.Io, path: []const u8, out: []u8) ![]const u8 {
 
 pub fn freeRunningGames(state: *State, alloc: std.mem.Allocator) void {
     if (state.running_games) |map_ptr| {
+        var it = map_ptr.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.version) |v| alloc.free(v);
+        }
         map_ptr.deinit();
         alloc.destroy(map_ptr);
         state.running_games = null;

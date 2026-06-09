@@ -27,10 +27,13 @@ pub const Mod = dom.Mod;
 pub const ModInstall = dom.ModInstall;
 pub const CompletionStatus = dom.CompletionStatus;
 pub const Engine = dom.Engine;
+pub const UserLabel = dom.UserLabel;
+pub const UniversalMod = dom.UniversalMod;
 pub const DevStatus = dom.DevStatus;
 pub const CensoredState = dom.CensoredState;
 pub const SandboxOverride = dom.SandboxOverride;
 pub const SavesPaths = dom.SavesPaths;
+pub const PlaySession = dom.PlaySession;
 pub const errors = errs;
 
 pub const Library = struct {
@@ -115,8 +118,9 @@ pub const Library = struct {
             \\  last_scraped_at, created_at, notes, screenshots_json,
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
-            \\  last_indexer_change, last_indexer_parser_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  last_indexer_change, last_indexer_parser_version, last_played_version,
+            \\  pinned_version, status_changed_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -154,6 +158,9 @@ pub const Library = struct {
             @tagName(g.censored),
             g.last_indexer_change,
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
+            g.last_played_version,
+            g.pinned_version,
+            g.status_changed_at,
         }) catch return errs.Error.DatabaseError;
         return self.conn.inner.changes() > 0;
     }
@@ -170,8 +177,8 @@ pub const Library = struct {
             \\  changelog_md, reviews_md, download_links_json, dev_status,
             \\  downloads_md, last_updated_at, thread_info_md, censored,
             \\  auto_update, mod_backup_mode, last_indexer_change,
-            \\  last_indexer_parser_version
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \\  last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ;
         const tags_json = try self.encodeTagsJson(g.tags);
         defer self.alloc.free(tags_json);
@@ -212,12 +219,224 @@ pub const Library = struct {
             @tagName(g.mod_backup_mode),
             g.last_indexer_change,
             if (g.last_indexer_parser_version) |v| @as(?i64, @intCast(v)) else null,
+            g.last_played_version,
+            g.pinned_version,
+            g.status_changed_at,
         }) catch return errs.Error.DatabaseError;
     }
 
     /// Single-column write — used by the Mods page dropdown so we
     /// don't have to re-`upsertGame` (which would clobber every
     /// other column the user might have edited concurrently).
+    /// Pin a game to (or unpin from) a specific version. `version = null`
+    /// clears the pin (track latest again). Single-column write so it
+    /// doesn't clobber concurrent edits to other columns.
+    pub fn setPinnedVersion(self: *Library, thread_id: u64, version: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec(
+            "UPDATE games SET pinned_version = ? WHERE f95_thread_id = ?",
+            .{ version, @as(i64, @intCast(thread_id)) },
+        ) catch return errs.Error.DatabaseError;
+    }
+
+    // ----- user labels -----
+
+    /// Create a label (idempotent on name). Returns the label's id whether
+    /// it was just inserted or already existed.
+    pub fn createLabel(self: *Library, name: []const u8, color: ?[]const u8) errs.Error!i64 {
+        self.conn.inner.exec(
+            "INSERT OR IGNORE INTO user_labels (name, color) VALUES (?, ?)",
+            .{ name, color },
+        ) catch return errs.Error.DatabaseError;
+        var row = (self.conn.inner.row("SELECT id FROM user_labels WHERE name = ?", .{name}) catch
+            return errs.Error.DatabaseError) orelse return errs.Error.DatabaseError;
+        defer row.deinit();
+        return row.int(0);
+    }
+
+    pub fn renameLabel(self: *Library, id: i64, name: []const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE user_labels SET name = ? WHERE id = ?", .{ name, id }) catch
+            return errs.Error.DatabaseError;
+    }
+
+    pub fn setLabelColor(self: *Library, id: i64, color: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE user_labels SET color = ? WHERE id = ?", .{ color, id }) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// Delete a label and all its game assignments.
+    pub fn deleteLabel(self: *Library, id: i64) errs.Error!void {
+        self.conn.inner.exec("DELETE FROM game_labels WHERE label_id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM user_labels WHERE id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// All labels, name-sorted. Caller frees via `freeLabels`.
+    pub fn listLabels(self: *Library) errs.Error![]dom.UserLabel {
+        var out: std.ArrayList(dom.UserLabel) = .empty;
+        errdefer {
+            for (out.items) |l| {
+                self.alloc.free(l.name);
+                if (l.color) |c| self.alloc.free(c);
+            }
+            out.deinit(self.alloc);
+        }
+        var rows = self.conn.inner.rows(
+            "SELECT id, name, color FROM user_labels ORDER BY name COLLATE NOCASE",
+            .{},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| {
+            const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
+            errdefer self.alloc.free(name);
+            const color: ?[]u8 = if (r.nullableText(2)) |c|
+                (self.alloc.dupe(u8, c) catch return errs.Error.OutOfMemory)
+            else
+                null;
+            out.append(self.alloc, .{ .id = r.int(0), .name = name, .color = color }) catch
+                return errs.Error.OutOfMemory;
+        }
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    pub fn freeLabels(self: *Library, labels: []dom.UserLabel) void {
+        for (labels) |l| {
+            self.alloc.free(l.name);
+            if (l.color) |c| self.alloc.free(c);
+        }
+        self.alloc.free(labels);
+    }
+
+    pub fn addGameLabel(self: *Library, game_thread_id: u64, label_id: i64) errs.Error!void {
+        self.conn.inner.exec(
+            "INSERT OR IGNORE INTO game_labels (game_thread_id, label_id) VALUES (?, ?)",
+            .{ @as(i64, @intCast(game_thread_id)), label_id },
+        ) catch return errs.Error.DatabaseError;
+    }
+
+    pub fn removeGameLabel(self: *Library, game_thread_id: u64, label_id: i64) errs.Error!void {
+        self.conn.inner.exec(
+            "DELETE FROM game_labels WHERE game_thread_id = ? AND label_id = ?",
+            .{ @as(i64, @intCast(game_thread_id)), label_id },
+        ) catch return errs.Error.DatabaseError;
+    }
+
+    /// Label ids assigned to a game. Caller frees the slice via `alloc.free`.
+    pub fn labelsForGame(self: *Library, game_thread_id: u64) errs.Error![]i64 {
+        var out: std.ArrayList(i64) = .empty;
+        errdefer out.deinit(self.alloc);
+        var rows = self.conn.inner.rows(
+            "SELECT label_id FROM game_labels WHERE game_thread_id = ?",
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| out.append(self.alloc, r.int(0)) catch return errs.Error.OutOfMemory;
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    /// Game thread ids carrying `label_id`. Caller frees via `alloc.free`.
+    /// Used by the library label filter (union across selected labels).
+    pub fn gamesForLabel(self: *Library, label_id: i64) errs.Error![]u64 {
+        var out: std.ArrayList(u64) = .empty;
+        errdefer out.deinit(self.alloc);
+        var rows = self.conn.inner.rows(
+            "SELECT game_thread_id FROM game_labels WHERE label_id = ?",
+            .{label_id},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| out.append(self.alloc, @intCast(r.int(0))) catch return errs.Error.OutOfMemory;
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    // ----- universal (engine-wide) mods -----
+
+    pub fn createUniversalMod(self: *Library, name: []const u8, engine: dom.Engine, modfile_path: []const u8, now: i64) errs.Error!i64 {
+        self.conn.inner.exec(
+            "INSERT INTO universal_mods (name, engine, modfile_path, created_at) VALUES (?, ?, ?, ?)",
+            .{ name, @tagName(engine), modfile_path, now },
+        ) catch return errs.Error.DatabaseError;
+        return self.conn.inner.lastInsertedRowId();
+    }
+
+    pub fn deleteUniversalMod(self: *Library, id: i64) errs.Error!void {
+        self.conn.inner.exec("DELETE FROM game_universal_mod_disabled WHERE universal_mod_id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM universal_mods WHERE id = ?", .{id}) catch
+            return errs.Error.DatabaseError;
+    }
+
+    /// All universal mods (or just one engine's when `engine` is non-null),
+    /// name-sorted. Caller frees via `freeUniversalMods`.
+    pub fn listUniversalMods(self: *Library, engine: ?dom.Engine) errs.Error![]dom.UniversalMod {
+        var out: std.ArrayList(dom.UniversalMod) = .empty;
+        errdefer {
+            for (out.items) |m| {
+                self.alloc.free(m.name);
+                self.alloc.free(m.modfile_path);
+            }
+            out.deinit(self.alloc);
+        }
+        var rows = if (engine) |e|
+            self.conn.inner.rows(
+                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods WHERE engine = ? ORDER BY name COLLATE NOCASE",
+                .{@tagName(e)},
+            ) catch return errs.Error.DatabaseError
+        else
+            self.conn.inner.rows(
+                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods ORDER BY name COLLATE NOCASE",
+                .{},
+            ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        while (rows.next()) |r| {
+            const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
+            errdefer self.alloc.free(name);
+            const path = self.alloc.dupe(u8, r.text(3)) catch return errs.Error.OutOfMemory;
+            out.append(self.alloc, .{
+                .id = r.int(0),
+                .name = name,
+                .engine = std.meta.stringToEnum(dom.Engine, r.text(2)) orelse .unknown,
+                .modfile_path = path,
+                .created_at = r.int(4),
+            }) catch return errs.Error.OutOfMemory;
+        }
+        return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
+    }
+
+    pub fn freeUniversalMods(self: *Library, mods: []dom.UniversalMod) void {
+        for (mods) |m| {
+            self.alloc.free(m.name);
+            self.alloc.free(m.modfile_path);
+        }
+        self.alloc.free(mods);
+    }
+
+    pub fn setUniversalModDisabled(self: *Library, game_thread_id: u64, mod_id: i64, disabled: bool) errs.Error!void {
+        if (disabled) {
+            self.conn.inner.exec(
+                "INSERT OR IGNORE INTO game_universal_mod_disabled (game_thread_id, universal_mod_id) VALUES (?, ?)",
+                .{ @as(i64, @intCast(game_thread_id)), mod_id },
+            ) catch return errs.Error.DatabaseError;
+        } else {
+            self.conn.inner.exec(
+                "DELETE FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
+                .{ @as(i64, @intCast(game_thread_id)), mod_id },
+            ) catch return errs.Error.DatabaseError;
+        }
+    }
+
+    pub fn isUniversalModDisabled(self: *Library, game_thread_id: u64, mod_id: i64) errs.Error!bool {
+        const row = self.conn.inner.row(
+            "SELECT 1 FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
+            .{ @as(i64, @intCast(game_thread_id)), mod_id },
+        ) catch return errs.Error.DatabaseError;
+        if (row) |r| {
+            var rr = r;
+            rr.deinit();
+            return true;
+        }
+        return false;
+    }
+
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
@@ -234,7 +453,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games WHERE f95_thread_id = ?
         , .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -258,7 +477,7 @@ pub const Library = struct {
             \\       description_md, changelog_md, reviews_md, download_links_json,
             \\       dev_status, downloads_md, last_updated_at, thread_info_md,
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
-            \\       last_indexer_parser_version
+            \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games ORDER BY name COLLATE NOCASE
         , .{}) catch return errs.Error.DatabaseError;
         defer rows.deinit();
@@ -270,21 +489,25 @@ pub const Library = struct {
         return out.toOwnedSlice(self.alloc) catch return errs.Error.OutOfMemory;
     }
 
+    pub fn freeGame(self: *Library, g: dom.Game) void {
+        self.alloc.free(g.name);
+        if (g.developer) |s| self.alloc.free(s);
+        if (g.latest_version) |s| self.alloc.free(s);
+        if (g.notes) |s| self.alloc.free(s);
+        if (g.description_md) |s| self.alloc.free(s);
+        if (g.changelog_md) |s| self.alloc.free(s);
+        if (g.reviews_md) |s| self.alloc.free(s);
+        if (g.downloads_md) |s| self.alloc.free(s);
+        if (g.thread_info_md) |s| self.alloc.free(s);
+        if (g.last_played_version) |s| self.alloc.free(s);
+        if (g.pinned_version) |s| self.alloc.free(s);
+        self.freeTags(g.tags);
+        self.freeTags(g.screenshots);
+        self.freeTags(g.download_links);
+    }
+
     pub fn freeGames(self: *Library, games: []dom.Game) void {
-        for (games) |g| {
-            self.alloc.free(g.name);
-            if (g.developer) |s| self.alloc.free(s);
-            if (g.latest_version) |s| self.alloc.free(s);
-            if (g.notes) |s| self.alloc.free(s);
-            if (g.description_md) |s| self.alloc.free(s);
-            if (g.changelog_md) |s| self.alloc.free(s);
-            if (g.reviews_md) |s| self.alloc.free(s);
-            if (g.downloads_md) |s| self.alloc.free(s);
-            if (g.thread_info_md) |s| self.alloc.free(s);
-            self.freeTags(g.tags);
-            self.freeTags(g.screenshots);
-            self.freeTags(g.download_links);
-        }
+        for (games) |g| self.freeGame(g);
         self.alloc.free(games);
     }
 
@@ -366,7 +589,15 @@ pub const Library = struct {
         if (upd.rating) |r| game.rating = r;
         if (upd.vote_count) |c| game.vote_count = c;
         if (upd.engine) |e| game.engine = e;
-        if (upd.dev_status) |d| game.dev_status = d;
+        if (upd.dev_status) |d| {
+            // Record when the developer status actually flips (Ongoing →
+            // Completed/Abandoned/…) so the UI can flag it. Stamped with the
+            // scrape time (the library stays clock-free).
+            if (d != game.dev_status) {
+                game.status_changed_at = upd.last_scraped_at orelse game.status_changed_at;
+            }
+            game.dev_status = d;
+        }
         if (upd.last_updated_at) |t| game.last_updated_at = t;
         if (upd.thread_info_md) |s| {
             try self.replaceOptionalString(&game.thread_info_md, s);
@@ -674,6 +905,25 @@ pub const Library = struct {
         self.install_generation +%= 1;
     }
 
+    /// Per-install custom launch override: the executable/command to run instead
+    /// of the heuristic launcher. Null clears it (back to auto).
+    pub fn setInstallExecutable(self: *Library, install_id: []const u8, exe: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE installs SET executable = ? WHERE id = ?", .{
+            exe,
+            install_id,
+        }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
+    }
+
+    /// Per-install custom launch arguments (raw string; tokenized at launch).
+    pub fn setInstallLaunchArgs(self: *Library, install_id: []const u8, args: ?[]const u8) errs.Error!void {
+        self.conn.inner.exec("UPDATE installs SET launch_args = ? WHERE id = ?", .{
+            args,
+            install_id,
+        }) catch return errs.Error.DatabaseError;
+        self.install_generation +%= 1;
+    }
+
     // TODO: mods table — upsertMod / listMods / setModInstalls /
     // listModInstalls were no-op stubs with zero callers; dropped.
 
@@ -763,6 +1013,176 @@ pub const Library = struct {
     pub fn freeAppliedCompatList(self: *Library, list: []AppliedCompatRow) void {
         for (list) |row| self.freeAppliedCompatRow(row);
         if (list.len > 0) self.alloc.free(list);
+    }
+
+    pub const InsertSessionArgs = struct {
+        game_thread_id: u64,
+        install_id: ?[36]u8 = null,
+        version: []const u8,
+        started_at: i64,
+    };
+
+    /// Open a play_sessions row. Returns the rowid (use it to close
+    /// the session later via closeSession).
+    pub fn insertSession(self: *Library, args: InsertSessionArgs) errs.Error!i64 {
+        const install_id_slice: ?[]const u8 = if (args.install_id) |*id| id[0..] else null;
+        self.conn.inner.exec(
+            \\INSERT INTO play_sessions
+            \\  (game_thread_id, install_id, version, started_at)
+            \\VALUES (?, ?, ?, ?)
+            ,
+            .{
+                @as(i64, @intCast(args.game_thread_id)),
+                install_id_slice,
+                args.version,
+                args.started_at,
+            },
+        ) catch return errs.Error.DatabaseError;
+        return self.conn.inner.lastInsertedRowId();
+    }
+
+    pub fn listPlaySessions(
+        self: *Library,
+        game_thread_id: u64,
+    ) errs.Error![]dom.PlaySession {
+        var rows = self.conn.inner.rows(
+            \\SELECT id, game_thread_id, install_id, version,
+            \\       started_at, ended_at, duration_s, counts_as_played
+            \\FROM play_sessions
+            \\WHERE game_thread_id = ?
+            \\ORDER BY started_at DESC
+            ,
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+
+        var out: std.ArrayList(dom.PlaySession) = .empty;
+        errdefer {
+            for (out.items) |*s| freePlaySessionFields(self.alloc, s);
+            out.deinit(self.alloc);
+        }
+        while (rows.next()) |r| {
+            var s: dom.PlaySession = undefined;
+            s.id = r.int(0);
+            s.game_thread_id = @intCast(r.int(1));
+            if (r.nullableText(2)) |t| {
+                if (t.len == 36) {
+                    var id: [36]u8 = undefined;
+                    @memcpy(&id, t);
+                    s.install_id = id;
+                } else s.install_id = null;
+            } else s.install_id = null;
+            s.version = self.alloc.dupe(u8, r.text(3)) catch return errs.Error.OutOfMemory;
+            s.started_at = r.int(4);
+            s.ended_at = r.nullableInt(5);
+            s.duration_s = r.nullableInt(6);
+            s.counts_as_played = r.int(7) != 0;
+            out.append(self.alloc, s) catch {
+                // append failed before `s` reached `out.items`, so the
+                // errdefer cleanup above won't see this row's dupe.
+                self.alloc.free(s.version);
+                return errs.Error.OutOfMemory;
+            };
+        }
+        return out.toOwnedSlice(self.alloc) catch return errs.Error.OutOfMemory;
+    }
+
+    pub fn freePlaySessions(self: *Library, sessions: []dom.PlaySession) void {
+        for (sessions) |*s| freePlaySessionFields(self.alloc, s);
+        self.alloc.free(sessions);
+    }
+
+    fn freePlaySessionFields(alloc: std.mem.Allocator, s: *dom.PlaySession) void {
+        alloc.free(s.version);
+    }
+
+    pub const CloseSessionArgs = struct {
+        session_id: i64,
+        ended_at: i64,
+        early_fail: bool,
+        min_session_seconds: u32,
+    };
+
+    /// Close a play_sessions row. Computes duration_s and counts_as_played
+    /// from the args. If counts_as_played, bumps games.total_playtime_s
+    /// and games.last_played_at. (last_played_version is handled
+    /// separately by setLastPlayedVersionIfNewer — that needs the
+    /// util_version comparator which lives in the UI layer.)
+    pub fn closeSession(self: *Library, args: CloseSessionArgs) errs.Error!void {
+        // Read started_at + game_thread_id so we can compute duration
+        // and (conditionally) bump aggregates.
+        var rows = self.conn.inner.rows(
+            \\SELECT game_thread_id, started_at FROM play_sessions WHERE id = ?
+            ,
+            .{args.session_id},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        const r = rows.next() orelse return;
+        const game_thread_id: u64 = @intCast(r.int(0));
+        const started_at: i64 = r.int(1);
+
+        const duration_s: i64 = @max(0, args.ended_at - started_at);
+        const counts_as_played: bool =
+            !args.early_fail and duration_s >= @as(i64, args.min_session_seconds);
+
+        self.conn.inner.exec(
+            \\UPDATE play_sessions
+            \\SET ended_at = ?, duration_s = ?, counts_as_played = ?
+            \\WHERE id = ?
+            ,
+            .{
+                args.ended_at,
+                duration_s,
+                @as(i64, @intFromBool(counts_as_played)),
+                args.session_id,
+            },
+        ) catch return errs.Error.DatabaseError;
+
+        if (counts_as_played) {
+            self.conn.inner.exec(
+                \\UPDATE games
+                \\SET total_playtime_s = total_playtime_s + ?,
+                \\    last_played_at   = ?
+                \\WHERE f95_thread_id = ?
+                ,
+                .{
+                    duration_s,
+                    args.ended_at,
+                    @as(i64, @intCast(game_thread_id)),
+                },
+            ) catch return errs.Error.DatabaseError;
+        }
+    }
+
+    pub const CompareFn = *const fn (a: []const u8, b: []const u8) std.math.Order;
+
+    /// Set games.last_played_version = version iff the existing value
+    /// is NULL or compare(version, existing) == .gt. Comparator is
+    /// passed in so library/ stays independent of util_version.
+    pub fn setLastPlayedVersionIfNewer(
+        self: *Library,
+        game_thread_id: u64,
+        version: []const u8,
+        compare: CompareFn,
+    ) errs.Error!void {
+        // Read current value.
+        var rows = self.conn.inner.rows(
+            \\SELECT last_played_version FROM games WHERE f95_thread_id = ?
+            ,
+            .{@as(i64, @intCast(game_thread_id))},
+        ) catch return errs.Error.DatabaseError;
+        defer rows.deinit();
+        const row = rows.next() orelse return;
+        const existing: ?[]const u8 = row.nullableText(0);
+
+        const should_update = existing == null or compare(version, existing.?) == .gt;
+        if (!should_update) return;
+
+        self.conn.inner.exec(
+            \\UPDATE games SET last_played_version = ? WHERE f95_thread_id = ?
+            ,
+            .{ version, @as(i64, @intCast(game_thread_id)) },
+        ) catch return errs.Error.DatabaseError;
     }
 };
 
@@ -986,6 +1406,77 @@ const migrations = [_]Migration{
         \\ALTER TABLE games ADD COLUMN last_indexer_parser_version INTEGER;
         ,
     },
+    .{
+        .id = 16,
+        .sql =
+        // Per-version play sessions. install_id is a soft pointer
+        // (nullable, no FK) so the session survives uninstall. version
+        // is denormalised for the same reason. ON DELETE CASCADE
+        // against games is intentional: deleting a game also drops
+        // its journal.
+        \\CREATE TABLE play_sessions (
+        \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+        \\  game_thread_id INTEGER NOT NULL
+        \\    REFERENCES games(f95_thread_id) ON DELETE CASCADE,
+        \\  install_id TEXT,
+        \\  version TEXT NOT NULL,
+        \\  started_at INTEGER NOT NULL,
+        \\  ended_at INTEGER,
+        \\  duration_s INTEGER,
+        \\  counts_as_played INTEGER NOT NULL DEFAULT 0
+        \\);
+        \\CREATE INDEX play_sessions_game ON play_sessions(game_thread_id);
+        \\CREATE INDEX play_sessions_game_version
+        \\  ON play_sessions(game_thread_id, version);
+        \\ALTER TABLE games ADD COLUMN last_played_version TEXT;
+        ,
+    },
+    .{
+        .id = 17,
+        .sql =
+        \\ALTER TABLE games ADD COLUMN pinned_version TEXT;
+        ,
+    },
+    .{
+        .id = 18,
+        .sql =
+        \\CREATE TABLE user_labels (
+        \\  id INTEGER PRIMARY KEY,
+        \\  name TEXT NOT NULL UNIQUE,
+        \\  color TEXT
+        \\);
+        \\CREATE TABLE game_labels (
+        \\  game_thread_id INTEGER NOT NULL,
+        \\  label_id INTEGER NOT NULL,
+        \\  PRIMARY KEY (game_thread_id, label_id)
+        \\);
+        \\CREATE INDEX game_labels_label ON game_labels(label_id);
+        ,
+    },
+    .{
+        .id = 19,
+        .sql =
+        \\ALTER TABLE games ADD COLUMN status_changed_at INTEGER;
+        ,
+    },
+    .{
+        .id = 20,
+        .sql =
+        \\CREATE TABLE universal_mods (
+        \\  id INTEGER PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  engine TEXT NOT NULL,
+        \\  modfile_path TEXT NOT NULL,
+        \\  created_at INTEGER NOT NULL DEFAULT 0
+        \\);
+        \\CREATE INDEX universal_mods_engine ON universal_mods(engine);
+        \\CREATE TABLE game_universal_mod_disabled (
+        \\  game_thread_id INTEGER NOT NULL,
+        \\  universal_mod_id INTEGER NOT NULL,
+        \\  PRIMARY KEY (game_thread_id, universal_mod_id)
+        \\);
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -1199,6 +1690,13 @@ fn hydrateGame(alloc: std.mem.Allocator, r: anytype) errs.Error!dom.Game {
     g.mod_backup_mode = parseBackupModePref(r.text(26));
     g.last_indexer_change = r.nullableInt(27);
     if (r.nullableInt(28)) |v| g.last_indexer_parser_version = @intCast(v);
+    if (r.nullableText(29)) |s| {
+        g.last_played_version = alloc.dupe(u8, s) catch return errs.Error.OutOfMemory;
+    }
+    if (r.nullableText(30)) |s| {
+        g.pinned_version = alloc.dupe(u8, s) catch return errs.Error.OutOfMemory;
+    }
+    g.status_changed_at = r.nullableInt(31);
 
     return g;
 }
@@ -1294,6 +1792,27 @@ test "library: install round-trip + latestInstallForGame" {
     try std.testing.expectEqualStrings("/games/14014/0.20.17", latest.install_path);
 }
 
+test "library: setInstallExecutable + setInstallLaunchArgs persist on the row" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 7, .name = "G" });
+    const id: [36]u8 = "cccccccc-cccc-cccc-cccc-cccccccccccc".*;
+    try lib.upsertInstall(&.{
+        .id = id,
+        .game_thread_id = 7,
+        .version = "1.0",
+        .install_path = "/g/7/1.0",
+        .recipe_id = "r",
+        .installed_at = 1,
+    });
+    try lib.setInstallExecutable(&id, "wine game.exe");
+    try lib.setInstallLaunchArgs(&id, "--fullscreen --no-intro");
+    const got = (try lib.latestInstallForGame(7)).?;
+    defer lib.freeInstall(got);
+    try std.testing.expectEqualStrings("wine game.exe", got.executable.?);
+    try std.testing.expectEqualStrings("--fullscreen --no-intro", got.launch_args.?);
+}
+
 test "library: deleteInstall removes one row" {
     var lib = try Library.open(std.testing.allocator, ":memory:");
     defer lib.close();
@@ -1380,3 +1899,342 @@ test "library: upsert + list + getGame round-trip" {
     }
 }
 
+test "library: migration 16 — play_sessions table exists" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    // Compile-time guard for the stub API surface. The real assertion
+    // that the table exists arrives with Task 3 when `listPlaySessions`
+    // grows a real SELECT body — until then this test only proves
+    // `Library.open` (which runs the migrations) didn't error.
+    const sessions = try lib.listPlaySessions(12345);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expectEqual(@as(usize, 0), sessions.len);
+}
+
+test "library: migration 16 — games.last_played_version column exists" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqual(@as(?[]const u8, null), g.last_played_version);
+}
+
+test "library: user labels create/assign/list/delete" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    const alloc = std.testing.allocator;
+
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G1" });
+    try lib.upsertGame(&.{ .f95_thread_id = 2, .name = "G2" });
+
+    const fav = try lib.createLabel("Favorites", "#1FA39A");
+    const todo = try lib.createLabel("To Play", null);
+    // Idempotent on name.
+    try std.testing.expectEqual(fav, try lib.createLabel("Favorites", null));
+
+    try lib.addGameLabel(1, fav);
+    try lib.addGameLabel(1, todo);
+    try lib.addGameLabel(2, fav);
+    try lib.addGameLabel(1, fav); // dup ignored
+
+    {
+        const ids = try lib.labelsForGame(1);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 2), ids.len);
+    }
+
+    {
+        const labels = try lib.listLabels();
+        defer lib.freeLabels(labels);
+        try std.testing.expectEqual(@as(usize, 2), labels.len);
+        // name-sorted: "Favorites" < "To Play"
+        try std.testing.expectEqualStrings("Favorites", labels[0].name);
+        try std.testing.expectEqualStrings("#1FA39A", labels[0].color.?);
+        try std.testing.expectEqual(@as(?[]const u8, null), labels[1].color);
+    }
+
+    {
+        const games = try lib.gamesForLabel(fav);
+        defer alloc.free(games);
+        try std.testing.expectEqual(@as(usize, 2), games.len); // games 1 and 2
+    }
+
+    try lib.removeGameLabel(1, todo);
+    {
+        const ids = try lib.labelsForGame(1);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 1), ids.len);
+        try std.testing.expectEqual(fav, ids[0]);
+    }
+
+    // Deleting a label cascades to assignments.
+    try lib.deleteLabel(fav);
+    {
+        const ids = try lib.labelsForGame(2);
+        defer alloc.free(ids);
+        try std.testing.expectEqual(@as(usize, 0), ids.len);
+        const labels = try lib.listLabels();
+        defer lib.freeLabels(labels);
+        try std.testing.expectEqual(@as(usize, 1), labels.len);
+    }
+}
+
+test "library: universal mods registry + per-game disable" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    const renpy_id = try lib.createUniversalMod("Skip Splash", .renpy, "/mods/skip.zip", 100);
+    _ = try lib.createUniversalMod("RPGM Cheat", .rpgm_mv, "/mods/cheat.zip", 101);
+
+    {
+        const all = try lib.listUniversalMods(null);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expectEqual(@as(usize, 2), all.len);
+    }
+    {
+        const renpy_mods = try lib.listUniversalMods(.renpy);
+        defer lib.freeUniversalMods(renpy_mods);
+        try std.testing.expectEqual(@as(usize, 1), renpy_mods.len);
+        try std.testing.expectEqualStrings("Skip Splash", renpy_mods[0].name);
+        try std.testing.expectEqual(dom.Engine.renpy, renpy_mods[0].engine);
+        try std.testing.expectEqualStrings("/mods/skip.zip", renpy_mods[0].modfile_path);
+    }
+
+    // Per-game disable toggles.
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+    try lib.setUniversalModDisabled(42, renpy_id, true);
+    try std.testing.expect(try lib.isUniversalModDisabled(42, renpy_id));
+    try lib.setUniversalModDisabled(42, renpy_id, false);
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+
+    // Delete cascades to disables.
+    try lib.setUniversalModDisabled(42, renpy_id, true);
+    try lib.deleteUniversalMod(renpy_id);
+    try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+    {
+        const all = try lib.listUniversalMods(null);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expectEqual(@as(usize, 1), all.len);
+    }
+}
+
+test "library: setPinnedVersion round-trips and clears" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqual(@as(?[]const u8, null), g.pinned_version);
+    }
+
+    try lib.setPinnedVersion(1, "1.2.3");
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqualStrings("1.2.3", g.pinned_version.?);
+    }
+
+    try lib.setPinnedVersion(1, null);
+    {
+        const g = (try lib.getGame(1)).?;
+        defer lib.freeGame(g);
+        try std.testing.expectEqual(@as(?[]const u8, null), g.pinned_version);
+    }
+}
+
+test "library: insertSession opens a row with NULL ended_at" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+
+    try lib.upsertGame(&.{ .f95_thread_id = 7, .name = "G" });
+    const install_id: [36]u8 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".*;
+    try lib.upsertInstall(&.{
+        .id = install_id,
+        .game_thread_id = 7,
+        .version = "0.1",
+        .install_path = "/games/7/0.1",
+        .recipe_id = "x",
+        .installed_at = 1,
+    });
+
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 7,
+        .install_id = install_id,
+        .version = "0.1",
+        .started_at = 1700000000,
+    });
+    try std.testing.expect(sid > 0);
+
+    const sessions = try lib.listPlaySessions(7);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expectEqual(@as(usize, 1), sessions.len);
+    try std.testing.expectEqualStrings("0.1", sessions[0].version);
+    try std.testing.expectEqual(@as(?i64, null), sessions[0].ended_at);
+    try std.testing.expectEqual(false, sessions[0].counts_as_played);
+}
+
+test "library: closeSession sets ended_at, duration, counts_as_played" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1090,
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expectEqual(@as(?i64, 1090), sessions[0].ended_at);
+    try std.testing.expectEqual(@as(?i64, 90), sessions[0].duration_s);
+    try std.testing.expect(sessions[0].counts_as_played); // 90s > 60s threshold
+}
+
+test "library: closeSession — below threshold does not count" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1059, // 59s
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expect(!sessions[0].counts_as_played);
+}
+
+test "library: closeSession — early_fail forces counts_as_played=0" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    // Long duration but early_fail=true (e.g. game crashed at 5h)
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 19000,
+        .early_fail = true,
+        .min_session_seconds = 60,
+    });
+    const sessions = try lib.listPlaySessions(1);
+    defer lib.freePlaySessions(sessions);
+    try std.testing.expect(!sessions[0].counts_as_played);
+}
+
+test "library: closeSession bumps total_playtime_s and last_played_at when counted" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1300, // 300s
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqual(@as(u64, 300), g.total_playtime_s);
+    try std.testing.expectEqual(@as(?i64, 1300), g.last_played_at);
+}
+
+test "library: closeSession does NOT bump aggregates when not counted" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+    const sid = try lib.insertSession(.{
+        .game_thread_id = 1,
+        .version = "0.1",
+        .started_at = 1000,
+    });
+    try lib.closeSession(.{
+        .session_id = sid,
+        .ended_at = 1010, // 10s, below threshold
+        .early_fail = false,
+        .min_session_seconds = 60,
+    });
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqual(@as(u64, 0), g.total_playtime_s);
+    try std.testing.expectEqual(@as(?i64, null), g.last_played_at);
+}
+
+test "library: setLastPlayedVersionIfNewer — null replaced unconditionally" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.1", g.last_played_version.?);
+}
+
+test "library: setLastPlayedVersionIfNewer — newer wins" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+    try lib.setLastPlayedVersionIfNewer(1, "0.2", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.2", g.last_played_version.?);
+}
+
+test "library: setLastPlayedVersionIfNewer — older does NOT regress" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 1, .name = "G" });
+
+    const cmp = struct {
+        fn f(a: []const u8, b: []const u8) std.math.Order {
+            return std.mem.order(u8, a, b);
+        }
+    }.f;
+    try lib.setLastPlayedVersionIfNewer(1, "0.2", cmp);
+    try lib.setLastPlayedVersionIfNewer(1, "0.1", cmp);
+
+    const g = (try lib.getGame(1)).?;
+    defer lib.freeGame(g);
+    try std.testing.expectEqualStrings("0.2", g.last_played_version.?);
+}

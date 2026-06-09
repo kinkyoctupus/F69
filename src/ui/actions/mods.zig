@@ -185,6 +185,7 @@ pub fn freeModsPageCacheState(state: *State, alloc: std.mem.Allocator) void {
         if (c.have_archive.len > 0) alloc.free(c.have_archive);
         if (c.installed.len > 0) alloc.free(c.installed);
         if (c.load_index.len > 0) alloc.free(c.load_index);
+        if (c.resolve_explanation) |e| alloc.free(e);
         alloc.destroy(c);
         state.mods_page_cache = null;
         state.mods_page_cache_thread = null;
@@ -331,7 +332,13 @@ pub fn modsPageCache(frame: *Frame, game: *const library.Game) ?*ModsPageCache {
                                     }
                                 }
                             },
-                            else => {},
+                            else => {
+                                // The installed set won't resolve — surface why.
+                                var ebuf: [256]u8 = undefined;
+                                if (resolver.explain(&ebuf, r.*)) |msg| {
+                                    cache.resolve_explanation = cache.alloc.dupe(u8, msg) catch null;
+                                }
+                            },
                         }
                         r.deinit(aalloc);
                     }

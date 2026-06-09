@@ -14,7 +14,15 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // Default to a portable baseline CPU (x86_64_v1 / equivalent) so
+    // CI/release builds run on ANY x86-64 host. Without this, a bare
+    // `zig build` resolves to the *build machine's* native CPU model +
+    // features — the binary then SIGILLs ("Illegal instruction") on
+    // user CPUs lacking those features. Dev can opt back into native
+    // codegen with `-Dcpu=native`; `-Dtarget=` also still overrides.
+    const target = b.standardTargetOptions(.{
+        .default_target = .{ .cpu_model = .baseline },
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     // ----- root-level modules -----
@@ -25,7 +33,7 @@ pub fn build(b: *std.Build) void {
     // entry. UI's Diagnostics screen and main.zig's `--version` CLI flag
     // import this to show "f69 vX.Y.Z" so bug reports identify the build.
     // Keep in sync with `.version` in build.zig.zon.
-    const app_version: []const u8 = "0.9.1";
+    const app_version: []const u8 = "0.10.0";
     const build_opts = b.addOptions();
     build_opts.addOption([]const u8, "version", app_version);
     const build_opts_mod = build_opts.createModule();
@@ -77,13 +85,22 @@ pub fn build(b: *std.Build) void {
     // (similar to dav1d-static); deferred until the Windows port
     // forces the issue.
     util_archive_mod.linkSystemLibrary("z", .{});      // gzip
-    util_archive_mod.linkSystemLibrary("bz2", .{});    // bzip2
+    // bzip2's SONAME splits across distros — libbz2.so.1.0 on
+    // Debian/Ubuntu (and the GH-Actions release builder), libbz2.so.1
+    // on Fedora/Bazzite. A dynamic link bakes the build-host soname
+    // into DT_NEEDED, so the slim bundle (no bundled libs) fails to
+    // load on the *other* family. Static-link it instead — the f69
+    // binary then carries no libbz2 dependency at all. Needs libbz2.a:
+    // Debian/Fedora -dev packages ship it; nix uses `bzip2-static`.
+    util_archive_mod.linkSystemLibrary("bz2", .{ .preferred_link_mode = .static }); // bzip2
     util_archive_mod.linkSystemLibrary("lzma", .{});   // xz
     util_archive_mod.linkSystemLibrary("zstd", .{});   // zstd in .7z/.zip
     util_archive_mod.linkSystemLibrary("lz4", .{});    // lz4 filter
     util_archive_mod.linkSystemLibrary("nettle", .{}); // AES / SHA / HMAC
     util_archive_mod.linkSystemLibrary("xml2", .{});   // .xar metadata
-    util_archive_mod.linkSystemLibrary("acl", .{});    // POSIX ACL restore
+    // POSIX ACL restore — no POSIX ACLs and no mingw libacl on Windows; libarchive
+    // built for mingw doesn't reference the acl symbols, so skip the link there.
+    if (target.result.os.tag != .windows) util_archive_mod.linkSystemLibrary("acl", .{}); // POSIX ACL restore
 
     // util_file_picker: Zig binding around vendored NFDe
     // (`zig-pkg/nfde/`). Wayland-correct file picker via XDG portal
@@ -171,6 +188,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // NOTE: the Windows target must be built with -Doptimize=ReleaseFast (not ReleaseSafe).
+    // ReleaseSafe enables _FORTIFY_SOURCE, which turns on MinGW's fortified <wchar.h> inlines
+    // (wcscat/wcscpy); zig 0.16 translate-c mis-translates those into an unused `extern_local_*`
+    // const that fails compilation in every @cImport (avif, SDL3, dvui). ReleaseFast avoids it.
     image_mod.linkSystemLibrary("avif", .{ .preferred_link_mode = .static });
     image_mod.linkSystemLibrary("dav1d", .{ .preferred_link_mode = .static });
 
@@ -296,7 +317,10 @@ pub fn build(b: *std.Build) void {
         null;
     if (dvui_dep_opt) |dep| {
         ui_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
-        ui_mod.addImport("sdl3gpu-backend", dep.module("sdl3"));
+        // The SDL3-GPU backend lives only in the exe now — `ui` is
+        // backend-agnostic so it can be rebuilt against dvui's testing
+        // backend for headless integration tests. main owns the window.
+        exe_mod.addImport("sdl3gpu-backend", dep.module("sdl3"));
         exe_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
     }
 
@@ -312,6 +336,20 @@ pub fn build(b: *std.Build) void {
     // crash-dump symbol matching.
     exe.build_id = .sha1;
     b.installArtifact(exe);
+
+    // Desktop integration — a `.desktop` entry + icon so f69 appears in
+    // application menus / launchers. Lands under share/, so the native
+    // packages (which run `zig build install --prefix /usr`) pick them up
+    // automatically; the portable bundle copies only bin/, ignoring these.
+    {
+        const wf = b.addWriteFiles();
+        const desktop = wf.add("f69.desktop", DESKTOP_ENTRY);
+        const icon = wf.add("f69.svg", ICON_SVG);
+        const di = b.addInstallFile(desktop, "share/applications/f69.desktop");
+        const ii = b.addInstallFile(icon, "share/icons/hicolor/scalable/apps/f69.svg");
+        b.getInstallStep().dependOn(&di.step);
+        b.getInstallStep().dependOn(&ii.step);
+    }
 
     // Compat resources — directories the compat module's recipes
     // resolve at runtime. Each one is a Nix-built lib bundle landed
@@ -443,8 +481,147 @@ pub fn build(b: *std.Build) void {
 
     // ----- tests: every module's `test {}` blocks -----
 
+    // Pure UI logic modules (no dvui) — fast standalone tests.
+    const ui_tokens_mod = mod(b, "ui_tokens", "src/ui/tokens.zig", target, optimize);
+    const ui_sortx_mod = mod(b, "ui_sortx", "src/ui/sortx.zig", target, optimize);
+    const ui_columns_mod = mod(b, "ui_columns", "src/ui/columns.zig", target, optimize);
+    const util_argv_mod = mod(b, "util_argv", "src/util/argv.zig", target, optimize);
+    const util_reltime_mod = mod(b, "util_reltime", "src/util/reltime.zig", target, optimize);
+    const util_notify_mod = mod(b, "util_notify", "src/util/notify.zig", target, optimize);
+    ui_mod.addImport("util_notify", util_notify_mod);
+    // RPG Maker MV/MZ asset decryption (M3 mod tooling) — pure, unit-tested.
+    const util_rpgm_crypt_mod = mod(b, "util_rpgm_crypt", "src/util/rpgm_crypt.zig", target, optimize);
+    ui_mod.addImport("util_rpgm_crypt", util_rpgm_crypt_mod);
+    // Ren'Py .rpa archive reader (+ its pickle index reader) — M3 mod tooling.
+    const util_rpa_mod = mod(b, "util_rpa", "src/util/rpa.zig", target, optimize);
+    ui_mod.addImport("util_rpa", util_rpa_mod);
+    const util_ratelimit_mod = mod(b, "util_ratelimit", "src/util/ratelimit.zig", target, optimize);
+    // One-shot HTTP helper consults the per-host limiter to space external requests.
+    util_http_mod.addImport("util_ratelimit", util_ratelimit_mod);
+
+    // aria2 rewrite — pure units, unit-tested standalone.
+    const dl_aria2_args_mod = mod(b, "dl_aria2_args", "src/downloads/aria2_args.zig", target, optimize);
+    const dl_rpc_mod = mod(b, "dl_rpc", "src/downloads/rpc.zig", target, optimize);
+    const dl_jobs_mod = mod(b, "dl_jobs", "src/downloads/jobs.zig", target, optimize);
+    const dl_transport_mod = mod(b, "dl_transport", "src/downloads/transport.zig", target, optimize);
+    const dl_http_mod = mod(b, "dl_http", "src/downloads/http.zig", target, optimize);
+    dl_http_mod.addImport("util_http", util_http_mod);
+    // WebSocket transport — karlseguin/websocket.zig (experimental on 0.16).
+    const websocket_dep = b.dependency("websocket", .{ .target = target, .optimize = optimize });
+    const dl_ws_mod = mod(b, "dl_ws", "src/downloads/ws.zig", target, optimize);
+    dl_ws_mod.addImport("websocket", websocket_dep.module("websocket"));
+    // The real downloads module pulls ws.zig (via aria2_rpc.zig) → needs the dep too.
+    downloads_mod.addImport("websocket", websocket_dep.module("websocket"));
+
+    // Theme-driven dvui component layer (Design B). Imports dvui (gui builds) + tokens.
+    const ui_comp_mod = mod(b, "ui_comp", "src/ui/comp.zig", target, optimize);
+    ui_comp_mod.addImport("ui_tokens", ui_tokens_mod);
+    if (dvui_dep_opt) |dep| ui_comp_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
+    // The main UI module uses the runtime theme too (consoleTheme).
+    ui_mod.addImport("ui_tokens", ui_tokens_mod);
+    ui_mod.addImport("util_argv", util_argv_mod);
+    ui_mod.addImport("util_reltime", util_reltime_mod);
+    if (dvui_dep_opt != null) ui_mod.addImport("ui_comp", ui_comp_mod);
+
+    // Per-engine palette — pure (library.Engine → tokens.Color); the
+    // distinctness property is unit-tested here.
+    const ui_engine_palette_mod = mod(b, "ui_engine_palette", "src/ui/engine_palette.zig", target, optimize);
+    ui_engine_palette_mod.addImport("library", library_mod);
+    ui_engine_palette_mod.addImport("ui_tokens", ui_tokens_mod);
+    ui_mod.addImport("ui_engine_palette", ui_engine_palette_mod);
+
+    // Theme persistence module — used by both main (load at startup) and the
+    // settings screen (save on change).
+    const ui_theme_store_mod = mod(b, "ui_theme_store", "src/ui/theme_store.zig", target, optimize);
+    ui_theme_store_mod.addImport("ui_tokens", ui_tokens_mod);
+    ui_theme_store_mod.addImport("util_atomic_io", util_atomic_io_mod);
+    ui_theme_store_mod.addImport("util_test_env", util_test_env_mod);
+    ui_mod.addImport("ui_theme_store", ui_theme_store_mod);
+    exe_mod.addImport("ui_theme_store", ui_theme_store_mod);
+
+    // ---- Headless integration-test artifact (Layer 1) ----
+    // A second `ui` module graph built against dvui's *testing* backend
+    // (pure CPU — no SDL/Vulkan/window) so f69's action + screen layer
+    // can be driven headlessly + uniformly on any OS. See
+    // docs/test-automation-research.md. Reuses every non-dvui sub-module;
+    // only the dvui-importing modules (ui + ui_comp) get a testing twin.
+    // Wired only when gui is enabled (default). Run: `zig build test-integration`.
+    if (dvui_dep_opt != null) {
+        const dvui_testing_dep = b.dependency("dvui", .{
+            .target = target,
+            .optimize = optimize,
+            .backend = @as([]const u8, "testing"),
+        });
+        const dvui_testing = dvui_testing_dep.module("dvui_testing");
+        const dvui_testing_backend = dvui_testing_dep.module("testing");
+
+        const ui_comp_test_mod = mod(b, "ui_comp_testing", "src/ui/comp.zig", target, optimize);
+        ui_comp_test_mod.addImport("ui_tokens", ui_tokens_mod);
+        ui_comp_test_mod.addImport("dvui", dvui_testing);
+
+        // Same source as ui_mod, wired identically EXCEPT dvui→testing and
+        // ui_comp→testing. Source of truth for this list is the
+        // ui_mod.addImport(...) sites above; a miss here is a loud compile
+        // error, so they can't silently drift.
+        const ui_test_mod = mod(b, "ui_testing", "src/ui/ui.zig", target, optimize);
+        ui_test_mod.addImport("library", library_mod);
+        ui_test_mod.addImport("recipe", recipe_mod);
+        ui_test_mod.addImport("resolver", resolver_mod);
+        ui_test_mod.addImport("f95", f95_mod_);
+        ui_test_mod.addImport("f95_indexer", f95_indexer_mod);
+        ui_test_mod.addImport("downloads", downloads_mod);
+        ui_test_mod.addImport("sandbox", sandbox_mod);
+        ui_test_mod.addImport("convert", convert_mod);
+        ui_test_mod.addImport("compat", compat_mod);
+        ui_test_mod.addImport("installer", installer_mod);
+        ui_test_mod.addImport("importers", importers_mod);
+        ui_test_mod.addImport("image", image_mod);
+        ui_test_mod.addImport("util_version", util_version_mod);
+        ui_test_mod.addImport("util_file_picker", file_picker_mod);
+        ui_test_mod.addImport("util_atomic_io", util_atomic_io_mod);
+        ui_test_mod.addImport("build_options", build_opts_mod);
+        ui_test_mod.addImport("util_notify", util_notify_mod);
+        ui_test_mod.addImport("util_rpgm_crypt", util_rpgm_crypt_mod);
+        ui_test_mod.addImport("util_rpa", util_rpa_mod);
+        ui_test_mod.addImport("ui_tokens", ui_tokens_mod);
+        ui_test_mod.addImport("util_argv", util_argv_mod);
+        ui_test_mod.addImport("util_reltime", util_reltime_mod);
+        ui_test_mod.addImport("ui_engine_palette", ui_engine_palette_mod);
+        ui_test_mod.addImport("ui_theme_store", ui_theme_store_mod);
+        ui_test_mod.addImport("dvui", dvui_testing);
+        ui_test_mod.addImport("ui_comp", ui_comp_test_mod);
+
+        const integration_mod = b.createModule(.{
+            .root_source_file = b.path("src/testkit/integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        integration_mod.addImport("ui", ui_test_mod);
+        integration_mod.addImport("dvui", dvui_testing);
+        integration_mod.addImport("dvui_testing_backend", dvui_testing_backend);
+        integration_mod.addImport("util_test_env", util_test_env_mod);
+        integration_mod.addImport("util_setting", util_setting_mod);
+        integration_mod.addImport("library", library_mod);
+        integration_mod.addImport("downloads", downloads_mod);
+        integration_mod.addImport("recipe", recipe_mod);
+        integration_mod.addImport("sandbox", sandbox_mod);
+        integration_mod.addImport("convert", convert_mod);
+        integration_mod.addImport("compat", compat_mod);
+        integration_mod.addImport("f95", f95_mod_);
+        integration_mod.addImport("f95_indexer", f95_indexer_mod);
+        integration_mod.addImport("installer", installer_mod);
+
+        const integration_tests = b.addTest(.{ .root_module = integration_mod });
+        const run_integration = b.addRunArtifact(integration_tests);
+        const integration_step = b.step("test-integration", "Headless action-layer integration tests (dvui testing backend)");
+        integration_step.dependOn(&run_integration.step);
+    }
+
     const test_targets = [_]*std.Build.Module{
-        exe_mod,
+        exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
+        util_reltime_mod,  ui_comp_mod,       ui_theme_store_mod,  util_ratelimit_mod,
+        ui_engine_palette_mod, dl_aria2_args_mod, dl_rpc_mod, dl_jobs_mod, dl_ws_mod,
+        dl_transport_mod, dl_http_mod, util_notify_mod, util_rpgm_crypt_mod, util_rpa_mod,
         library_mod,       recipe_mod,        resolver_mod,    f95_mod_,
         f95_indexer_mod,
         downloads_mod,     installer_mod,     convert_mod,     sandbox_mod,
@@ -736,7 +913,9 @@ fn makeDeb(b: *std.Build, version: []const u8, enable_container: bool) !void {
 
 fn makeRpm(b: *std.Build, version: []const u8, enable_container: bool) !void {
     const alloc = b.allocator;
-    const date = try runCapture(b, &.{ "date", "+%a %b %d %Y" });
+    // RPM's %changelog requires English day/month abbreviations (Tue, not
+    // the host locale's "di"). Force LC_ALL=C so the date is parseable.
+    const date = try runCapture(b, &.{ "env", "LC_ALL=C", "date", "+%a %b %d %Y" });
     defer alloc.free(date);
     const date_trimmed = std.mem.trim(u8, date, " \n\r\t");
 
@@ -810,6 +989,17 @@ fn makePortable(b: *std.Build, mode: PortableMode) !void {
             .make_path = false,
             .replace = true,
         });
+        // The Nix-built binary bakes a `/nix/store/.../glibc/ld-linux` as its
+        // ELF interpreter, which doesn't exist on non-NixOS distros — so the
+        // kernel can't even start it (run.sh's `exec ./f69` → "cannot execute:
+        // required file not found"). Repoint the interpreter to the x86-64
+        // ABI-standard path, which is present on every glibc distro, so the
+        // host's own loader runs the slim binary. (Verified on CachyOS: with
+        // this, `./run.sh` launches; the host glibc just needs to be ≥ the
+        // build's — see DEPS.md.)
+        runQuiet(b, &.{ "patchelf", "--set-interpreter", "/lib64/ld-linux-x86-64.so.2", dst_bin }) catch |e| {
+            std.log.warn("portable-slim: patchelf --set-interpreter failed ({s}) — slim binary keeps the Nix interpreter and won't run off NixOS", .{@errorName(e)});
+        };
         try writeFileEnsureDir(b, run_sh_path, RUN_SH_SLIM, true);
         const deps_path = try std.fmt.allocPrint(alloc, "{s}/DEPS.md", .{dist_dir});
         defer alloc.free(deps_path);
@@ -1182,10 +1372,17 @@ fn buildInContainer(b: *std.Build, distro: Distro, version: []const u8) !void {
     // the .spec.
     try stageDistroFiles(b, distro, work_dir);
 
+    // Base container image. Native packages dynamically link system libs,
+    // so a package only runs where the target's library sonames + glibc
+    // match the build base. Override per-target to build a package that
+    // actually installs on a given distro version, e.g.:
+    //   F69_RPM_BASE=fedora:43  zig build rpm -Dcontainer-build=true
+    //   F69_DEB_BASE=ubuntu:24.04 zig build deb -Dcontainer-build=true
+    const env = b.graph.environ_map;
     const image = switch (distro) {
         .aur => "archlinux:latest",
-        .deb => "debian:bookworm-slim",
-        .rpm => "fedora:latest",
+        .deb => env.get("F69_DEB_BASE") orelse "debian:bookworm-slim",
+        .rpm => env.get("F69_RPM_BASE") orelse "fedora:latest",
     };
 
     // Bind-mount work_dir at /work (read-write) inside the container.
@@ -1464,7 +1661,8 @@ const DEB_CONTAINER_SCRIPT =
     \\    libwayland-dev libxkbcommon-dev libdecor-0-dev \
     \\    libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
     \\    libarchive-dev libdbus-1-dev \
-    \\    liblzma-dev libbz2-dev zlib1g-dev libxml2-dev
+    \\    liblzma-dev libbz2-dev zlib1g-dev libxml2-dev \
+    \\    libzstd-dev liblz4-dev nettle-dev libacl1-dev
     \\
     \\# Zig isn't in Debian's apt yet — fetch the official 0.16 tarball.
     \\# Pin to whatever the project's flake.nix uses; bump as needed.
@@ -1487,8 +1685,10 @@ const DEB_CONTAINER_SCRIPT =
     \\# keep the dep listed so downstream packagers see it.
     \\dpkg-buildpackage -us -uc -b -d
     \\
-    \\# `.deb` lands a level up.
-    \\mv ../*.deb /work/
+    \\# `.deb` lands a level up — which is /work itself (the source tree is
+    \\# /work/f69-<ver>), so the files are already in place. Tolerate the
+    \\# self-move so `set -e` doesn't abort before the chown below.
+    \\mv ../*.deb /work/ 2>/dev/null || true
     \\
     \\# Hand ownership back to the host user.
     \\chown -R "${HOST_UID}:${HOST_GID}" /work
@@ -1505,10 +1705,12 @@ const RPM_CONTAINER_SCRIPT =
     \\    ! -name 'build-in-container.sh' \
     \\    -exec rm -rf {} +
     \\
-    \\dnf install -y rpm-build rpmdevtools zig pkgconfig \
+    \\dnf install -y rpm-build rpmdevtools patchelf zig pkgconfig \
     \\    wayland-devel libxkbcommon-devel libdecor-devel \
-    \\    libavif-devel dav1d-devel sqlite-devel openssl-devel \
-    \\    libarchive-devel dbus-devel
+    \\    libavif-devel libdav1d-devel sqlite-devel openssl-devel \
+    \\    libarchive-devel dbus-devel \
+    \\    libzstd-devel lz4-devel nettle-devel libacl-devel \
+    \\    bzip2-devel zlib-devel xz-devel libxml2-devel
     \\
     \\# Set up the rpmbuild tree, stage tarball + spec, build.
     \\rpmdev-setuptree
@@ -1647,7 +1849,9 @@ const DEBIAN_CONTROL =
     \\Maintainer: f69 contributors <noreply@example.com>
     \\Build-Depends: debhelper-compat (= 13), zig, pkg-config, libwayland-dev,
     \\ libxkbcommon-dev, libdecor-0-dev, libavif-dev, libdav1d-dev,
-    \\ libsqlite3-dev, libssl-dev, libarchive-dev, libdbus-1-dev
+    \\ libsqlite3-dev, libssl-dev, libarchive-dev, libdbus-1-dev,
+    \\ liblzma-dev, libbz2-dev, zlib1g-dev, libxml2-dev,
+    \\ libzstd-dev, liblz4-dev, nettle-dev, libacl1-dev
     \\Standards-Version: 4.6.2
     \\Homepage: https://github.com/your-org/f69
     \\
@@ -1806,6 +2010,11 @@ const RPM_SPEC =
     \\# omitting it would break the spec on dev shells, while listing
     \\# it as %dir would break the regular Fedora container build.
     \\%{{_datadir}}/%{{name}}/
+    \\# Desktop integration — .desktop entry + scalable icon installed by
+    \\# the build's desktop-integration step. rpm is strict: every installed
+    \\# file must be declared here or the build fails "unpackaged file(s)".
+    \\%{{_datadir}}/applications/%{{name}}.desktop
+    \\%{{_datadir}}/icons/hicolor/scalable/apps/%{{name}}.svg
     \\
     \\%changelog
     \\* {s} f69 contributors <noreply@example.com> - {s}-1
@@ -1953,6 +2162,33 @@ const RUN_SH_SLIM =
     \\export __EGL_VENDOR_LIBRARY_DIRS
     \\
     \\exec "$DIR/f69" "$@"
+    \\
+;
+
+// XDG desktop entry — installed to share/applications/f69.desktop.
+const DESKTOP_ENTRY =
+    \\[Desktop Entry]
+    \\Type=Application
+    \\Name=f69
+    \\GenericName=Game Library Manager
+    \\Comment=F95Zone-focused game and mod library manager
+    \\Exec=f69
+    \\Icon=f69
+    \\Terminal=false
+    \\Categories=Game;
+    \\Keywords=games;library;f95zone;mods;visual novel;
+    \\StartupNotify=true
+    \\
+;
+
+// App icon (Design B — electric teal "f69" on graphite). Scalable SVG,
+// installed to share/icons/hicolor/scalable/apps/f69.svg.
+const ICON_SVG =
+    \\<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+    \\  <rect width="256" height="256" rx="48" fill="#16212a"/>
+    \\  <rect x="20" y="20" width="216" height="216" rx="36" fill="none" stroke="#1fa39a" stroke-width="6"/>
+    \\  <text x="128" y="168" font-family="sans-serif" font-size="118" font-weight="700" fill="#1fa39a" text-anchor="middle">f69</text>
+    \\</svg>
     \\
 ;
 

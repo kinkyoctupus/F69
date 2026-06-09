@@ -88,6 +88,14 @@ pub const cancelSync = sync.cancelSync;
 pub const cancelImageQueue = sync.cancelImageQueue;
 pub const drainImageQueue = sync.drainImageQueue;
 pub const coverBytes = sync.coverBytes;
+// DIAG: cover-cache miss counter accessors (alias to a mutable global
+// can't be a `const`, so wrap). Remove with the scroll-perf probe.
+pub fn dbgCoverMisses() usize {
+    return sync.dbg_cover_misses;
+}
+pub fn dbgResetCoverMisses() void {
+    sync.dbg_cover_misses = 0;
+}
 pub const coverFullBytes = sync.coverFullBytes;
 pub const freeCoverCache = sync.freeCoverCache;
 pub const spawnCoverPrewarm = sync.spawnCoverPrewarm;
@@ -135,11 +143,23 @@ pub const persistAutoConvertIfDirty = common.persistAutoConvertIfDirty;
 pub const persistAutoApplyCompatIfDirty = common.persistAutoApplyCompatIfDirty;
 pub const persistSandboxDefaultIfDirty = common.persistSandboxDefaultIfDirty;
 pub const persistAutoUpdateDefaultIfDirty = common.persistAutoUpdateDefaultIfDirty;
+pub const persistDesktopNotificationsIfDirty = common.persistDesktopNotificationsIfDirty;
 pub const persistRefreshBackendIfDirty = common.persistRefreshBackendIfDirty;
 pub const persistMaxParallelSyncIfDirty = common.persistMaxParallelSyncIfDirty;
 pub const persistMaxParallelImageIfDirty = common.persistMaxParallelImageIfDirty;
+pub const persistMinSessionSecondsIfDirty = common.persistMinSessionSecondsIfDirty;
 pub const saveAria2Port = common.saveAria2Port;
 pub const saveAria2SeedRatio = common.saveAria2SeedRatio;
+pub const saveAria2SeedTime = common.saveAria2SeedTime;
+pub const decryptRpgmAssets = @import("actions/rpgm_tools.zig").decryptRpgmAssets;
+pub const enableRenpyConsole = @import("actions/renpy_tools.zig").enableRenpyConsole;
+pub const extractRpaArchives = @import("actions/renpy_tools.zig").extractRpaArchives;
+const universal_mods_actions = @import("actions/universal_mods.zig");
+pub const doAddUniversalMod = universal_mods_actions.doAddUniversalMod;
+pub const doDeleteUniversalMod = universal_mods_actions.doDeleteUniversalMod;
+pub const applyUniversalMod = universal_mods_actions.applyUniversalMod;
+pub const universalModEngines = universal_mods_actions.ENGINES;
+pub const universalModEngineForIndex = universal_mods_actions.engineForIndex;
 pub const maybeAutoUpdateCheck = common.maybeAutoUpdateCheck;
 pub const deleteGameAndReturn = common.deleteGameAndReturn;
 pub const refreshInstalledSet = common.refreshInstalledSet;

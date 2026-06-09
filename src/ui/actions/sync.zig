@@ -67,6 +67,7 @@ const image = @import("image");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const owned_types = @import("../owned.zig");
+const notify = @import("util_notify");
 const job_mod = @import("../job.zig");
 const common = @import("common.zig");
 const downloads_mod = @import("downloads.zig");
@@ -1688,8 +1689,18 @@ pub fn advanceSyncQueue(frame: *Frame) void {
         state.setSyncMsg(m);
         state.sync_queue_total = 0;
         state.sync_queue_started = 0;
-        if (syncRecapEntries(state).len > 0) {
+        const recap = syncRecapEntries(state);
+        if (recap.len > 0) {
             state.sync_recap_show = true;
+            if (state.desktop_notifications) {
+                var sbuf: [64]u8 = undefined;
+                var bbuf: [192]u8 = undefined;
+                notify.send(
+                    frame.io,
+                    notify.updateSummary(&sbuf, recap.len),
+                    notify.updateBody(&bbuf, recap[0].name, recap.len),
+                );
+            }
         }
     }
 }
@@ -1744,7 +1755,11 @@ fn imageWorker(job: *ImageJob) void {
         };
         if (fileExists(p.io, path)) {
             skipped += 1;
-            _ = p.aggregate_done.fetchAdd(1, .release);
+            // Do NOT bump `aggregate_done` (the banner's numerator):
+            // `enqueueImageFetch` already excluded on-disk shots from
+            // `state.image_total`, so counting skips here would push
+            // `done` past `total`. Per-job `progress_done` still
+            // advances for the (display-internal) X/Y counter.
             _ = p.progress_done.fetchAdd(1, .release);
             job_mod.refreshDebounced(job.win, @src());
             continue;
@@ -1834,6 +1849,30 @@ pub fn enqueueImageFetch(frame: *Frame, thread_id: u64, planned_urls: usize) voi
         }
     }
 
+    // Count only the screenshots actually MISSING on disk. The worker
+    // skips already-present `<tid>.s<idx>` files almost instantly, so
+    // counting them toward `image_total` made the banner flash a full
+    // 0→100% bar for games with no new images. `missing == 0` means
+    // nothing to do — bail before touching the queue (and before any
+    // alloc) so the banner never appears for those jobs at all. Path
+    // scheme matches the worker's (`imageWorker`) exactly.
+    var missing: usize = 0;
+    {
+        var i: usize = 1;
+        var path_buf: [256]u8 = undefined;
+        while (i <= planned_urls) : (i += 1) {
+            const sp = std.fmt.bufPrint(&path_buf, "{s}/{d}.s{d}", .{ frame.info.covers_dir, thread_id, i }) catch {
+                missing += 1; // path error → treat as missing (worker will retry)
+                continue;
+            };
+            if (!fileExists(frame.io, sp)) missing += 1;
+        }
+    }
+    if (missing == 0) {
+        log.info("enqueueImageFetch tid={d} urls={d} — all on disk, skipping", .{ thread_id, planned_urls });
+        return;
+    }
+
     // Grow when full. Start at 32 slots; double thereafter.
     if (state.image_queue == null or state.image_queue_len == state.image_queue_cap) {
         const new_cap: usize = if (state.image_queue_cap == 0) 32 else state.image_queue_cap * 2;
@@ -1850,8 +1889,8 @@ pub fn enqueueImageFetch(frame: *Frame, thread_id: u64, planned_urls: usize) voi
     }
     state.image_queue.?[state.image_queue_len] = thread_id;
     state.image_queue_len += 1;
-    state.image_total += @intCast(planned_urls);
-    log.info("enqueueImageFetch tid={d} urls={d} queue_len={d} total={d}", .{ thread_id, planned_urls, state.image_queue_len - state.image_queue_head, state.image_total });
+    state.image_total += @intCast(missing);
+    log.info("enqueueImageFetch tid={d} urls={d} missing={d} queue_len={d} total={d}", .{ thread_id, planned_urls, missing, state.image_queue_len - state.image_queue_head, state.image_total });
 }
 
 /// Per-frame: reap every completed image slot, then refill all empty
@@ -2075,6 +2114,12 @@ pub fn coverPath(buf: []u8, covers_dir: []const u8, thread_id: u64) ![]const u8 
 ///
 /// Cache eviction is FIFO with LRU-ish promotion: on hit, the entry is
 /// swapped into the slot just before `cover_cache_next`.
+///
+/// DIAG: per-frame cover-cache miss counter. UI-thread only, so a
+/// plain global is safe. `renderVirtualizedList` reads + resets it
+/// each frame to log thrash. Remove once the scroll-perf cause is
+/// pinned down.
+pub var dbg_cover_misses: usize = 0;
 pub fn coverBytes(frame: *Frame, thread_id: u64) ?[]const u8 {
     const state = frame.state;
     const cap = state.cover_cache.len;
@@ -2097,6 +2142,7 @@ pub fn coverBytes(frame: *Frame, thread_id: u64) ?[]const u8 {
     // fallback: image work all happens at sync time. Pre-thumb
     // games render the placeholder until they're re-synced (or a
     // future "Fix images" button regenerates them).
+    dbg_cover_misses += 1; // DIAG: attribute library-scroll cost
     var thumb_buf: [256]u8 = undefined;
     const thumb_path = std.fmt.bufPrint(&thumb_buf, "{s}/{d}.t", .{ frame.info.covers_dir, thread_id }) catch return null;
     const bytes = std.Io.Dir.cwd().readFileAlloc(

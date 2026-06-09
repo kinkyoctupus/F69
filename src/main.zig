@@ -17,7 +17,13 @@ const sandbox_mod = @import("sandbox");
 const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const ui = @import("ui");
+// The SDL3-GPU windowing backend. main owns the window backend's
+// lifetime and hands it to `ui.runMainLoop`; the `ui` module itself is
+// backend-agnostic (so it can be rebuilt against dvui's testing backend
+// for headless integration tests). Only the GUI exe links SDL.
+const SDLBackend = @import("sdl3gpu-backend");
 const util_setting = @import("util_setting");
+const theme_store = @import("ui_theme_store");
 const build_options = @import("build_options");
 
 /// Override the stdlib's default log level so `log.debug(...)` actually
@@ -58,7 +64,10 @@ pub fn main(init: std.process.Init) !void {
     // CLI flags — handled before any setup so `f69 --version` works
     // even if the data root can't be created (e.g. read-only mount).
     {
-        var it = init.minimal.args.iterate();
+        // iterateAllocator is the cross-platform arg iterator (the no-alloc iterate()
+        // @compileErrors on Windows/WASI, which need the command line decoded via an allocator).
+        var it = try init.minimal.args.iterateAllocator(gpa);
+        defer it.deinit();
         _ = it.next(); // skip argv[0]
         while (it.next()) |arg| {
             if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
@@ -188,6 +197,13 @@ pub fn main(init: std.process.Init) !void {
     const initial_aria2_seed_ratio: f32 = @max(util_setting.loadFloat(f32, init.io, gpa, aria2_seed_ratio_path, 5.0), 2.0);
     log.info("aria2 seed_ratio {d:.2}", .{initial_aria2_seed_ratio});
 
+    // aria2 seed-time cap (minutes) — `<data_root>/aria2_seed_time`. 0 = no
+    // cap (ratio governs). Applied live + at spawn via --seed-time.
+    const aria2_seed_time_path = try std.fmt.allocPrint(gpa, "{s}/aria2_seed_time", .{data_root});
+    defer gpa.free(aria2_seed_time_path);
+    const initial_aria2_seed_time: u32 = util_setting.loadInt(u32, init.io, gpa, aria2_seed_time_path, 0);
+    log.info("aria2 seed_time {d}m", .{initial_aria2_seed_time});
+
     // Downloads layout — split between `direct/` (plain HTTP) and
     // `torrents/` (BitTorrent). aria2's daemon-wide `--dir=` points at
     // `direct/`; `enqueueTorrent` overrides per-call to `torrents/`.
@@ -216,6 +232,7 @@ pub fn main(init: std.process.Init) !void {
         aria2_path,
         initial_aria2_port,
         initial_aria2_seed_ratio,
+        initial_aria2_seed_time,
     );
     defer dl_mgr.deinit();
 
@@ -252,7 +269,17 @@ pub fn main(init: std.process.Init) !void {
     // otherwise. Failures fall through to `.none` (Launch then surfaces
     // a clear backend-unavailable error). HostInfo carries the display
     // / audio / fontconfig env snapshot.
-    var sandbox = sandbox_mod.pickBackend(gpa, init.io, init.minimal.environ);
+    // Sandboxie Start.exe override (Windows): the persisted Settings file-picker
+    // value (<data_root>/sandboxie_path) wins; F69_SANDBOXIE_PATH env is the
+    // fallback. Both empty → detection probes %ProgramFiles%\Sandboxie-Plus\.
+    const sbie_path_file = try std.fmt.allocPrint(gpa, "{s}/sandboxie_path", .{data_root});
+    defer gpa.free(sbie_path_file);
+    const sbie_from_file = util_setting.readSingleLine(init.io, gpa, sbie_path_file) catch null;
+    defer if (sbie_from_file) |s| gpa.free(s);
+    const sbie_from_env = init.minimal.environ.getAlloc(gpa, "F69_SANDBOXIE_PATH") catch null;
+    defer if (sbie_from_env) |s| gpa.free(s);
+    const sbie_override: []const u8 = sbie_from_file orelse (sbie_from_env orelse "");
+    var sandbox = sandbox_mod.pickBackend(gpa, init.io, init.minimal.environ, sbie_override);
     defer sandbox.deinit();
     log.info("sandbox   backend={s}", .{sandbox.backendName()});
 
@@ -368,6 +395,13 @@ pub fn main(init: std.process.Init) !void {
     // Slider in Settings rewrites this file when the user adjusts it.
     const ui_scale_path = try std.fmt.allocPrint(gpa, "{s}/ui_scale", .{data_root});
     defer gpa.free(ui_scale_path);
+
+    // Theme: load the saved palette (if any) onto the console default before
+    // the UI builds its theme. Settings → Appearance rewrites this file.
+    const theme_path = try std.fmt.allocPrint(gpa, "{s}/theme.zon", .{data_root});
+    defer gpa.free(theme_path);
+    theme_store.setPath(theme_path);
+    theme_store.load(init.io, gpa);
     // ui_scale is clamped to [0.75, 3.0] so a bad file can't render the
     // UI unreadable.
     const initial_ui_scale: f32 = std.math.clamp(util_setting.loadFloat(f32, init.io, gpa, ui_scale_path, 1.25), 0.75, 3.0);
@@ -414,6 +448,10 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(auto_update_default_path);
     const initial_auto_update_default: bool = util_setting.loadBool(init.io, gpa, auto_update_default_path, false);
 
+    const desktop_notifications_path = try std.fmt.allocPrint(gpa, "{s}/desktop_notifications", .{data_root});
+    defer gpa.free(desktop_notifications_path);
+    const initial_desktop_notifications: bool = util_setting.loadBool(init.io, gpa, desktop_notifications_path, true);
+
     // Master tag list cache path. `runMainLoop` loads its contents
     // into State on startup so the sidebar's checkbox list is
     // populated even on first paint.
@@ -446,6 +484,16 @@ pub fn main(init: std.process.Init) !void {
         @as(u32, @intCast(ui.MAX_PARALLEL_IMAGE)),
     );
 
+    // Minimum session duration (seconds) for counts_as_played.
+    // Range 0..1800; default 60. 0 = every successful launch counts.
+    const min_session_seconds_path = try std.fmt.allocPrint(gpa, "{s}/min_session_seconds", .{data_root});
+    defer gpa.free(min_session_seconds_path);
+    const initial_min_session_seconds: u32 = std.math.clamp(
+        util_setting.loadInt(u32, init.io, gpa, min_session_seconds_path, 60),
+        @as(u32, 0),
+        @as(u32, 1800),
+    );
+
     // Refresh backend selector — single-line `indexer` / `scraper`.
     // Default `indexer` (F95Indexer cache at api.f95checker.dev). The
     // toggle lives in Settings → Sync; this file persists the user's
@@ -472,6 +520,21 @@ pub fn main(init: std.process.Init) !void {
 
     const ui_exe_dir = resolveExeDir(gpa, init.io, init.minimal.environ) catch try gpa.dupe(u8, ".");
     defer gpa.free(ui_exe_dir);
+
+    // Window backend — created + owned here so the `ui` module stays
+    // backend-agnostic (rebuildable against dvui's testing backend for
+    // headless tests). Must outlive the window dvui builds from it.
+    SDLBackend.enableSDLLogging();
+    var backend = try SDLBackend.initWindow(.{
+        .io = init.io,
+        .allocator = gpa,
+        .size = .{ .w = 1280.0, .h = 800.0 },
+        .min_size = .{ .w = 900.0, .h = 600.0 },
+        .vsync = true,
+        .title = "f69",
+        .icon = null,
+    });
+    defer backend.deinit();
 
     try ui.runMainLoop(init, &lib, &f95_service, &indexer_client, &dl_mgr, &recipe_repo, &sandbox, &host_launcher, &convert_svc, &compat_svc, rpdl_token, .{
         .exe_dir = ui_exe_dir,
@@ -500,6 +563,8 @@ pub fn main(init: std.process.Init) !void {
         .initial_aria2_port = initial_aria2_port,
         .aria2_seed_ratio_path = aria2_seed_ratio_path,
         .initial_aria2_seed_ratio = initial_aria2_seed_ratio,
+        .aria2_seed_time_path = aria2_seed_time_path,
+        .initial_aria2_seed_time = initial_aria2_seed_time,
         .auto_convert_path = auto_convert_path,
         .initial_auto_convert = initial_auto_convert,
         .auto_apply_compat_path = auto_apply_compat_path,
@@ -508,14 +573,18 @@ pub fn main(init: std.process.Init) !void {
         .initial_sandbox_default = initial_sandbox_default,
         .auto_update_default_path = auto_update_default_path,
         .initial_auto_update_default = initial_auto_update_default,
+        .desktop_notifications_path = desktop_notifications_path,
+        .initial_desktop_notifications = initial_desktop_notifications,
         .refresh_backend_path = refresh_backend_path,
         .initial_refresh_backend = initial_refresh_backend,
         .max_parallel_sync_path = max_parallel_sync_path,
         .initial_max_parallel_sync = initial_max_parallel_sync,
         .max_parallel_image_path = max_parallel_image_path,
         .initial_max_parallel_image = initial_max_parallel_image,
+        .min_session_seconds_path = min_session_seconds_path,
+        .initial_min_session_seconds = initial_min_session_seconds,
         .host = host,
-    });
+    }, &backend);
 }
 
 /// Parse `<data_root>/auto_check`. Format is `key=value` per line.
@@ -671,6 +740,15 @@ fn resolveExeDir(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Enviro
 fn resolveDataRoot(gpa: std.mem.Allocator, io: std.Io, environ: std.process.Environ) ![]u8 {
     // Tier 1: explicit override.
     if (environ.getAlloc(gpa, "F69_DATA_DIR")) |x| return x else |_| {}
+
+    // Windows: roaming app data at %APPDATA%\f69 — the platform convention, and independent of
+    // exe-dir resolution (which can fail when launched from a UNC/redirected path).
+    if (builtin.os.tag == .windows) {
+        if (environ.getAlloc(gpa, "APPDATA")) |appdata| {
+            defer gpa.free(appdata);
+            return std.fmt.allocPrint(gpa, "{s}/f69", .{appdata});
+        } else |_| {}
+    }
 
     const exe_dir = resolveExeDir(gpa, io, environ) catch {
         log.warn("resolveDataRoot: exe dir undeterminable; falling back to ./data", .{});

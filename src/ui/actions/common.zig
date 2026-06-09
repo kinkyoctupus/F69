@@ -484,6 +484,16 @@ pub fn persistAutoUpdateDefaultIfDirty(state: *State, path: []const u8, io: std.
     state.auto_update_default_persisted = state.auto_update_default;
 }
 
+pub fn persistDesktopNotificationsIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.desktop_notifications == state.desktop_notifications_persisted) return;
+    const text: []const u8 = if (state.desktop_notifications) "true" else "false";
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("desktop_notifications persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.desktop_notifications_persisted = state.desktop_notifications;
+}
+
 /// Mirror `state.refresh_backend` to disk on toggle. Same shape as
 /// `persistAutoUpdateDefaultIfDirty`. Writes the enum tag name
 /// (`indexer` / `scraper`) so the file is human-readable.
@@ -508,6 +518,19 @@ pub fn persistMaxParallelSyncIfDirty(state: *State, path: []const u8, io: std.Io
         return;
     };
     state.max_parallel_sync_persisted = state.max_parallel_sync;
+}
+
+/// Mirror `state.min_session_seconds` to disk on change. Clamped to
+/// `[0, 1800]` by the settings panel before this runs.
+pub fn persistMinSessionSecondsIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    if (state.min_session_seconds == state.min_session_seconds_persisted) return;
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{state.min_session_seconds}) catch return;
+    persistTextFile(io, path, text) catch |e| {
+        log.warn("min_session_seconds persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    state.min_session_seconds_persisted = state.min_session_seconds;
 }
 
 /// Mirror `state.max_parallel_image` to disk on change.
@@ -559,6 +582,22 @@ pub fn saveAria2SeedRatio(state: *State, path: []const u8, io: std.Io) !f32 {
     const text = std.fmt.bufPrint(&buf, "{d:.2}", .{parsed}) catch return error.OutOfMemory;
     try persistTextFile(io, path, text);
     state.aria2_seed_ratio_persisted = parsed;
+    return parsed;
+}
+
+/// Parse + save the seed-time cap (minutes; 0 = no cap). Persists to
+/// `<data_root>/aria2_seed_time`. Applied live by the caller via
+/// `Manager.setSeedTimeLive`.
+pub fn saveAria2SeedTime(state: *State, path: []const u8, io: std.Io) !u32 {
+    const end = std.mem.indexOfScalar(u8, &state.aria2_seed_time_buf, 0) orelse state.aria2_seed_time_buf.len;
+    const trimmed = std.mem.trim(u8, state.aria2_seed_time_buf[0..end], " \t\r\n");
+    if (trimmed.len == 0) return error.Empty;
+    const parsed = try std.fmt.parseInt(u32, trimmed, 10);
+
+    var buf: [16]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{parsed}) catch return error.OutOfMemory;
+    try persistTextFile(io, path, text);
+    state.aria2_seed_time_persisted = parsed;
     return parsed;
 }
 
@@ -682,6 +721,12 @@ fn installedSetPtr(frame: *Frame) ?*InstalledSet {
 /// indicator + filter reflect a fresh snapshot (post-install
 /// completions land in the table between renders).
 pub fn refreshInstalledSet(frame: *Frame) void {
+    // Cache by Library.install_generation — the installed-thread set only
+    // changes when an install row is added/removed, never per frame. Mirrors
+    // the install_versions snapshot in ui.zig. Skips a per-frame SELECT +
+    // HashMap rebuild that otherwise ran on every mouse-motion wakeup.
+    const gen = frame.lib.install_generation;
+    if (frame.state.installed_set != null and frame.state.installed_set_gen == gen) return;
     const set = installedSetPtr(frame) orelse return;
     set.clearRetainingCapacity();
     const ids = frame.lib.fetchInstalledThreadIds() catch |e| {
@@ -690,6 +735,7 @@ pub fn refreshInstalledSet(frame: *Frame) void {
     };
     defer frame.lib.alloc.free(ids);
     for (ids) |tid| set.put(tid, {}) catch {};
+    frame.state.installed_set_gen = gen;
 }
 
 /// Read-only probe — true iff `thread_id` had at least one install

@@ -58,6 +58,9 @@ pub const Manager = struct {
     /// by the UI under `<data_root>/aria2_seed_ratio`; changes take
     /// effect on the next launch (daemon-wide flag set at spawn).
     aria2_seed_ratio: f32 = 5.0,
+    /// Daemon-wide BitTorrent seed-time cap in minutes. 0 = no time cap
+    /// (the ratio governs). Persisted under `<data_root>/aria2_seed_time`.
+    aria2_seed_time_min: u32 = 0,
     /// Lazy-started on first enqueue. Owned by the Manager.
     daemon: ?aria2_rpc.Daemon = null,
     /// Optional persistence paths. When set, Manager (a) rehydrates
@@ -77,6 +80,7 @@ pub const Manager = struct {
         aria2_path: []const u8,
         aria2_port: u16,
         aria2_seed_ratio: f32,
+        aria2_seed_time_min: u32,
     ) Manager {
         return .{
             .alloc = alloc,
@@ -88,6 +92,7 @@ pub const Manager = struct {
             .aria2_path = aria2_path,
             .aria2_port = aria2_port,
             .aria2_seed_ratio = aria2_seed_ratio,
+            .aria2_seed_time_min = aria2_seed_time_min,
             .handlers = .empty,
             .jobs = std.AutoHashMap(u64, dom.Job).init(alloc),
             .job_urls = std.AutoHashMap(u64, []u8).init(alloc),
@@ -203,6 +208,7 @@ pub const Manager = struct {
                 self.aria2_session_path,
                 self.aria2_port,
                 self.aria2_seed_ratio,
+                self.aria2_seed_time_min,
             );
             log.info("aria2c daemon ready", .{});
         }
@@ -319,6 +325,21 @@ pub const Manager = struct {
     /// alive).
     pub fn tick(self: *Manager) void {
         const daemon = if (self.daemon) |*d| d else return;
+
+        // Drain any WebSocket push events (no-op under HTTP). The per-job
+        // poll below is the source of truth for state; consuming the queue
+        // here keeps it bounded and surfaces completion/error events in the
+        // log the instant aria2 reports them.
+        var events: std.ArrayList(aria2_rpc.Event) = .empty;
+        defer {
+            for (events.items) |e| e.deinit(self.alloc);
+            events.deinit(self.alloc);
+        }
+        daemon.drainEvents(self.alloc, &events);
+        for (events.items) |e| {
+            log.info("aria2 push event {s} gid={s}", .{ e.method, e.gid });
+        }
+
         // Track whether any job changed status this tick, so we can
         // flush the JSON exactly once per transition batch — without
         // this the persisted status lags reality (a torrent moves
@@ -341,7 +362,22 @@ pub const Manager = struct {
                 else => {},
             }
             const gid = self.job_gids.get(j.id) orelse continue;
-            var s = daemon.tellStatus(gid) catch continue;
+            var s = daemon.tellStatus(gid) catch |e| {
+                if (e == errs.Error.NotFound) {
+                    // aria2 no longer knows this gid (cleared after completion,
+                    // or a session-restored job whose gid changed). Drop the
+                    // gid mapping so we stop polling — and re-logging — it.
+                    if (self.job_gids.fetchRemove(j.id)) |kv| self.alloc.free(kv.value);
+                    // Keep finished work as done; treat a vanished in-flight
+                    // job as gone.
+                    j.status = switch (j.status) {
+                        .done, .seeding => .done,
+                        else => .cancelled,
+                    };
+                    any_transition = true;
+                }
+                continue;
+            };
             defer s.deinit(self.alloc);
 
             const prev_status = j.status;
@@ -395,65 +431,9 @@ pub const Manager = struct {
             };
         }
 
-        // ----- Leech-precedence policy -----
-        // aria2 counts seeding torrents against its concurrent-download
-        // slot budget. With a handful of seeders left over from prior
-        // sessions, a fresh download can sit in "waiting" forever and
-        // never see a byte. Resolve by pausing seeders while there's
-        // anything actively leeching, and auto-resuming them once the
-        // leeches finish. User-paused jobs are untouched.
-        self.applyLeechPrecedence();
-    }
-
-    /// Walk the job table. If any job is currently leeching
-    /// (`.downloading` / `.queued` / `.fetching_metadata`), pause any
-    /// `.seeding` job that hasn't already been priority-paused. If no
-    /// leech is in flight, resume any job we previously
-    /// priority-paused.
-    fn applyLeechPrecedence(self: *Manager) void {
-        const daemon = if (self.daemon) |*d| d else return;
-
-        var has_active_leech = false;
-        var it = self.jobs.iterator();
-        while (it.next()) |entry| {
-            const j = entry.value_ptr;
-            switch (j.status) {
-                .downloading, .fetching_metadata, .verifying => {
-                    has_active_leech = true;
-                    break;
-                },
-                else => {},
-            }
-        }
-
-        it = self.jobs.iterator();
-        while (it.next()) |entry| {
-            const j = entry.value_ptr;
-            const gid = self.job_gids.get(j.id) orelse continue;
-            if (has_active_leech) {
-                // Pause seeders so the leecher gets a slot. Skip jobs
-                // that aren't seeding right now, and skip the ones
-                // we already paused (idempotent guard).
-                if (j.status == .seeding and !j.priority_paused) {
-                    daemon.pause(gid) catch |e| {
-                        log.warn("leech-precedence: pause job {d} failed: {s}", .{ j.id, @errorName(e) });
-                        continue;
-                    };
-                    j.priority_paused = true;
-                    log.info("leech-precedence: paused seeder job {d} to free aria2 slot", .{j.id});
-                }
-            } else {
-                // No leech in flight — resume anything we paused.
-                if (j.priority_paused and j.status == .paused) {
-                    daemon.unpause(gid) catch |e| {
-                        log.warn("leech-precedence: unpause job {d} failed: {s}", .{ j.id, @errorName(e) });
-                        continue;
-                    };
-                    j.priority_paused = false;
-                    log.info("leech-precedence: resumed seeder job {d} (no active leech)", .{j.id});
-                }
-            }
-        }
+        // Seeding-vs-leeching slot contention is now handled by aria2 itself
+        // via --bt-detach-seed-only (set at spawn) — seeders don't occupy a
+        // download slot, so the old manual leech-precedence hack is gone.
     }
 
     /// Pause every active download/seed. No-op when the daemon
@@ -513,6 +493,45 @@ pub const Manager = struct {
             }
         }
         if (self.jobs.getPtr(id)) |j| j.status = .cancelled;
+    }
+
+    /// Apply a new seed-ratio without restarting aria2: set the daemon-wide
+    /// default (for future downloads) AND push it onto every torrent already
+    /// in flight. Updates the cached value used by the ratio-met checks.
+    /// Best-effort — a dead daemon just updates the cached value (it'll take
+    /// effect at next spawn via the persisted file).
+    pub fn setSeedRatioLive(self: *Manager, ratio: f32) void {
+        self.aria2_seed_ratio = ratio;
+        const daemon = if (self.daemon) |*d| d else return;
+        var buf: [16]u8 = undefined;
+        const rstr = std.fmt.bufPrint(&buf, "{d:.2}", .{ratio}) catch return;
+        daemon.changeGlobalOption("seed-ratio", rstr) catch |e|
+            log.warn("changeGlobalOption seed-ratio failed: {s}", .{@errorName(e)});
+        var it = self.jobs.iterator();
+        while (it.next()) |entry| {
+            const j = entry.value_ptr;
+            if (!j.is_torrent) continue;
+            const gid = self.job_gids.get(j.id) orelse continue;
+            daemon.changeOption(gid, "seed-ratio", rstr) catch {};
+        }
+    }
+
+    /// Apply a daemon-wide seed-time cap (minutes; 0 = no cap) live + to
+    /// in-flight torrents. Same best-effort semantics as `setSeedRatioLive`.
+    pub fn setSeedTimeLive(self: *Manager, minutes: u32) void {
+        self.aria2_seed_time_min = minutes;
+        const daemon = if (self.daemon) |*d| d else return;
+        var buf: [16]u8 = undefined;
+        const mstr = std.fmt.bufPrint(&buf, "{d}", .{minutes}) catch return;
+        daemon.changeGlobalOption("seed-time", mstr) catch |e|
+            log.warn("changeGlobalOption seed-time failed: {s}", .{@errorName(e)});
+        var it = self.jobs.iterator();
+        while (it.next()) |entry| {
+            const j = entry.value_ptr;
+            if (!j.is_torrent) continue;
+            const gid = self.job_gids.get(j.id) orelse continue;
+            daemon.changeOption(gid, "seed-time", mstr) catch {};
+        }
     }
 
     /// Drop a single job from the table (any status). For non-
@@ -769,6 +788,7 @@ test "Manager init/deinit doesn't spawn aria2" {
         "aria2c",
         0,
         5.0,
+        0,
     );
     mgr.deinit();
 }
@@ -793,7 +813,7 @@ test "persistJobs / loadJobsJson round-trip" {
     defer alloc.free(path);
 
     // ---- write side: populate maps directly + persist ----
-    var write_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var write_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer write_mgr.deinit();
     write_mgr.jobs_json_path = path;
 
@@ -828,7 +848,7 @@ test "persistJobs / loadJobsJson round-trip" {
     try write_mgr.persistJobs();
 
     // ---- read side: fresh Manager picks up the same jobs ----
-    var read_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var read_mgr = Manager.init(alloc, io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer read_mgr.deinit();
     read_mgr.jobs_json_path = path;
     try read_mgr.loadJobsJson();
@@ -854,7 +874,7 @@ test "loadJobsJson handles missing file" {
     const path = try env.path("missing-jobs.json");
     defer alloc.free(path);
 
-    var mgr = Manager.init(alloc, env.io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0);
+    var mgr = Manager.init(alloc, env.io, "/tmp/lib", "/tmp/cache", "/tmp/dl/direct", "/tmp/dl/torrents", "aria2c", 0, 5.0, 0);
     defer mgr.deinit();
     mgr.jobs_json_path = path;
     try mgr.loadJobsJson(); // should be a no-op, not an error

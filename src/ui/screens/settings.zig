@@ -2,11 +2,17 @@
 // downloads / mod-presets / convert-presets / about.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
+const file_picker = @import("util_file_picker");
+const atomic_io = @import("util_atomic_io");
 
+const tokens = @import("ui_tokens");
+const comp = @import("ui_comp");
+const theme_store = @import("ui_theme_store");
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
@@ -16,7 +22,7 @@ const components = @import("../components.zig");
 
 const Frame = types.Frame;
 const State = types.State;
-const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+const helpTextColor = components.helpTextColor;
 
 // ============================================================
 //  settings screen
@@ -38,59 +44,235 @@ pub fn settingsScreen(frame: *Frame) !bool {
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
-    // ----- tab bar -----
+    // ----- body: left category list + right scrollable content (Design B) -----
     {
-        var tabs = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .padding = .{ .x = 12, .y = 8, .w = 12, .h = 4 },
+        var split = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+        defer split.deinit();
+
+        // category sidebar — grouped Look / Content / System
+        {
+            var nav = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .min_size_content = .{ .w = 190, .h = 0 },
+                .expand = .vertical,
+                .background = true,
+                .color_fill = dcol(tokens.active.bg1),
+                .padding = .{ .x = 8, .y = 12, .w = 8, .h = 12 },
+            });
+            defer nav.deinit();
+            catGroup(0, "LOOK");
+            catItem(state, "Appearance", .appearance);
+            catGroup(1, "CONTENT");
+            catItem(state, "Library", .library);
+            catItem(state, "Updates", .updates);
+            catItem(state, "Downloads", .downloads);
+            catItem(state, "Games & Launch", .games_launch);
+            catGroup(2, "SYSTEM");
+            catItem(state, "Accounts", .accounts);
+            catItem(state, "Presets", .presets);
+            catItem(state, "About", .about);
+        }
+        _ = dvui.separator(@src(), .{ .expand = .vertical });
+
+        // content pane
+        var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+        defer scroll.deinit();
+        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
         });
-        defer tabs.deinit();
+        defer body.deinit();
 
-        if (components.tabButton("General", state.settings_tab == .general)) state.settings_tab = .general;
-        if (components.tabButton("Sync", state.settings_tab == .sync)) state.settings_tab = .sync;
-        if (components.tabButton("Accounts", state.settings_tab == .accounts)) state.settings_tab = .accounts;
-        if (components.tabButton("Library", state.settings_tab == .library)) state.settings_tab = .library;
-        if (components.tabButton("Downloads", state.settings_tab == .downloads)) state.settings_tab = .downloads;
-        if (components.tabButton("Mod presets", state.settings_tab == .mod_presets)) state.settings_tab = .mod_presets;
-        if (components.tabButton("Convert presets", state.settings_tab == .convert_presets)) state.settings_tab = .convert_presets;
-        if (components.tabButton("About", state.settings_tab == .about)) state.settings_tab = .about;
-    }
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-
-    // ----- body — scrollable per-tab area -----
-    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
-    defer scroll.deinit();
-
-    var body = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 24, .y = 16, .w = 24, .h = 16 },
-    });
-    defer body.deinit();
-
-    switch (state.settings_tab) {
-        .general => renderSettingsGeneral(frame),
-        .sync => renderSettingsSync(frame),
-        .accounts => renderSettingsAccounts(frame),
-        .library => renderSettingsLibrary(frame),
-        .downloads => renderSettingsDownloads(frame),
-        .mod_presets => renderSettingsModPresets(frame),
-        .convert_presets => renderSettingsConvertPresets(frame),
-        .about => renderSettingsAbout(frame),
+        switch (state.settings_tab) {
+            .appearance => renderCatAppearance(frame),
+            .library => renderSettingsLibrary(frame),
+            .updates => renderCatUpdates(frame),
+            .downloads => renderSettingsDownloads(frame),
+            .games_launch => renderCatGamesLaunch(frame),
+            .accounts => renderSettingsAccounts(frame),
+            .presets => renderCatPresets(frame),
+            .about => renderSettingsAbout(frame),
+        }
     }
 
     return true;
 }
 
-/// General tab — UI scale + browser path.
-fn renderSettingsGeneral(frame: *Frame) void {
+/// tokens.Color → dvui.Color (local sugar, mirrors comp.zig).
+fn dcol(col: tokens.Color) dvui.Color {
+    return tokens.toDvui(col, dvui.Color);
+}
+
+/// Small dimmed group heading in the category sidebar.
+fn catGroup(key: u32, label: []const u8) void {
+    var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .id_extra = key });
+    defer box.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    const mono = dvui.Font.theme(.mono);
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .color_text = dcol(tokens.active.ink3),
+        .padding = .{ .x = 10, .y = 0, .w = 0, .h = 5 },
+        .font = mono.withSize(mono.size * 0.82),
+    });
+}
+
+/// One category row in the sidebar. Active = accent wash + left accent bar.
+fn catItem(state: *State, label: []const u8, cat: state_mod.SettingsTab) void {
+    const t = tokens.active;
+    const on = state.settings_tab == cat;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = @intFromEnum(cat),
+        .expand = .horizontal,
+        .background = on,
+        .color_fill = dcol(t.acc_wash),
+        .border = if (on) .{ .x = 2, .y = 0, .w = 0, .h = 0 } else dvui.Rect.all(0),
+        .color_border = dcol(t.acc),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .padding = .{ .x = 10, .y = 7, .w = 10, .h = 7 },
+        .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+    });
+    defer row.deinit();
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = dcol(if (on) t.acc else t.ink2),
+    });
+    if (dvui.clicked(row.data(), .{})) state.settings_tab = cat;
+}
+
+/// Design-B labelled toggle: title + switch on one row, optional wrapping
+/// description below. Returns true the frame it's clicked (caller flips the
+/// bound bool). `key` must be unique per call site in a frame — it disambiguates
+/// the shared @src() ids (incl. the help-text parent box).
+fn toggleRow(key: u32, on: bool, title: []const u8, desc: []const u8) bool {
+    var hit = false;
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = key, .expand = .horizontal, .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 } });
+        defer row.deinit();
+        dvui.labelNoFmt(@src(), title, .{}, .{ .gravity_y = 0.5, .color_text = dcol(tokens.active.ink) });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        // Stable per-toggle tag (keys are unique comptime literals at the call
+        // sites) so headless Layer-2 tests can moveTo+click a specific toggle.
+        const tag: []const u8 = switch (key) {
+            1 => "set-auto-update",
+            2 => "set-desktop-notif",
+            3 => "set-sandbox-default",
+            4 => "set-auto-convert",
+            5 => "set-auto-apply-compat",
+            else => "set-toggle",
+        };
+        hit = comp.toggle(@src(), on, .{ .id_extra = key, .gravity_y = 0.5, .tag = tag });
+    }
+    if (desc.len > 0) {
+        var dbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .id_extra = key, .expand = .horizontal });
+        defer dbox.deinit();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 3 } });
+        components.settingsHelpText(desc);
+    }
+    return hit;
+}
+
+/// Appearance category — theme picker + UI scale.
+fn renderCatAppearance(frame: *Frame) void {
+    renderSettingsAppearance(frame);
+    settingsSectionDivider(20);
     renderUiScaleSection(frame);
-    settingsSectionDivider(1);
-    renderBrowserSection(frame);
-    settingsSectionDivider(8);
-    renderAutoConvertSection(frame);
-    settingsSectionDivider(9);
+}
+
+/// Presets category — mod-install + convert-strategy preset managers.
+fn renderCatPresets(frame: *Frame) void {
+    renderSettingsModPresets(frame);
+    settingsSectionDivider(27);
+    renderSettingsConvertPresets(frame);
+}
+
+/// Appearance tab — live theme picker (Design B). Preset buttons + accent
+/// swatches mutate `tokens.active`; the main loop re-applies the theme each
+/// frame so changes show instantly.
+fn renderSettingsAppearance(frame: *Frame) void {
+    var changed = false;
+    dvui.label(@src(), "Theme", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    {
+        const labels = [_][]const u8{ "Console", "Obsidian", "Midnight", "Paper" };
+        const presets = [_]tokens.Theme{ tokens.presets.console, tokens.presets.obsidian, tokens.presets.midnight, tokens.presets.paper };
+        var active_idx: usize = 0;
+        for (presets, 0..) |p, i| {
+            if (std.meta.eql(tokens.active, p)) active_idx = i;
+        }
+        var prow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 0, .w = 0, .h = 10 } });
+        defer prow.deinit();
+        if (comp.segmented(@src(), &labels, active_idx, .{})) |hit| {
+            tokens.active = presets[hit];
+            changed = true;
+        }
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    dvui.labelNoFmt(@src(), "Accent", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer row.deinit();
+        const swatches = [_]tokens.Color{
+            .{ .r = 0x34, .g = 0xd0, .b = 0xc4 }, // teal
+            .{ .r = 0xe8, .g = 0xa1, .b = 0x3c }, // amber
+            .{ .r = 0xe0, .g = 0x56, .b = 0x7f }, // rose
+            .{ .r = 0x6c, .g = 0x8c, .b = 0xff }, // indigo
+            .{ .r = 0x8b, .g = 0xe9, .b = 0xfd }, // cyan
+            .{ .r = 0xb8, .g = 0xe3, .b = 0x4a }, // lime
+        };
+        inline for (swatches, 0..) |sw, i| {
+            const opts: dvui.Options = .{
+                .id_extra = i,
+                .min_size_content = .{ .w = 28, .h = 28 },
+                .background = true,
+                .color_fill = tokens.toDvui(sw, dvui.Color),
+                .corner_radius = dvui.Rect.all(tokens.r),
+                .border = dvui.Rect.all(1),
+                .color_border = tokens.toDvui(tokens.active.line, dvui.Color),
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+            };
+            if (dvui.button(@src(), "", .{}, opts)) {
+                tokens.active = tokens.fromBase(.{
+                    .bg = tokens.active.bg0,
+                    .accent = sw,
+                    .ink = tokens.active.ink,
+                    .accent2 = tokens.active.accent2,
+                });
+                changed = true;
+            }
+        }
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    dvui.labelNoFmt(@src(), "Preview", .{}, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 6 } });
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer row.deinit();
+        _ = comp.button(@src(), "Play", .primary, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        comp.engineChip(@src(), "Ren'Py", .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        comp.statusChip(@src(), "Ongoing", .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        comp.newChip(@src(), .{ .gravity_y = 0.5 });
+    }
+    {
+        var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .padding = .{ .x = 0, .y = 10, .w = 0, .h = 0 } });
+        defer row2.deinit();
+        comp.progressBar(@src(), 0.62, 220, .{ .gravity_y = 0.5 });
+    }
+
+    if (changed) theme_store.save(frame.io);
+}
+
+/// General tab — UI scale + browser path.
+/// Games & Launch category — everything about running/installing a game:
+/// sandbox, post-install convert, link-opening, playtime threshold.
+fn renderCatGamesLaunch(frame: *Frame) void {
     renderSandboxDefaultSection(frame);
-    settingsSectionDivider(10);
-    renderAutoUpdateDefaultSection(frame);
+    settingsSectionDivider(9);
+    renderAutoConvertSection(frame);
+    settingsSectionDivider(8);
+    renderBrowserSection(frame);
+    settingsSectionDivider(11);
+    renderMinSessionSecondsSection(frame);
 }
 
 /// "Auto-download updates" checkbox. When on, the batch sync /
@@ -99,29 +281,129 @@ fn renderSettingsGeneral(frame: *Frame) void {
 /// detail-page dropdown can override this.
 fn renderAutoUpdateDefaultSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Auto-download updates", .{}, .{ .style = .highlight });
+    dvui.label(@src(), "On new versions", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    if (toggleRow(1, state.auto_update_default, "Auto-download updates on batch sync", "When sync finds a newer version, download + install it automatically. Only from Sync All / scheduled checks, never a single-game sync. Manual installs without a recipe are skipped — they need a fresh archive.")) {
+        state.auto_update_default = !state.auto_update_default;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    if (toggleRow(2, state.desktop_notifications, "Desktop notification when updates are found", "")) {
+        state.desktop_notifications = !state.desktop_notifications;
+    }
+}
+
+/// Minimum session duration (seconds) that counts as a "played" session.
+/// 0 = every successful launch counts, regardless of how briefly the
+/// game ran. Max 1800 (30 minutes). Evaluated at session close; already-
+/// recorded counts_as_played values are not retroactively recalculated.
+fn renderMinSessionSecondsSection(frame: *Frame) void {
+    const state = frame.state;
+    dvui.label(@src(), "Minimum play session length", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     components.settingsHelpText(
-        "When sync finds a newer version, automatically download + install it. " ++
-            "Only fires from batch sync (Sync All / scheduled update-check), never from a single-game sync. " ++
-            "Manual installs without a recipe are skipped — they need a fresh archive to update.",
+        "A launch only counts as 'played' if the game ran for at least this many seconds. " ++
+            "Range: 0 (every launch counts) to 1800 (30 minutes). Default: 60.",
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.auto_update_default, "Auto-download updates on batch sync", .{});
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        dvui.label(@src(), "Minimum session length to count as 'played' (seconds)", .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.min_session_seconds_buf },
+        }, .{
+            .min_size_content = .{ .w = 60, .h = 24 },
+            .gravity_y = 0.5,
+        });
+        te.deinit();
+        const typed = std.mem.sliceTo(&state.min_session_seconds_buf, 0);
+        if (std.fmt.parseInt(u32, typed, 10)) |n| {
+            const clamped: u32 = std.math.clamp(n, @as(u32, 0), @as(u32, 1800));
+            state.min_session_seconds = clamped;
+        } else |_| {}
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    dvui.label(@src(), "0 = every successful launch counts as played.", .{}, .{ .color_text = helpTextColor() });
 }
 
 /// "Sandbox on launch by default" checkbox. Each game's per-game
 /// SandboxOverride wins over this — only `.use_default` consults it.
 fn renderSandboxDefaultSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Sandbox on launch", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    components.settingsHelpText(
-        "Run games inside a sandbox by default (bwrap on Linux, Sandboxie on Windows). " ++
-            "Each game's detail page can override this with always / never.",
-    );
+    dvui.label(@src(), "Sandbox", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.sandbox_default, "Sandbox games by default", .{});
+    if (toggleRow(3, state.sandbox_default, "Sandbox games by default", "bwrap on Linux, Sandboxie on Windows. Each game's detail page can override with always / never. Falls back to unsandboxed when unavailable.")) {
+        state.sandbox_default = !state.sandbox_default;
+    }
+
+    // Windows: let the user point at a portable / non-standard Sandboxie
+    // Start.exe when auto-detection (%ProgramFiles%) doesn't apply.
+    if (builtin.os.tag == .windows) {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 14 } });
+        const cur = frame.sandbox.sandboxiePath();
+        if (cur.len > 0) {
+            var buf: [768]u8 = undefined;
+            components.settingsHelpText(
+                std.fmt.bufPrint(&buf, "Sandboxie Start.exe in use:\n{s}", .{cur}) catch "Sandboxie Start.exe is configured.",
+            );
+        } else {
+            components.settingsHelpText(
+                "Sandboxie not detected. Install Sandboxie-Plus, or browse to a portable Start.exe below. " ++
+                    "Without it, games launch unsandboxed.",
+            );
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        if (dvui.button(@src(), "Browse to Sandboxie Start.exe\u{2026}", .{}, .{})) {
+            pickSandboxieStartExe(frame);
+        }
+        if (cur.len > 0) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+            if (dvui.button(@src(), "Clear override", .{}, .{})) {
+                clearSandboxieOverride(frame);
+            }
+        }
+    }
+}
+
+/// Windows: file-pick a Sandboxie `Start.exe` (portable / non-standard
+/// install), persist it to `<data_root>/sandboxie_path`, and hot-swap the
+/// live backend so it takes effect immediately.
+fn pickSandboxieStartExe(frame: *Frame) void {
+    const alloc = frame.lib.alloc;
+    const filters = [_]file_picker.FilterItem{.{ .name = "Sandboxie Start", .spec = "exe" }};
+    const picked = (file_picker.open(alloc, &filters, null) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "File picker failed: {s}", .{@errorName(e)}) catch "File picker failed");
+        return;
+    }) orelse return; // user cancelled
+    defer alloc.free(picked);
+
+    if (!frame.sandbox.applySandboxiePath(alloc, frame.io, picked)) {
+        var buf: [768]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "Not a usable Start.exe: {s}", .{picked}) catch "Not a usable Start.exe");
+        return;
+    }
+    // Persist so the choice survives a restart.
+    const file = std.fmt.allocPrint(alloc, "{s}/sandboxie_path", .{frame.info.data_root}) catch return;
+    defer alloc.free(file);
+    atomic_io.writeFileAtomic(frame.io, file, picked) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyWarn(std.fmt.bufPrint(&buf, "Applied for now, but couldn't save: {s}", .{@errorName(e)}) catch "Applied, but couldn't save");
+        return;
+    };
+    frame.state.notifyOk("Sandboxie Start.exe set — games will launch sandboxed.");
+}
+
+/// Windows: forget the persisted Start.exe override. Auto-detection resumes
+/// on the next launch (we don't re-probe %ProgramFiles% live — that needs the
+/// process environ, which the UI frame doesn't carry).
+fn clearSandboxieOverride(frame: *Frame) void {
+    const alloc = frame.lib.alloc;
+    const file = std.fmt.allocPrint(alloc, "{s}/sandboxie_path", .{frame.info.data_root}) catch return;
+    defer alloc.free(file);
+    std.Io.Dir.cwd().deleteFile(frame.io, file) catch {};
+    frame.state.notifyInfo("Sandboxie override cleared — auto-detect resumes on next launch.");
 }
 
 /// "Auto-convert new installs" checkbox. When on, post-install
@@ -130,29 +412,28 @@ fn renderSandboxDefaultSection(frame: *Frame) void {
 /// because Convert pulls SDKs and can be slow.
 fn renderAutoConvertSection(frame: *Frame) void {
     const state = frame.state;
-    dvui.label(@src(), "Auto-convert new installs", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-    components.settingsHelpText(
-        "When a download finishes and extracts, automatically run Convert (Ren'Py / RPGM Win→Linux). " ++
-            "Requires a recipe with a `convert_linux` block — games without one need manual Convert.",
-    );
+    dvui.label(@src(), "After install", .{}, .{ .style = .highlight });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    _ = dvui.checkbox(@src(), &state.auto_convert, "Convert new installs automatically", .{});
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    components.settingsHelpText(
-        "After Convert, scan compat recipes and apply any blockers automatically. Re-applies recipes whose bundled version has changed. All compat fixes are reversible via the Fix Compat / Undo UI.",
-    );
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    _ = dvui.checkbox(@src(), &state.auto_apply_compat, "Apply compat fixes automatically after Convert", .{});
+    if (toggleRow(4, state.auto_convert, "Convert new installs automatically", "When a download extracts, run Convert (Ren'Py / RPGM Win→Linux). Needs a recipe with a `convert_linux` block — games without one need manual Convert.")) {
+        state.auto_convert = !state.auto_convert;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    if (toggleRow(5, state.auto_apply_compat, "Apply compat fixes after Convert", "Scan compat recipes and apply blockers automatically; re-applies recipes whose bundled version changed. Reversible via Fix Compat / Undo.")) {
+        state.auto_apply_compat = !state.auto_apply_compat;
+    }
 }
 
 /// Sync tab — auto-check preferences, refresh backend toggle, the
 /// parallelism knobs, and the F95 rate-limit info row.
-fn renderSettingsSync(frame: *Frame) void {
-    renderAutoCheckSection(frame);
-    settingsSectionDivider(2);
+/// Updates category — all update-checking cadence + refresh machinery
+/// in one place: backend, schedule, auto-download/notify, concurrency.
+fn renderCatUpdates(frame: *Frame) void {
     renderRefreshBackendSection(frame);
     settingsSectionDivider(3);
+    renderAutoCheckSection(frame);
+    settingsSectionDivider(2);
+    renderAutoUpdateDefaultSection(frame);
+    settingsSectionDivider(12);
     renderParallelismSection(frame);
     settingsSectionDivider(4);
     dvui.label(@src(), "Network", .{}, .{ .style = .highlight });
@@ -396,7 +677,7 @@ fn renderEngineReanalyseSection(frame: *Frame) void {
         const msg = state.engine_reanalyse_msg_buf[0..state.engine_reanalyse_msg_len];
         dvui.labelNoFmt(@src(), msg, .{}, .{
             .gravity_y = 0.5,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 }
@@ -539,7 +820,7 @@ fn renderImportBanner(frame: *Frame) void {
         var cur_buf: [192]u8 = undefined;
         const cur_text = std.fmt.bufPrint(&cur_buf, "  current: {s}", .{cur}) catch cur;
         dvui.labelNoFmt(@src(), cur_text, .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
             .id_extra = std.hash.Wyhash.hash(0, cur),
         });
     }
@@ -606,13 +887,13 @@ fn renderSettingsDownloads(frame: *Frame) void {
         std.fmt.bufPrint(&live_buf, "now bound to {d}", .{live_port}) catch "(bound)";
     dvui.labelNoFmt(@src(), live_msg, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     if (state.aria2_port_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
         dvui.labelNoFmt(@src(), state.aria2_port_msg_buf[0..state.aria2_port_msg_len], .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -644,8 +925,11 @@ fn renderSettingsDownloads(frame: *Frame) void {
 
     if (style.button(@src(), "Save", .{}, .{ .style = .highlight, .gravity_y = 0.5, .id_extra = 0xCEED })) {
         if (actions.saveAria2SeedRatio(state, frame.info.aria2_seed_ratio_path, frame.io)) |ratio| {
+            // Apply immediately to the running daemon + in-flight torrents
+            // (no restart needed); the file persists it for next launch.
+            frame.dl_mgr.setSeedRatioLive(ratio);
             var msg_buf: [80]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg_buf, "saved — {d:.1}× target active after restart", .{ratio}) catch "saved";
+            const m = std.fmt.bufPrint(&msg_buf, "saved — {d:.1}× target applied now", .{ratio}) catch "saved";
             setAria2SeedRatioMsg(state, m);
         } else |e| {
             const m: []const u8 = switch (e) {
@@ -668,14 +952,57 @@ fn renderSettingsDownloads(frame: *Frame) void {
         std.fmt.bufPrint(&live_sr_buf, "now using {d:.1}×", .{live_sr}) catch "(set)";
     dvui.labelNoFmt(@src(), live_sr_msg, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     if (state.aria2_seed_ratio_msg_len > 0) {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
         dvui.labelNoFmt(@src(), state.aria2_seed_ratio_msg_buf[0..state.aria2_seed_ratio_msg_len], .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
+    }
+
+    // ----- BitTorrent seed-time cap -----
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    dvui.label(@src(), "Seed time", .{}, .{ .style = .highlight });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    components.settingsHelpText(
+        "Optional cap on how long each completed torrent keeps seeding, in minutes. 0 = no time cap " ++
+            "(seed until the ratio above is met). Applied immediately to the running daemon + in-flight torrents.",
+    );
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    var st_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer st_row.deinit();
+
+    dvui.label(@src(), "Minutes", .{}, .{
+        .min_size_content = .{ .w = 60, .h = 20 },
+        .gravity_y = 0.5,
+    });
+    const st_te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.aria2_seed_time_buf } }, .{
+        .min_size_content = .{ .w = 120, .h = 28 },
+        .gravity_y = 0.5,
+    });
+    st_te.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+
+    if (style.button(@src(), "Save", .{}, .{ .style = .highlight, .gravity_y = 0.5, .id_extra = 0xCEEE })) {
+        if (actions.saveAria2SeedTime(state, frame.info.aria2_seed_time_path, frame.io)) |minutes| {
+            frame.dl_mgr.setSeedTimeLive(minutes);
+            var msg_buf: [80]u8 = undefined;
+            const m = if (minutes == 0)
+                "saved — no seed-time cap"
+            else
+                std.fmt.bufPrint(&msg_buf, "saved — {d}m cap applied now", .{minutes}) catch "saved";
+            setAria2SeedRatioMsg(state, m);
+        } else |e| {
+            const m: []const u8 = switch (e) {
+                error.Empty => "minutes cannot be blank (use 0 for no cap)",
+                error.InvalidCharacter, error.Overflow => "not a valid whole number",
+                else => "save failed",
+            };
+            setAria2SeedRatioMsg(state, m);
+        }
     }
 }
 
@@ -733,7 +1060,7 @@ fn renderTagsRefreshSection(frame: *Frame) void {
     };
     dvui.labelNoFmt(@src(), info_text, .{}, .{
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 }
 
@@ -766,11 +1093,11 @@ fn renderSettingsModPresets(frame: *Frame) void {
     {
         var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer bar.deinit();
-        dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "User dir:", .{}, .{ .color_text = helpTextColor() });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         dvui.labelNoFmt(@src(), frame.info.mod_presets_dir, .{}, .{
             .font = .theme(.mono),
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -801,9 +1128,9 @@ fn renderSettingsModPresets(frame: *Frame) void {
                 const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
                 dvui.labelNoFmt(@src(), tag, .{}, .{
                     .color_text = if (from_user)
-                        .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                        tokens.toDvui(tokens.active.acc, dvui.Color)
                     else
-                        HELP_TEXT_COLOR,
+                        helpTextColor(),
                 });
             }
 
@@ -813,10 +1140,10 @@ fn renderSettingsModPresets(frame: *Frame) void {
             const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  \u{00B7}  engine: {s}  \u{00B7}  patterns: {d}  \u{00B7}  weight: {d:.1}", .{
                 p.id, engine_txt, p.match.requires.len, p.weight,
             }) catch p.id;
-            dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = helpTextColor() });
 
             if (p.description.len > 0) {
-                dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
+                dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = helpTextColor() });
             }
         }
 
@@ -868,11 +1195,11 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
     {
         var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer bar.deinit();
-        dvui.label(@src(), "User dir:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "User dir:", .{}, .{ .color_text = helpTextColor() });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         dvui.labelNoFmt(@src(), frame.info.convert_presets_dir, .{}, .{
             .font = .theme(.mono),
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -894,9 +1221,9 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
             const tag: []const u8 = if (from_user) "[user]" else "[built-in]";
             dvui.labelNoFmt(@src(), tag, .{}, .{
                 .color_text = if (from_user)
-                    .{ .r = 0xE9, .g = 0x4B, .b = 0x7A }
+                    tokens.toDvui(tokens.active.acc, dvui.Color)
                 else
-                    HELP_TEXT_COLOR,
+                    helpTextColor(),
             });
         }
 
@@ -912,10 +1239,10 @@ fn renderSettingsConvertPresets(frame: *Frame) void {
         const sub_txt = std.fmt.bufPrint(&sub_buf, "id: {s}  -  engine: {s}  -  strategy: {s}  -  weight: {d:.1}", .{
             p.id, engine_txt, spec_txt, p.weight,
         }) catch p.id;
-        dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), sub_txt, .{}, .{ .color_text = helpTextColor() });
 
         if (p.description.len > 0) {
-            dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.labelNoFmt(@src(), p.description, .{}, .{ .color_text = helpTextColor() });
         }
     }
 }
@@ -1057,11 +1384,11 @@ fn renderAutoCheckSection(frame: *Frame) void {
         var ts_buf: [32]u8 = undefined;
         const ts = components.formatUtcDateTime(&ts_buf, state.last_update_check_ts) catch "—";
         dvui.label(@src(), "Last check: {s}", .{ts}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     } else {
         dvui.label(@src(), "Last check: never", .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 }

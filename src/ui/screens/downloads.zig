@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const dvui = @import("dvui");
+const tokens = @import("ui_tokens");
 const entypo = dvui.entypo;
 const library = @import("library");
 const downloads = @import("downloads");
@@ -10,8 +11,27 @@ const types = @import("../types.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const comp = @import("ui_comp");
 
 const Frame = types.Frame;
+
+/// Display label + chip color for a download job's status (Design B chips).
+fn statusChipSpec(status: downloads.JobStatus, extracting: bool) struct { label: []const u8, color: tokens.Color } {
+    if (extracting) return .{ .label = "Extracting", .color = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff } };
+    return switch (status) {
+        .queued => .{ .label = "Queued", .color = .{ .r = 0x55, .g = 0x6A, .b = 0x8A, .a = 0xff } },
+        .fetching_metadata => .{ .label = "Metadata", .color = .{ .r = 0x55, .g = 0x6A, .b = 0x8A, .a = 0xff } },
+        .downloading => .{ .label = "Downloading", .color = .{ .r = 0x1F, .g = 0x6A, .b = 0xA0, .a = 0xff } },
+        .verifying => .{ .label = "Verifying", .color = .{ .r = 0x6A, .g = 0x4A, .b = 0xB0, .a = 0xff } },
+        .extracting => .{ .label = "Extracting", .color = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff } },
+        .applying => .{ .label = "Applying", .color = .{ .r = 0x2A, .g = 0x8A, .b = 0x82, .a = 0xff } },
+        .seeding => .{ .label = "Seeding", .color = .{ .r = 0x2F, .g = 0x9E, .b = 0x4F, .a = 0xff } },
+        .paused => .{ .label = "Paused", .color = .{ .r = 0x6F, .g = 0x6F, .b = 0x6F, .a = 0xff } },
+        .done => .{ .label = "Done", .color = .{ .r = 0x2E, .g = 0x7D, .b = 0x32, .a = 0xff } },
+        .failed => .{ .label = "Failed", .color = .{ .r = 0xB7, .g = 0x1C, .b = 0x1C, .a = 0xff } },
+        .cancelled => .{ .label = "Cancelled", .color = .{ .r = 0x6F, .g = 0x6F, .b = 0x6F, .a = 0xff } },
+    };
+}
 
 // ============================================================
 //  downloads screen — paste-URL prototype + active jobs list
@@ -122,7 +142,7 @@ pub fn downloadsScreen(frame: *Frame) !bool {
         frame.info.library_root, seedRatioTarget(frame),
     }) catch "Files land in the library root.";
     dvui.labelNoFmt(@src(), dst_msg, .{}, .{
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
 
@@ -231,18 +251,14 @@ fn downloadsSectionHeader(label_text: []const u8, count: u32, key: u8) void {
         .padding = .{ .x = 0, .y = 6, .w = 0, .h = 4 },
     });
     defer box.deinit();
-    dvui.labelNoFmt(@src(), label_text, .{}, .{
-        .id_extra = key,
-        .style = .highlight,
-        .gravity_y = 0.5,
-    });
+    comp.sectionHeader(@src(), label_text, .{ .id_extra = key, .gravity_y = 0.5, .style = .highlight });
     _ = dvui.spacer(@src(), .{ .id_extra = key, .min_size_content = .{ .w = 8, .h = 1 } });
     var n_buf: [16]u8 = undefined;
     const n_s = std.fmt.bufPrint(&n_buf, "({d})", .{count}) catch "(?)";
     dvui.labelNoFmt(@src(), n_s, .{}, .{
         .id_extra = key,
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 }
 
@@ -283,8 +299,8 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
         .corner_radius = style.corner_radius,
         .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer row.deinit();
 
@@ -292,21 +308,36 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
     {
         var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer hdr.deinit();
-        var status_buf: [32]u8 = undefined;
-        const status_s = if (extracting)
-            std.fmt.bufPrint(&status_buf, "[extracting]", .{}) catch "[extracting]"
-        else
-            std.fmt.bufPrint(&status_buf, "[{s}{s}]", .{
-                @tagName(job.status),
-                if (job.is_torrent) " · BT" else "",
-            }) catch "[?]";
-        const status_opts: dvui.Options = switch (job.status) {
-            .done => .{ .style = .highlight, .gravity_y = 0.5 },
-            .seeding => .{ .style = .highlight, .gravity_y = 0.5 },
-            .failed => .{ .style = .err, .gravity_y = 0.5 },
-            else => .{ .gravity_y = 0.5 },
-        };
-        dvui.labelNoFmt(@src(), status_s, .{}, status_opts);
+        // Design B status chip — colored by job state.
+        const spec = statusChipSpec(job.status, extracting);
+        comp.chip(@src(), .{
+            .label = spec.label,
+            .fill = spec.color,
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+            .border = spec.color,
+            .scale = 0.8,
+        }, .{
+            .id_extra = job.id,
+            .gravity_y = 0.5,
+            .padding = .{ .x = 7, .y = 2, .w = 7, .h = 2 },
+            .corner_radius = .all(3),
+        });
+        if (job.is_torrent) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+            const t = tokens.active;
+            comp.chip(@src(), .{
+                .label = "BT",
+                .fill = t.bg2,
+                .text = t.ink2,
+                .border = t.line,
+                .scale = 0.7,
+            }, .{
+                .id_extra = job.id ^ 0xB7,
+                .gravity_y = 0.5,
+                .padding = .{ .x = 5, .y = 2, .w = 5, .h = 2 },
+                .corner_radius = .all(3),
+            });
+        }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         // Truncate so the row stays one line — game names can be very
         // long (e.g. light-novel-style titles).
@@ -365,6 +396,13 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
             if (components.iconButton(@src(), "Remove", entypo.trash, .{ .id_extra = job.id })) {
                 action = .{ .remove = job.id };
             }
+        } else if (job.is_torrent and (job.status == .seeding or job.status == .done)) {
+            // Per-torrent seed control: stop seeding before the ratio target
+            // is met. The default still seeds to ratio; this is the user's
+            // explicit "I'm done giving back on this one" override.
+            if (components.iconButton(@src(), "Stop seeding", entypo.cross, .{ .id_extra = job.id, .style = .err })) {
+                action = .{ .remove = job.id };
+            }
         }
     }
 
@@ -400,7 +438,7 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
         if (line.len > 0) {
             dvui.labelNoFmt(@src(), line, .{}, .{
                 .gravity_y = 0.5,
-                .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+                .color_text = style.labelDim(),
             });
         }
     }
@@ -455,11 +493,11 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
         .id_extra = @intFromEnum(kind),
         .min_size_content = .{ .w = 30, .h = 14 },
         .gravity_y = 0.5,
-        .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+        .color_text = style.labelDim(),
     });
 
     const fill_color: dvui.Color = switch (kind) {
-        .download => .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+        .download => tokens.toDvui(tokens.active.acc, dvui.Color),
         .ratio => .{ .r = 0x6D, .g = 0xC0, .b = 0x8B }, // green — "giving back"
     };
     dvui.progress(@src(), .{ .percent = frac, .color = fill_color }, .{
@@ -469,7 +507,7 @@ fn renderProgressBar(kind: BarKind, job: downloads.Job, ratio_target: f32) void 
         .gravity_y = 0.5,
         .border = style.border_thin,
         .corner_radius = .all(2),
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
         .padding = .all(0),
     });

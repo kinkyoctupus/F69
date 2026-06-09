@@ -28,7 +28,7 @@ const components = @import("../components.zig");
 const installer_mod = @import("installer");
 
 const Frame = types.Frame;
-const HELP_TEXT_COLOR = components.HELP_TEXT_COLOR;
+const helpTextColor = components.helpTextColor;
 
 /// Width of the left list pane. Right pane takes the remainder.
 const LEFT_PANE_W: f32 = 360;
@@ -61,6 +61,31 @@ pub fn modsScreen(frame: *Frame) !bool {
         renderModsInstallPicker(frame, game);
         renderModsBackupModePicker(frame, game);
         renderModJobBanner(frame);
+
+        // Resolver explanation — why the installed mod set won't resolve.
+        if (actions.modsPageCache(frame, game)) |cache| {
+            if (cache.resolve_explanation) |msg| {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+                var warn = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .expand = .horizontal,
+                    .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+                    .background = true,
+                    .corner_radius = .all(4),
+                    .color_fill = .{ .r = 0x3A, .g = 0x22, .b = 0x14 },
+                });
+                defer warn.deinit();
+                dvui.icon(@src(), "resolve-warn", dvui.entypo.help, .{}, .{
+                    .gravity_y = 0.5,
+                    .min_size_content = .{ .w = 14, .h = 14 },
+                    .color_text = .{ .r = 0xE0, .g = 0xA0, .b = 0x40 },
+                });
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+                dvui.labelNoFmt(@src(), msg, .{}, .{
+                    .gravity_y = 0.5,
+                    .color_text = .{ .r = 0xE6, .g = 0xC8, .b = 0x9A },
+                });
+            }
+        }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -97,7 +122,7 @@ fn renderModsHeader(frame: *Frame, game: *const library.Game) void {
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
     if (style.button(@src(), "Manage install patterns...", .{}, .{ .gravity_y = 0.5 })) {
-        actions.openSettingsTab(state, .mod_presets);
+        actions.openSettingsTab(state, .presets);
     }
 }
 
@@ -273,7 +298,7 @@ fn renderModsLeftPane(frame: *Frame, game: *const library.Game) void {
             .padding = .{ .y = 4, .h = 4 },
         });
         defer box.deinit();
-        dvui.labelNoFmt(@src(), "Show:", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), "Show:", .{}, .{ .color_text = helpTextColor() });
         _ = dvui.checkbox(@src(), &state.mods_view_filter.installed, "Installed", .{});
         _ = dvui.checkbox(@src(), &state.mods_view_filter.ready, "Ready", .{});
         _ = dvui.checkbox(@src(), &state.mods_view_filter.needs_setup, "Needs setup", .{});
@@ -334,7 +359,7 @@ fn renderModsLeftPane(frame: *Frame, game: *const library.Game) void {
     }
 
     if (rendered == 0) {
-        dvui.label(@src(), "(no mods match the current filter)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "(no mods match the current filter)", .{}, .{ .color_text = helpTextColor() });
     }
 }
 
@@ -406,7 +431,7 @@ fn renderListRow(
             },
             .orphan_recipe => |r| std.fmt.bufPrint(&version_buf, "v{s} · needs archive", .{cache.mods[r.recipe_idx].recipe.version}) catch "needs archive",
         };
-        dvui.labelNoFmt(@src(), sub, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), sub, .{}, .{ .color_text = helpTextColor() });
     }
 
     // Whole-row click → select.
@@ -463,7 +488,7 @@ fn renderEmptyDetail() void {
     });
     defer box.deinit();
     dvui.label(@src(), "Select a mod from the left to see its details.", .{}, .{
-        .color_text = HELP_TEXT_COLOR,
+        .color_text = helpTextColor(),
         .gravity_x = 0.5,
         .gravity_y = 0.5,
     });
@@ -493,7 +518,7 @@ fn renderDetailHeader(
 
     var sub_buf: [256]u8 = undefined;
     const subtitle = formatSubtitle(&sub_buf, item, modfiles, cache);
-    dvui.labelNoFmt(@src(), subtitle, .{}, .{ .color_text = HELP_TEXT_COLOR });
+    dvui.labelNoFmt(@src(), subtitle, .{}, .{ .color_text = helpTextColor() });
 }
 
 fn renderStatusPill(status: ItemStatus) void {
@@ -652,13 +677,13 @@ fn renderDetailPlan(item: ListItem, cache: *const owned_types.ModsPageCache) voi
 
     if (pm == null) {
         dvui.label(@src(), "  (no recipe yet — click Set up plan to create one)", .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         return;
     }
     const steps = pm.?.recipe.install;
     if (steps.len == 0) {
-        dvui.label(@src(), "  (no steps — install does nothing)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "  (no steps — install does nothing)", .{}, .{ .color_text = helpTextColor() });
         return;
     }
     var line_buf: [320]u8 = undefined;
@@ -701,7 +726,7 @@ fn renderDetailImpact(item: ListItem, cache: *const owned_types.ModsPageCache) v
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
 
     if (pm == null) {
-        dvui.label(@src(), "  (no recipe to preview)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "  (no recipe to preview)", .{}, .{ .color_text = helpTextColor() });
         return;
     }
     if (pm.?.recipe.files.len > 0) {
@@ -710,7 +735,7 @@ fn renderDetailImpact(item: ListItem, cache: *const owned_types.ModsPageCache) v
         dvui.labelNoFmt(@src(), txt, .{}, .{});
     } else {
         dvui.label(@src(), "  (impact preview not computed — open Edit plan to simulate)", .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
     }
 }
@@ -735,12 +760,12 @@ fn renderDetailMetadata(
     if (rec.for_game_version) |fgv| {
         var buf: [128]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "  Targets game version: {s}", .{fgv}) catch "";
-        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = helpTextColor() });
     }
     if (rec.requires.len > 0) {
         var buf: [256]u8 = undefined;
         const txt = std.fmt.bufPrint(&buf, "  Requires: {d} mod(s)", .{rec.requires.len}) catch "";
-        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = helpTextColor() });
     }
     if (rec.conflicts.len > 0) {
         var buf: [256]u8 = undefined;
@@ -751,10 +776,10 @@ fn renderDetailMetadata(
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
         defer row.deinit();
-        dvui.label(@src(), "  Source: ", .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "  Source: ", .{}, .{ .color_text = helpTextColor() });
         if (style.button(@src(), url, .{}, .{
             .style = .control,
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         })) {
             actions.openExternalUrl(frame, url);
         }
@@ -773,7 +798,7 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
             .padding = .{ .y = 0, .h = 8 },
         });
         defer row.deinit();
-        dvui.label(@src(), "Applying to:", .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+        dvui.label(@src(), "Applying to:", .{}, .{ .gravity_y = 0.5, .color_text = helpTextColor() });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         dvui.label(@src(), "(failed to list installs)", .{}, .{ .gravity_y = 0.5, .style = .err });
         return;
@@ -785,7 +810,7 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
         .padding = .{ .y = 0, .h = 8 },
     });
     defer row.deinit();
-    dvui.label(@src(), "Applying to:", .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+    dvui.label(@src(), "Applying to:", .{}, .{ .gravity_y = 0.5, .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
 
     if (installs.len == 0) {
@@ -793,7 +818,7 @@ fn renderModsInstallPicker(frame: *Frame, game: *const library.Game) void {
             @src(),
             "no install yet - install the game first",
             .{},
-            .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR },
+            .{ .gravity_y = 0.5, .color_text = helpTextColor() },
         );
         state.mods_page_install_id = null;
         return;
@@ -850,7 +875,7 @@ fn renderModsBackupModePicker(frame: *Frame, game: *const library.Game) void {
         .padding = .{ .y = 0, .h = 8 },
     });
     defer row.deinit();
-    dvui.label(@src(), "Uninstall safety:", .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+    dvui.label(@src(), "Uninstall safety:", .{}, .{ .gravity_y = 0.5, .color_text = helpTextColor() });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
 
     const labels = [_][]const u8{
@@ -939,7 +964,7 @@ fn renderModJobBanner(frame: *Frame) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
         var dbuf: [64]u8 = undefined;
         const dtxt = std.fmt.bufPrint(&dbuf, "(+{d} queued)", .{h.depth - 1}) catch "";
-        dvui.labelNoFmt(@src(), dtxt, .{}, .{ .gravity_y = 0.5, .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), dtxt, .{}, .{ .gravity_y = 0.5, .color_text = helpTextColor() });
     }
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });

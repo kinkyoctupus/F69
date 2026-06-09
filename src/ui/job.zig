@@ -78,11 +78,26 @@ pub fn refreshDebounced(win: *dvui.Window, src: std.builtin.SourceLocation) void
 /// unlikely syscall failure so the next call still fires the
 /// refresh deterministically.
 fn monotonicNanos() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-    const sec: u64 = @intCast(ts.sec);
-    const nsec: u64 = @intCast(ts.nsec);
-    return sec *% 1_000_000_000 +% nsec;
+    // Linux: clock_gettime(MONOTONIC). Elsewhere (Windows/macOS): a cross-platform
+    // wall-clock ns — fine for this ~30 Hz refresh debounce. Both are io-free so any
+    // worker thread can call without plumbing.
+    switch (builtin.os.tag) {
+        .windows => {
+            // GetTickCount64: monotonic ms since boot — io-free, and ms resolution is plenty
+            // for this ~30 Hz refresh debounce.
+            const k32 = struct {
+                extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+            };
+            return k32.GetTickCount64() *% std.time.ns_per_ms;
+        },
+        else => {
+            var ts: std.c.timespec = undefined;
+            if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
+            const sec: u64 = @intCast(ts.sec);
+            const nsec: u64 = @intCast(ts.nsec);
+            return sec *% std.time.ns_per_s +% nsec;
+        },
+    }
 }
 
 /// Heap-allocated job carrier. Behavior is in `actions/*.zig`

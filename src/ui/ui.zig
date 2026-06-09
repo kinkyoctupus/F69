@@ -25,7 +25,6 @@ const sandbox = @import("sandbox");
 const convert = @import("convert");
 const compat = @import("compat");
 const dvui = @import("dvui");
-const SDLBackend = @import("sdl3gpu-backend");
 
 const state_mod = @import("state.zig");
 const types = @import("types.zig");
@@ -50,6 +49,26 @@ pub const MAX_PARALLEL_SYNC = state_mod.MAX_PARALLEL_SYNC;
 pub const MAX_PARALLEL_IMAGE = state_mod.MAX_PARALLEL_IMAGE;
 pub const DEFAULT_PARALLEL = state_mod.DEFAULT_PARALLEL;
 pub const setImageCpuLimit = actions.setImageCpuLimit;
+// Re-exports for the headless integration harness (src/testkit/). These
+// let the Layer-1 test driver reach the action layer + Frame deps
+// without the harness having to know ui-internal module layout. See
+// docs/test-automation-research.md.
+pub const persistUiScaleIfDirty = actions.persistUiScaleIfDirty;
+pub const Filters = state_mod.Filters;
+pub const Screen = state_mod.Screen;
+pub const startSyncAll = actions.startSyncAll;
+pub const doLogin = actions.doLogin;
+pub const doFolderScan = actions.doFolderScan;
+pub const tickFolderScan = actions.tickFolderScan;
+/// Register the bundled Design-B fonts onto a dvui window (Layer-2 GUI
+/// tests need this before rendering, just like runMainLoop does, else the
+/// theme's font families log "not in dvui database" errors).
+pub fn registerBundledFonts(win: *dvui.Window) void {
+    fonts.registerBundled(win);
+}
+/// Headless test harness — builds the full service graph + a Frame on a
+/// caller-supplied dvui testing window. See src/ui/test_harness.zig.
+pub const Harness = @import("test_harness.zig").Harness;
 pub const Frame = types.Frame;
 pub const RuntimeInfo = types.RuntimeInfo;
 pub const Browser = types.Browser;
@@ -67,25 +86,18 @@ pub fn runMainLoop(
     compat_svc: *compat.Service,
     initial_rpdl_token: ?[]const u8,
     info: RuntimeInfo,
+    // The windowing backend is created + owned by the caller. The GUI
+    // entry point (main) builds an SDL3-GPU backend and passes it here;
+    // the headless test harness never calls this loop (it drives the
+    // action layer directly), so the SDL-specific backend methods below
+    // are only ever instantiated against the real SDL backend.
+    backend: anytype,
 ) !void {
     const io = init.io;
     const gpa = init.gpa;
 
-    SDLBackend.enableSDLLogging();
-
-    var backend = try SDLBackend.initWindow(.{
-        .io = io,
-        .allocator = gpa,
-        .size = .{ .w = 1280.0, .h = 800.0 },
-        .min_size = .{ .w = 900.0, .h = 600.0 },
-        .vsync = true,
-        .title = "f69",
-        .icon = null,
-    });
-    defer backend.deinit();
-
     var win = try dvui.Window.init(@src(), gpa, backend.backend(), .{
-        .theme = types.pinkTheme(backend.preferredColorScheme() orelse .dark),
+        .theme = types.consoleTheme(backend.preferredColorScheme() orelse .dark),
     });
     defer win.deinit();
     // dvui folds `content_scale` into its layout math so scaling here
@@ -104,14 +116,9 @@ pub fn runMainLoop(
     fonts.registerBundled(&win);
     fonts.scanUserFonts(&win, gpa, init.io, info.exe_dir);
     // dvui's Theme exposes four font slots: body, heading, title, mono.
-    // Point body / heading / title at the nerd font so the full UI
-    // (labels, buttons, popovers) picks up the broader glyph coverage.
-    // `font_mono` stays on the original mono family — the existing
-    // mono-font use sites (diagnostics, archive paths, etc.) are
-    // already in monospace and don't need the icon glyph set.
-    win.theme.font_body = win.theme.font_body.withFamily(fonts.DEFAULT_FAMILY);
-    win.theme.font_heading = win.theme.font_heading.withFamily(fonts.DEFAULT_FAMILY);
-    win.theme.font_title = win.theme.font_title.withFamily(fonts.DEFAULT_FAMILY);
+    // Design B: body/caption → IBM Plex Sans, heading/title → Archivo,
+    // mono → IBM Plex Mono.
+    applyDesignBFonts(&win.theme);
 
     // Library snapshot — held by runMainLoop, reloaded when the
     // importer or delete sets `state.reload_requested`.
@@ -163,6 +170,8 @@ pub fn runMainLoop(
     state.sandbox_default_persisted = info.initial_sandbox_default;
     state.auto_update_default = info.initial_auto_update_default;
     state.auto_update_default_persisted = info.initial_auto_update_default;
+    state.desktop_notifications = info.initial_desktop_notifications;
+    state.desktop_notifications_persisted = info.initial_desktop_notifications;
     state.refresh_backend = info.initial_refresh_backend;
     state.refresh_backend_persisted = info.initial_refresh_backend;
     state.max_parallel_sync = info.initial_max_parallel_sync;
@@ -173,6 +182,9 @@ pub fn runMainLoop(
     // values on first paint rather than empty fields.
     _ = std.fmt.bufPrint(&state.max_parallel_sync_buf, "{d}", .{state.max_parallel_sync}) catch state.max_parallel_sync_buf[0..0];
     _ = std.fmt.bufPrint(&state.max_parallel_image_buf, "{d}", .{state.max_parallel_image}) catch state.max_parallel_image_buf[0..0];
+    state.min_session_seconds = info.initial_min_session_seconds;
+    state.min_session_seconds_persisted = info.initial_min_session_seconds;
+    _ = std.fmt.bufPrint(&state.min_session_seconds_buf, "{d}", .{state.min_session_seconds}) catch state.min_session_seconds_buf[0..0];
     // Seed the textEntry buffer with the persisted port (or empty for
     // the "random ephemeral" sentinel). Leaving 0 blank reduces clutter.
     if (info.initial_aria2_port != 0) {
@@ -183,6 +195,11 @@ pub fn runMainLoop(
     {
         const sr_slice = std.fmt.bufPrint(&state.aria2_seed_ratio_buf, "{d:.1}", .{info.initial_aria2_seed_ratio}) catch state.aria2_seed_ratio_buf[0..0];
         _ = sr_slice;
+    }
+    state.aria2_seed_time_persisted = info.initial_aria2_seed_time;
+    {
+        const st_slice = std.fmt.bufPrint(&state.aria2_seed_time_buf, "{d}", .{info.initial_aria2_seed_time}) catch state.aria2_seed_time_buf[0..0];
+        _ = st_slice;
     }
 
     // Master tag list — disk first, embedded build-time snapshot as
@@ -201,16 +218,10 @@ pub fn runMainLoop(
     } else {
         state.rpdl_status = .logged_out;
     }
-    // Open the login popup at startup when the user is not signed
-    // into F95. The popup also nudges RPDL sign-in. Dismissed via
-    // Skip (set `login_popup_skipped` so we don't re-open this
-    // session) or by completing a login. Donor-status probe runs
-    // once at startup if we already have an F95 cookie so the
-    // Download button's enabled-state is correct before the user
-    // clicks anything.
-    if (state.login_status == .logged_out) {
-        state.login_popup_open = true;
-    }
+    // No startup modal — the Accounts popup is opened on demand from the
+    // toolbar account button (see library.zig). The donor-status probe still
+    // runs once at startup below when an F95 cookie is already present so the
+    // Download button's enabled-state is correct before the user clicks.
     defer {
         // Modfile cache + clash modal both own heap state — release
         // them on shutdown so DebugAllocator doesn't flag leaks.
@@ -266,9 +277,11 @@ pub fn runMainLoop(
         actions.persistAutoApplyCompatIfDirty(&state, info.auto_apply_compat_path, io);
         actions.persistSandboxDefaultIfDirty(&state, info.sandbox_default_path, io);
         actions.persistAutoUpdateDefaultIfDirty(&state, info.auto_update_default_path, io);
+        actions.persistDesktopNotificationsIfDirty(&state, info.desktop_notifications_path, io);
         actions.persistRefreshBackendIfDirty(&state, info.refresh_backend_path, io);
         actions.persistMaxParallelSyncIfDirty(&state, info.max_parallel_sync_path, io);
         actions.persistMaxParallelImageIfDirty(&state, info.max_parallel_image_path, io);
+        actions.persistMinSessionSecondsIfDirty(&state, info.min_session_seconds_path, io);
         // Age + evict expired toasts each frame. info/success fade
         // around 3s, warn around 6s, err sticks until clicked.
         state.ageToasts();
@@ -381,7 +394,29 @@ pub fn runMainLoop(
     }
 }
 
-fn guiFrame(frame: *Frame) !bool {
+/// Build the installed theme from the runtime token palette, with the bundled
+/// font family applied. Re-applied each frame so Settings → Appearance edits
+/// to `tokens.active` take effect live.
+fn themedForActive() dvui.Theme {
+    var t = types.consoleTheme(.dark);
+    applyDesignBFonts(&t);
+    return t;
+}
+
+/// Map the four dvui theme font slots onto the bundled Design B families:
+/// Archivo for headings/titles, IBM Plex Sans for body, IBM Plex Mono for
+/// mono. Keeps sizes/weights from the base theme — only the family changes.
+fn applyDesignBFonts(t: *dvui.Theme) void {
+    t.font_body = t.font_body.withFamily(fonts.FAMILY_BODY);
+    t.font_heading = t.font_heading.withFamily(fonts.FAMILY_HEADING);
+    t.font_title = t.font_title.withFamily(fonts.FAMILY_HEADING);
+    t.font_mono = t.font_mono.withFamily(fonts.FAMILY_MONO);
+}
+
+/// Build one UI frame. `pub` so the Layer-2 headless GUI tests
+/// (src/testkit/) can drive the real render via dvui's testing backend.
+pub fn guiFrame(frame: *Frame) !bool {
+    dvui.themeSet(themedForActive());
     // Snapshot caches: install_versions + games_by_thread. Both
     // survive across frames (owned by `lib.alloc`, lifetime managed
     // by `freeSnapshotCache`) and rebuild only when their key
@@ -531,18 +566,33 @@ fn guiFrame(frame: *Frame) !bool {
     screens.renderSyncBanner(frame);
 
     const t0 = types.startLatency(frame.io);
-    const result = switch (frame.state.screen) {
-        .library => screens.libraryScreen(frame),
-        .detail => screens.detailScreen(frame),
-        .settings => screens.settingsScreen(frame),
-        .import_urls => screens.importUrlsScreen(frame),
-        .import_folder => screens.importFolderScreen(frame),
-        .import_f95_review => screens.importF95CheckerReviewScreen(frame),
-        .downloads => screens.downloadsScreen(frame),
-        .diagnostics => screens.diagnosticsScreen(frame),
-        .recipe_editor => screens.recipeEditorScreen(frame),
-        .mods_for_game => screens.modsScreen(frame),
+    // Design-B shell: left icon rail (primary nav) + screen content.
+    const result = blk: {
+        var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+        defer shell.deinit();
+        screens.renderIconRail(frame);
+        var content = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
+        defer content.deinit();
+        break :blk switch (frame.state.screen) {
+            .library => screens.libraryScreen(frame),
+            .detail => screens.detailScreen(frame),
+            .settings => screens.settingsScreen(frame),
+            .import_urls => screens.importUrlsScreen(frame),
+            .import_folder => screens.importFolderScreen(frame),
+            .import_f95_review => screens.importF95CheckerReviewScreen(frame),
+            .downloads => screens.downloadsScreen(frame),
+            .diagnostics => screens.diagnosticsScreen(frame),
+            .recipe_editor => screens.recipeEditorScreen(frame),
+            .mods_for_game => screens.modsScreen(frame),
+            .universal_mods => screens.universalModsScreen(frame),
+        };
     };
+
+    // Bottom status bar — full-width, under the rail + content; shows global
+    // activity (download / install / sync) or "Ready". A normal layout child
+    // (not floating), so it reserves its 24px at the very bottom of the window.
+    screens.renderStatusBar(frame);
+
     // End-of-batch sync recap popup. Sits on top of whichever screen
     // is active so the user always sees the "what changed" list,
     // even if they navigated mid-sync.
@@ -577,6 +627,7 @@ fn guiFrame(frame: *Frame) !bool {
         .diagnostics => "render diagnostics",
         .recipe_editor => "render recipe editor",
         .mods_for_game => "render mods page",
+        .universal_mods => "render universal mods",
     });
     return result;
 }

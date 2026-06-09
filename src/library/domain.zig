@@ -6,6 +6,16 @@
 
 const std = @import("std");
 
+/// User-defined label. Distinct from F95 `tags` (scraped) — these are the
+/// user's own organizational buckets ("favorites", "to play", "finished
+/// 100%"), assigned to games via the `game_labels` join table and usable as
+/// library filters. `color` is an optional hex string ("#1FA39A") for the chip.
+pub const UserLabel = struct {
+    id: i64,
+    name: []const u8,
+    color: ?[]const u8 = null,
+};
+
 pub const CompletionStatus = enum {
     not_started,
     in_queue,
@@ -247,6 +257,19 @@ pub const Game = struct {
     /// "force full refresh" click. Null = never indexer-synced (or
     /// synced before this column existed) → also forces /full.
     last_indexer_parser_version: ?u32 = null,
+    /// Highest version string for which a session with
+    /// `counts_as_played = 1` was recorded. Drives the "NEW" chip.
+    /// Compared with `util_version.compare`. NULL means the user
+    /// has never logged a played session against this game.
+    last_played_version: ?[]const u8 = null,
+    /// User-pinned version. When set, the game is held here: auto-update is
+    /// suppressed (a newer release shows as available but isn't downloaded
+    /// automatically). Cleared by a manual update. NULL = track latest.
+    pinned_version: ?[]const u8 = null,
+    /// Unix seconds of the last time `dev_status` changed during a sync
+    /// (e.g. Ongoing → Completed/Abandoned). Drives the "status changed"
+    /// chip + filter. NULL = never observed changing.
+    status_changed_at: ?i64 = null,
 
     pub fn weightedRating(self: *const Game, library_mean: f32, prior_weight: f32) ?f32 {
         const r = self.rating orelse return null;
@@ -324,6 +347,60 @@ pub const ModInstall = struct {
     load_index: u32,
     applied_at: i64 = 0,
 };
+
+/// An engine-wide ("universal") mod: a stored modfile applied across every
+/// game of `engine`, except games that opted out (see
+/// `game_universal_mod_disabled`). The apply itself reuses the per-game mod
+/// pipeline; this row is the registry entry.
+pub const UniversalMod = struct {
+    id: i64,
+    name: []const u8,
+    /// `@tagName(Engine)` — which engine's games this applies to.
+    engine: Engine,
+    /// Stored modfile (archive) path the apply pipeline consumes.
+    modfile_path: []const u8,
+    created_at: i64 = 0,
+};
+
+pub const PlaySession = struct {
+    id: i64,
+    game_thread_id: u64,
+    install_id: ?[36]u8 = null,
+    version: []const u8,
+    started_at: i64,
+    ended_at: ?i64 = null,
+    duration_s: ?i64 = null,
+    counts_as_played: bool = false,
+
+    /// Best-effort duration in seconds. Prefers the stored
+    /// `duration_s` (set on close); returns 0 for still-open or
+    /// abandoned rows so journal aggregates don't NaN.
+    pub fn durationSeconds(self: PlaySession) i64 {
+        return self.duration_s orelse 0;
+    }
+};
+
+test "PlaySession: durationSeconds derives from started_at/ended_at" {
+    const s: PlaySession = .{
+        .id = 1,
+        .game_thread_id = 1,
+        .version = "1.0",
+        .started_at = 100,
+        .ended_at = 250,
+        .duration_s = 150,
+    };
+    try std.testing.expectEqual(@as(i64, 150), s.durationSeconds());
+
+    const open: PlaySession = .{
+        .id = 2,
+        .game_thread_id = 1,
+        .version = "1.0",
+        .started_at = 100,
+        .ended_at = null,
+        .duration_s = null,
+    };
+    try std.testing.expectEqual(@as(i64, 0), open.durationSeconds());
+}
 
 test "Engine.fromBracket variants" {
     try std.testing.expectEqual(Engine.renpy, Engine.fromBracket("Ren'Py"));

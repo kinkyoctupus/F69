@@ -15,9 +15,16 @@
 //   defer status.deinit(alloc);
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const log = std.log.scoped(.aria2);
 const errs = @import("errors.zig");
+const transport = @import("transport.zig");
+const http_transport = @import("http.zig");
+const ws_transport = @import("ws.zig");
+
+/// Re-export so the manager can drain push events without importing transport.
+pub const Event = transport.Event;
 
 pub const Status = struct {
     /// "active" | "complete" | "error" | "paused" | "removed" | "waiting"
@@ -62,7 +69,6 @@ pub const Status = struct {
 pub const Daemon = struct {
     alloc: std.mem.Allocator,
     io: Io,
-    http: std.http.Client,
     aria2_path: []const u8,
     download_dir: []const u8,
     /// Optional `--save-session` / `--input-file` target. When set,
@@ -76,12 +82,22 @@ pub const Daemon = struct {
     /// Clamped to ≥ 2.0 by the caller — anything below is below the
     /// RPDL community "give back twice what you took" floor.
     seed_ratio: f32 = 5.0,
+    /// Daemon-wide seed-time cap in minutes; 0 = no cap. Passed as
+    /// `--seed-time` at spawn when non-zero.
+    seed_time_min: u32 = 0,
     /// 32-byte hex string + null terminator. Distinct per process.
     secret: [33]u8,
     child: ?std.process.Child = null,
-    /// `http://127.0.0.1:<port>/jsonrpc`
-    rpc_url_buf: [64]u8 = undefined,
-    rpc_url_len: usize = 0,
+    /// `http://127.0.0.1:<port>/jsonrpc` — heap-owned so the string survives
+    /// the by-value return from `init` (the HTTP transport borrows it).
+    url: []u8 = &.{},
+    /// RPC transports. Both heap-allocated so their addresses are stable
+    /// across the Daemon's by-value move out of `init` (the WS read-thread
+    /// and the Fallback's vtable ctx pointers must not dangle). `fallback`
+    /// routes to WS first and auto-switches to HTTP on repeated failure.
+    http_t: *http_transport.HttpTransport = undefined,
+    ws_t: ?*ws_transport.WsTransport = null,
+    fallback: transport.Fallback = undefined,
 
     /// Spawn aria2c and wait until it answers `aria2.getVersion`.
     /// `aria2_path` may be a bare name like "aria2c" — the OS resolves
@@ -100,33 +116,75 @@ pub const Daemon = struct {
         session_path: ?[]const u8,
         port: u16,
         seed_ratio: f32,
+        seed_time_min: u32,
     ) errs.Error!Daemon {
         var d: Daemon = .{
             .alloc = alloc,
             .io = io,
-            .http = .{ .allocator = alloc, .io = io },
             .aria2_path = aria2_path,
             .download_dir = download_dir,
             .session_path = session_path,
             .port = if (port == 0) pickRandomPort(io) else port,
             .seed_ratio = @max(seed_ratio, 2.0),
+            .seed_time_min = seed_time_min,
             .secret = undefined,
         };
         genSecret(io, &d.secret);
-        const url = std.fmt.bufPrint(&d.rpc_url_buf, "http://127.0.0.1:{d}/jsonrpc", .{d.port}) catch
+
+        // Heap-owned RPC URL + HTTP transport (always available). Built before
+        // waitReady so the readiness probe runs over the transport too.
+        d.url = std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/jsonrpc", .{d.port}) catch
             return errs.Error.OutOfMemory;
-        d.rpc_url_len = url.len;
+        errdefer alloc.free(d.url);
+        d.http_t = alloc.create(http_transport.HttpTransport) catch return errs.Error.OutOfMemory;
+        errdefer alloc.destroy(d.http_t);
+        d.http_t.* = .{ .io = io, .url = d.url };
+        // Until WS connects, both legs of the fallback are HTTP.
+        d.fallback = .{ .primary = d.http_t.asTransport(), .secondary = d.http_t.asTransport() };
 
         try d.spawn();
         d.waitReady() catch |e| {
-            // Daemon failed to come up — kill the child if it's still
-            // alive, free http resources.
             if (d.child) |*c| c.kill(io);
-            d.http.deinit();
+            alloc.destroy(d.http_t);
+            alloc.free(d.url);
             return e;
         };
         log.info("aria2 ready on 127.0.0.1:{d}", .{d.port});
+
+        // aria2 is up — try to upgrade the primary leg to WebSocket so we get
+        // push events (onDownloadComplete/…). On any failure we stay HTTP-only;
+        // the fallback already points both legs at HTTP.
+        d.tryConnectWs();
         return d;
+    }
+
+    /// Best-effort WebSocket upgrade. Sets `ws_t` + repoints the fallback's
+    /// primary leg on success; silently keeps HTTP on failure.
+    fn tryConnectWs(self: *Daemon) void {
+        const wt = ws_transport.WsTransport.init(self.alloc, self.io, .{ .port = self.port }) catch {
+            log.info("aria2 WS transport unavailable; using HTTP polling", .{});
+            return;
+        };
+        const p = self.alloc.create(ws_transport.WsTransport) catch {
+            var tmp = wt;
+            tmp.deinit();
+            return;
+        };
+        p.* = wt;
+        p.start() catch {
+            p.deinit();
+            self.alloc.destroy(p);
+            log.info("aria2 WS read-loop failed to start; using HTTP polling", .{});
+            return;
+        };
+        self.ws_t = p;
+        self.fallback = .{ .primary = p.asTransport(), .secondary = self.http_t.asTransport() };
+        log.info("aria2 WS transport connected (push events enabled)", .{});
+    }
+
+    /// Drain pushed aria2 events (WS only) into `out`. No-op under HTTP.
+    pub fn drainEvents(self: *Daemon, alloc: std.mem.Allocator, out: *std.ArrayList(transport.Event)) void {
+        self.fallback.drainEvents(alloc, out);
     }
 
     pub fn deinit(self: *Daemon) void {
@@ -139,36 +197,40 @@ pub const Daemon = struct {
             // kill+wait, which races with anything else waiting on the
             // same pid and panics with ECHILD). Then one blocking wait
             // reaps the corpse.
-            const pid = c.id orelse {
-                self.child = null;
-                self.http.deinit();
-                self.* = undefined;
-                return;
-            };
-            const tick = std.Io.Duration.fromMilliseconds(50);
-            const pid_usize: usize = @intCast(pid);
-            var reaped = false;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                var status: u32 = 0;
-                const ret = std.os.linux.waitpid(pid, &status, std.os.linux.W.NOHANG);
-                if (ret == pid_usize) {
-                    reaped = true;
-                    break;
+            // Linux keeps the hand-rolled non-blocking waitpid poll + direct SIGKILL
+            // (avoids std.process.Child.kill's internal kill+wait racing other waiters).
+            // Windows (HANDLE pid, no waitpid/SIGKILL): the shutdown RPC should have stopped
+            // aria2; force-kill + reap portably via std.process.Child.kill.
+            if (builtin.os.tag == .linux) {
+                if (c.id) |pid| {
+                    const tick = std.Io.Duration.fromMilliseconds(50);
+                    const pid_usize: usize = @intCast(pid);
+                    var reaped = false;
+                    var i: usize = 0;
+                    while (i < 20) : (i += 1) {
+                        var status: u32 = 0;
+                        const ret = std.os.linux.waitpid(pid, &status, std.os.linux.W.NOHANG);
+                        if (ret == pid_usize) {
+                            reaped = true;
+                            break;
+                        }
+                        std.Io.sleep(self.io, tick, .awake) catch break;
+                    }
+                    if (!reaped) {
+                        log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
+                        _ = std.os.linux.kill(pid, std.os.linux.SIG.KILL);
+                        var status: u32 = 0;
+                        _ = std.os.linux.waitpid(pid, &status, 0);
+                    }
                 }
-                std.Io.sleep(self.io, tick, .awake) catch break;
-            }
-            if (!reaped) {
-                log.warn("aria2 didn't exit on shutdown RPC within 1s — sending SIGKILL", .{});
-                _ = std.os.linux.kill(pid, std.os.linux.SIG.KILL);
-                var status: u32 = 0;
-                _ = std.os.linux.waitpid(pid, &status, 0);
+            } else {
+                c.kill(self.io);
             }
             // Hand-reaped — don't let std.process.Child.wait/kill run
             // again from a destructor or stray path.
             self.child = null;
         }
-        self.http.deinit();
+        self.freeTransports();
         self.* = undefined;
     }
 
@@ -374,6 +436,12 @@ pub const Daemon = struct {
                     .string => |s| s,
                     else => "(no message)",
                 }) else "(no message)";
+                // Code 1 = "GID ... is not found": benign + expected when a
+                // gid is stale (download cleared from aria2, or a session-
+                // restored job whose gid changed). Don't warn — return a
+                // distinct error so the manager retires the job instead of
+                // re-polling (and re-logging) it every tick.
+                if (code == 1) return errs.Error.NotFound;
                 log.warn("aria2.tellStatus RPC error: {d} {s}", .{ code, msg });
                 return errs.Error.AriaRpcError;
             }
@@ -472,6 +540,32 @@ pub const Daemon = struct {
         self.alloc.free(resp);
     }
 
+    /// Change a daemon-wide default option live (applies to NEW downloads).
+    /// e.g. `changeGlobalOption("seed-ratio", "3.00")`.
+    pub fn changeGlobalOption(self: *Daemon, name: []const u8, value: []const u8) errs.Error!void {
+        var body_buf: [320]u8 = undefined;
+        const body = std.fmt.bufPrint(
+            &body_buf,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"aria2.changeGlobalOption\",\"params\":[\"token:{s}\",{{\"{s}\":\"{s}\"}}]}}",
+            .{ self.secretSlice(), name, value },
+        ) catch return errs.Error.AriaInvalidResponse;
+        const resp = self.rpcRaw(body) catch |e| return e;
+        self.alloc.free(resp);
+    }
+
+    /// Change an option on a single running download (GID) — used to apply a
+    /// new seed-ratio / seed-time to torrents already in flight.
+    pub fn changeOption(self: *Daemon, gid: []const u8, name: []const u8, value: []const u8) errs.Error!void {
+        var body_buf: [384]u8 = undefined;
+        const body = std.fmt.bufPrint(
+            &body_buf,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"aria2.changeOption\",\"params\":[\"token:{s}\",\"{s}\",{{\"{s}\":\"{s}\"}}]}}",
+            .{ self.secretSlice(), gid, name, value },
+        ) catch return errs.Error.AriaInvalidResponse;
+        const resp = self.rpcRaw(body) catch |e| return e;
+        self.alloc.free(resp);
+    }
+
     /// Drop a finished/failed/removed entry from aria2's in-memory
     /// status table. Use after we've absorbed the final state into
     /// our own Job — keeps `aria2.tellActive` clean for diagnostics.
@@ -557,6 +651,13 @@ pub const Daemon = struct {
         defer self.alloc.free(dir_arg);
         const seed_ratio_arg = std.fmt.allocPrint(self.alloc, "--seed-ratio={d:.2}", .{self.seed_ratio}) catch return errs.Error.OutOfMemory;
         defer self.alloc.free(seed_ratio_arg);
+        // Optional seed-time cap (minutes). Omitted entirely when 0 so aria2
+        // keeps "seed until ratio" semantics.
+        var seed_time_arg: ?[]u8 = null;
+        defer if (seed_time_arg) |s| self.alloc.free(s);
+        if (self.seed_time_min > 0) {
+            seed_time_arg = std.fmt.allocPrint(self.alloc, "--seed-time={d}", .{self.seed_time_min}) catch return errs.Error.OutOfMemory;
+        }
 
         // Session args are only attached when persistence is enabled.
         // `--save-session-interval=60` makes aria2 checkpoint every
@@ -571,8 +672,31 @@ pub const Daemon = struct {
             input_arg = std.fmt.allocPrint(self.alloc, "--input-file={s}", .{sp}) catch return errs.Error.OutOfMemory;
         }
 
+        // Portable-bundle support: when a bundled glibc loader sits next to
+        // aria2c (`<dir>/lib/ld-linux-x86-64.so.2`), invoke aria2c THROUGH it
+        // with the bundle's lib/ on --library-path. The bundled aria2c keeps
+        // its build-host (nix-store) PT_INTERP, which doesn't exist on other
+        // distros, so a direct exec dies with "cannot execute: required file
+        // not found". f69 itself is launched the same way by run.sh. No-op for
+        // a system aria2c on $PATH (no sibling lib/ld-linux).
+        var loader_path: ?[]u8 = null;
+        var libpath_arg: ?[]u8 = null;
+        defer if (loader_path) |s| self.alloc.free(s);
+        defer if (libpath_arg) |s| self.alloc.free(s);
+        if (std.fs.path.dirname(self.aria2_path)) |dir| {
+            const cand = std.fmt.allocPrint(self.alloc, "{s}/lib/ld-linux-x86-64.so.2", .{dir}) catch return errs.Error.OutOfMemory;
+            if (std.Io.Dir.cwd().access(self.io, cand, .{})) |_| {
+                loader_path = cand;
+                libpath_arg = std.fmt.allocPrint(self.alloc, "{s}/lib", .{dir}) catch return errs.Error.OutOfMemory;
+                log.info("aria2c: launching via bundled loader {s}", .{cand});
+            } else |_| self.alloc.free(cand);
+        }
+
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(self.alloc);
+        if (loader_path) |lp| {
+            argv.appendSlice(self.alloc, &[_][]const u8{ lp, "--library-path", libpath_arg.? }) catch return errs.Error.OutOfMemory;
+        }
         argv.appendSlice(self.alloc, &[_][]const u8{
             self.aria2_path,
             "--enable-rpc=true",
@@ -615,6 +739,12 @@ pub const Daemon = struct {
             // it left off, both for the data file AND seeding ratio.
             "--bt-save-metadata=true",
             "--bt-load-saved-metadata=true",
+            // Detach seed-only torrents from the concurrent-download budget:
+            // a completed torrent that's only uploading no longer occupies a
+            // download slot, so fresh leeches always get one. This replaces
+            // the old manual "leech-precedence" pause/resume hack in the
+            // manager (now deleted). See aria2_args.zig for the rewrite.
+            "--bt-detach-seed-only=true",
             // Aria2's `--save-session` only persists active / paused
             // / waiting downloads by default — completed seeders are
             // silently dropped from the session file at save time.
@@ -657,6 +787,7 @@ pub const Daemon = struct {
             // gated by the daemon-wide bandwidth limits above.
             "--max-concurrent-downloads=32",
         }) catch return errs.Error.OutOfMemory;
+        if (seed_time_arg) |s| argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;
         if (save_arg) |s| argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;
         if (input_arg) |s| {
             argv.append(self.alloc, s) catch return errs.Error.OutOfMemory;
@@ -734,27 +865,22 @@ pub const Daemon = struct {
         self.alloc.free(resp);
     }
 
+    /// Send a JSON-RPC body through the active transport (WS, or HTTP after
+    /// fallback) and return the response body. Owned by `self.alloc`.
     fn rpcRaw(self: *Daemon, body: []const u8) errs.Error![]u8 {
-        var aw: Io.Writer.Allocating = .init(self.alloc);
-        errdefer aw.deinit();
-
-        const headers = [_]std.http.Header{
-            .{ .name = "content-type", .value = "application/json" },
-        };
-        const result = self.http.fetch(.{
-            .location = .{ .url = self.rpcUrl() },
-            .response_writer = &aw.writer,
-            .payload = body,
-            .extra_headers = &headers,
-            .keep_alive = false,
-        }) catch return errs.Error.HostUnreachable;
-
-        if (result.status != .ok) return errs.Error.AriaRpcError;
-        return aw.toOwnedSlice() catch errs.Error.OutOfMemory;
+        return self.fallback.call(self.alloc, body) catch errs.Error.HostUnreachable;
     }
 
-    fn rpcUrl(self: *const Daemon) []const u8 {
-        return self.rpc_url_buf[0..self.rpc_url_len];
+    /// Free the heap-owned transports + URL. Call after the child is reaped
+    /// (WS deinit closes the socket + joins the read thread).
+    fn freeTransports(self: *Daemon) void {
+        if (self.ws_t) |p| {
+            p.deinit();
+            self.alloc.destroy(p);
+            self.ws_t = null;
+        }
+        self.alloc.destroy(self.http_t);
+        self.alloc.free(self.url);
     }
 
     fn secretSlice(self: *const Daemon) []const u8 {

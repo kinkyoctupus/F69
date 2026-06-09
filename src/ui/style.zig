@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const dvui = @import("dvui");
+const tokens = @import("ui_tokens");
 
 // =============================================================
 //  Dimensions
@@ -53,11 +54,20 @@ pub const title_font_scale: f32 = 0.85;
 //  Colors
 // =============================================================
 
-/// Border shared by card frames and chip outlines.
-pub const border_color: dvui.Color = .{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
+/// Border shared by card frames and chip outlines — follows the active theme.
+pub fn borderColor() dvui.Color {
+    return tokens.toDvui(tokens.active.line, dvui.Color);
+}
 
-/// Default card fill.
-pub const card_fill: dvui.Color = .{ .r = 0x22, .g = 0x14, .b = 0x1B };
+/// Default card fill — follows the active theme.
+pub fn cardFill() dvui.Color {
+    return tokens.toDvui(tokens.active.bg1, dvui.Color);
+}
+
+/// Muted label / field-caption text — follows the active theme.
+pub fn labelDim() dvui.Color {
+    return tokens.toDvui(tokens.active.ink3, dvui.Color);
+}
 
 /// Letterbox / cover-empty fill behind aspect-preserved images.
 pub const letterbox_fill: dvui.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00 };

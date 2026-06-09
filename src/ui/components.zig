@@ -8,11 +8,14 @@ const std = @import("std");
 const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
+const downloads = @import("downloads");
 
 const types = @import("types.zig");
 const state_mod = @import("state.zig");
 const actions = @import("actions.zig");
 const style = @import("style.zig");
+const tokens = @import("ui_tokens");
+const engine_palette = @import("ui_engine_palette");
 
 const Frame = types.Frame;
 
@@ -65,6 +68,36 @@ pub fn devStatusShortLabel(s: library.DevStatus) []const u8 {
     };
 }
 
+/// Short label for the player's completion/progress status — the
+/// kanban column headers and any progress chip. Terser than the detail
+/// dropdown's prose labels so it fits a chip.
+pub fn completionStatusShortLabel(s: library.CompletionStatus) []const u8 {
+    return switch (s) {
+        .not_started => "Backlog",
+        .in_queue => "Queued",
+        .in_progress => "Playing",
+        .completed => "Completed",
+        .replaying => "Replaying",
+        .abandoned => "Dropped",
+        .waiting_for_update => "Wait Update",
+    };
+}
+
+/// Per-progress-status color. Distinct hues so the kanban columns read
+/// apart at a glance: grey backlog → blue playing → green completed,
+/// with amber for "waiting" and red for "dropped".
+pub fn completionStatusColor(s: library.CompletionStatus) dvui.Color {
+    return switch (s) {
+        .not_started => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey
+        .in_queue => .{ .r = 0x55, .g = 0x6A, .b = 0x8A }, // slate
+        .in_progress => .{ .r = 0x1F, .g = 0x6A, .b = 0xA0 }, // blue
+        .completed => .{ .r = 0x2E, .g = 0x7D, .b = 0x32 }, // green
+        .replaying => .{ .r = 0x2A, .g = 0x8A, .b = 0x82 }, // teal
+        .abandoned => .{ .r = 0xB7, .g = 0x1C, .b = 0x1C }, // red
+        .waiting_for_update => .{ .r = 0xC0, .g = 0x84, .b = 0x1F }, // amber
+    };
+}
+
 /// Per-status pill color. Mirrors a "traffic light" semantic: green
 /// for completed, red for abandoned, amber for on hold, blue for
 /// ongoing. Orphaned (thread gone from F95) reads as muted purple —
@@ -84,23 +117,8 @@ pub fn devStatusColor(s: library.DevStatus) dvui.Color {
 /// branding (Ren'Py teal, Unity dark, Unreal navy, etc.) while staying
 /// distinguishable at chip scale on top of an arbitrary cover image.
 pub fn engineBadgeColor(e: library.Engine) dvui.Color {
-    return switch (e) {
-        .renpy => .{ .r = 0x12, .g = 0x6E, .b = 0x82 }, // teal
-        .rpgm_mv => .{ .r = 0xD8, .g = 0x4A, .b = 0x2C }, // RPG-Maker red
-        .rpgm_mz => .{ .r = 0xC0, .g = 0x39, .b = 0x4F }, // crimson
-        .rpgm_vx => .{ .r = 0x9E, .g = 0x35, .b = 0x6F }, // mauve
-        .unity => .{ .r = 0x33, .g = 0x33, .b = 0x33 }, // graphite
-        .unreal => .{ .r = 0x1E, .g = 0x2D, .b = 0x4A }, // navy
-        .html => .{ .r = 0xE3, .g = 0x4F, .b = 0x26 }, // HTML5 orange
-        .flash => .{ .r = 0xC2, .g = 0x18, .b = 0x18 }, // red
-        .java => .{ .r = 0xB0, .g = 0x6A, .b = 0x1A }, // amber-brown
-        .wolf_rpg => .{ .r = 0x3E, .g = 0x7C, .b = 0x47 }, // forest green
-        .qsp => .{ .r = 0x6A, .g = 0x3C, .b = 0x9E }, // purple
-        .tyranobuilder => .{ .r = 0xC9, .g = 0xA2, .b = 0x27 }, // gold
-        .twine => .{ .r = 0x55, .g = 0x86, .b = 0x55 }, // sage
-        .other => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey
-        .unknown => .{ .r = 0x6F, .g = 0x6F, .b = 0x6F }, // grey (unused — gated above)
-    };
+    const c = engine_palette.badgeColor(e);
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
 }
 
 /// Toolbar icon size — pinned to the global style so every icon
@@ -192,10 +210,10 @@ pub fn iconOnly(
 /// tabs sit a touch lower and use a quieter fill so the active one
 /// pops as the obvious "you are here" affordance.
 pub fn tabButton(label: []const u8, active: bool) bool {
-    const active_fill: dvui.Color = .{ .r = 0x33, .g = 0x1E, .b = 0x28 };
-    const inactive_fill: dvui.Color = style.card_fill;
-    const tab_border: dvui.Color = style.border_color;
-    const highlight: dvui.Color = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A };
+    const active_fill: dvui.Color = tokens.toDvui(tokens.active.acc_wash, dvui.Color);
+    const inactive_fill: dvui.Color = style.cardFill();
+    const tab_border: dvui.Color = style.borderColor();
+    const highlight: dvui.Color = tokens.toDvui(tokens.active.acc, dvui.Color);
 
     const radius: dvui.Rect = .{ .x = 8, .y = 8, .w = 0, .h = 0 };
     const margin: dvui.Rect = if (active)
@@ -222,6 +240,9 @@ pub fn tabButton(label: []const u8, active: bool) bool {
         .color_text = if (active) highlight else null,
     };
     if (active) opts.style = .highlight;
+    // Tab labels are unique per detail page → use the label as a stable
+    // widget tag so headless Layer-2 tests can moveTo+click a given tab.
+    opts.tag = label;
     return style.button(@src(), label, .{}, opts);
 }
 
@@ -229,7 +250,7 @@ pub fn tabButton(label: []const u8, active: bool) bool {
 /// prose-under-heading slots. `dvui.label` doesn't wrap — long
 /// explanations overflow the panel at narrow window widths. Using
 /// `textLayout` with `.expand = .horizontal` lets the text reflow.
-pub const HELP_TEXT_COLOR: dvui.Color = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 };
+pub fn helpTextColor() dvui.Color { return style.labelDim(); }
 
 pub fn settingsHelpText(text: []const u8) void {
     // dvui's textLayout draws a selection / focus ring by default
@@ -249,8 +270,8 @@ pub fn settingsHelpText(text: []const u8) void {
         .expand = .horizontal,
         .background = false,
         .border = .all(0),
-        .color_border = HELP_TEXT_COLOR,
-        .color_text = HELP_TEXT_COLOR,
+        .color_border = helpTextColor(),
+        .color_text = helpTextColor(),
     });
     defer tl.deinit();
     tl.addText(text, .{});
@@ -309,66 +330,29 @@ pub fn humanRate(buf: []u8, bytes_per_sec: u64) []const u8 {
 /// Modal login overlay. Idempotent — render every frame while
 /// `state.login_popup_open` is true; close via Skip, RPDL login, or
 /// successful F95 login (auth.zig auto-closes on the latter).
+/// Accounts popup — compact floating panel opened from the toolbar account
+/// button (no longer a startup modal). Stacks the two account cards (F95Zone +
+/// RPDL); each shows its signed-in identity + Sign out, or an inline sign-in
+/// form.
 pub fn renderLoginPopup(frame: *Frame) void {
     const state = frame.state;
     if (!state.login_popup_open) return;
-    // If the user logged into F95 in some other way (e.g. cookie
-    // loaded after popup opened), self-dismiss.
-    if (state.login_status == .logged_in) {
-        state.login_popup_open = false;
-        return;
-    }
 
     var win = dvui.floatingWindow(@src(), .{ .open_flag = &state.login_popup_open }, .{
-        .min_size_content = .{ .w = 520, .h = 360 },
+        .min_size_content = .{ .w = 340, .h = 0 },
     });
     defer win.deinit();
-    _ = dvui.windowHeader("Sign in to F95Zone", "", &state.login_popup_open);
+    _ = dvui.windowHeader("Accounts", "", &state.login_popup_open);
 
-    {
-        var msg_box = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
-        });
-        defer msg_box.deinit();
-        dvui.labelNoFmt(
-            @src(),
-            "f69 works best when you're signed in. F95Zone unlocks " ++
-                "donor-tier downloads; RPDL is a community-run torrent " ++
-                "mirror that f69 falls back to when DDL isn't available.",
-            .{},
-            .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
-        );
-    }
-
-    // Responsive: side-by-side via flexbox justify=.start; narrow
-    // windows get auto-wrapping by the layout. Each card declares
-    // a fixed min width so the flexbox can decide whether to fit
-    // them in a single row or stack.
-    var forms = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .horizontal,
-        .padding = .{ .x = 16, .y = 4, .w = 16, .h = 12 },
+        .padding = .{ .x = 10, .y = 6, .w = 10, .h = 12 },
     });
-    defer forms.deinit();
+    defer col.deinit();
 
     renderF95LoginCard(frame);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     renderRpdlLoginCard(frame);
-
-    // Footer with Skip button — full-width row aligned right.
-    {
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-        var footer = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
-            .gravity_x = 1.0,
-        });
-        defer footer.deinit();
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (style.button(@src(), "Skip for now", .{}, .{ .gravity_x = 1.0 })) {
-            state.login_popup_open = false;
-            state.login_popup_skipped = true;
-        }
-    }
 }
 
 // ============================================================
@@ -441,7 +425,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
         });
         defer log_box.deinit();
         dvui.labelNoFmt(@src(), "Log", .{}, .{
-            .color_text = HELP_TEXT_COLOR,
+            .color_text = helpTextColor(),
         });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
 
@@ -451,7 +435,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
             .color_fill = .{ .r = 0x14, .g = 0x0A, .b = 0x10 },
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
         });
         defer border.deinit();
@@ -460,7 +444,7 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
         defer scroll.deinit();
         const log_text = state.launch_diag_log_buf[0..state.launch_diag_log_len];
         if (log_text.len == 0) {
-            dvui.label(@src(), "(no further detail)", .{}, .{ .color_text = HELP_TEXT_COLOR });
+            dvui.label(@src(), "(no further detail)", .{}, .{ .color_text = helpTextColor() });
         } else {
             // `labelNoFmt` is single-line and clips at the right edge.
             // `textLayout` wraps long lines + handles user text
@@ -548,12 +532,12 @@ fn renderF95LoginCard(frame: *Frame) void {
     const state = frame.state;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCB00,
-        .min_size_content = .{ .w = 240, .h = 200 },
+        .expand = .horizontal,
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
@@ -572,9 +556,22 @@ fn renderF95LoginCard(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, .{});
     if (!state.login_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = helpTextColor() });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    // Signed in → show identity + Sign out instead of the form.
+    if (state.login_status == .logged_in) {
+        const u = state.f95UserSlice();
+        if (u.len > 0) {
+            dvui.label(@src(), "Signed in as {s}", .{u}, .{ .color_text = helpTextColor() });
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        }
+        if (style.button(@src(), "Sign out of F95Zone", .{}, .{ .style = .err, .expand = .horizontal })) {
+            actions.doLogout(frame);
+        }
+        return;
+    }
 
     // Form: user / pass / Sign in.
     {
@@ -611,12 +608,12 @@ fn renderRpdlLoginCard(frame: *Frame) void {
     const state = frame.state;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCC00,
-        .min_size_content = .{ .w = 240, .h = 200 },
+        .expand = .horizontal,
         .background = true,
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
@@ -630,7 +627,7 @@ fn renderRpdlLoginCard(frame: *Frame) void {
             "an F95 download has no DDL — sign in if you have an account, " ++
             "or create one at dl.rpdl.net.",
         .{},
-        .{ .expand = .horizontal, .color_text = HELP_TEXT_COLOR },
+        .{ .expand = .horizontal, .color_text = helpTextColor() },
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -643,7 +640,7 @@ fn renderRpdlLoginCard(frame: *Frame) void {
     };
     dvui.label(@src(), "status: {s}", .{status_text}, .{});
     if (!state.rpdl_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = HELP_TEXT_COLOR });
+        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = helpTextColor() });
     }
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
@@ -735,8 +732,8 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
             .background = true,
             .border = style.border_thin,
             .corner_radius = style.corner_radius,
-            .color_fill = style.card_fill,
-            .color_border = style.border_color,
+            .color_fill = style.cardFill(),
+            .color_border = style.borderColor(),
         });
         defer row.deinit();
 
@@ -778,14 +775,14 @@ pub fn renderSyncRecapPopup(frame: *Frame) void {
                 dvui.labelNoFmt(@src(), e.old_version, .{}, .{
                     .id_extra = e.thread_id,
                     .gravity_y = 0.5,
-                    .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+                    .color_text = style.labelDim(),
                 });
                 _ = dvui.spacer(@src(), .{ .id_extra = e.thread_id, .min_size_content = .{ .w = 6, .h = 1 } });
                 dvui.icon(@src(), "diff-arrow", entypo.arrow_right, .{}, .{
                     .id_extra = e.thread_id,
                     .min_size_content = .{ .w = 16, .h = 16 },
                     .gravity_y = 0.5,
-                    .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                    .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
                 });
                 _ = dvui.spacer(@src(), .{ .id_extra = e.thread_id, .min_size_content = .{ .w = 6, .h = 1 } });
                 dvui.labelNoFmt(@src(), e.new_version, .{}, .{
@@ -837,7 +834,7 @@ fn renderRecapThumb(frame: *Frame, thread_id: u64) void {
             .gravity_y = 0.5,
             .corner_radius = .all(3),
             .border = style.border_thin,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -848,7 +845,7 @@ fn renderRecapThumb(frame: *Frame, thread_id: u64) void {
         .background = true,
         .corner_radius = .all(3),
         .border = style.border_thin,
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
         .color_fill = .{ .r = 0x1A, .g = 0x10, .b = 0x14 },
     });
     defer slot.deinit();
@@ -940,8 +937,8 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
         .err => "[x] ",
     };
     const text_color: dvui.Color = switch (t.kind) {
-        .info => HELP_TEXT_COLOR,
-        .success => .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+        .info => helpTextColor(),
+        .success => tokens.toDvui(tokens.active.acc, dvui.Color),
         .warn => .{ .r = 0xE0, .g = 0xC0, .b = 0x70 },
         .err => .{ .r = 0xFF, .g = 0x80, .b = 0x80 },
     };
@@ -954,8 +951,8 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
         .background = true,
         .border = style.border_thin,
         .corner_radius = .all(6),
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
         .expand = .horizontal,
     });
     bw.processEvents();
@@ -979,6 +976,196 @@ fn renderToastPill(index: usize, t: state_mod.Toast) bool {
     return bw.clicked();
 }
 
+/// tokens.Color → dvui.Color.
+fn td(col: tokens.Color) dvui.Color {
+    return tokens.toDvui(col, dvui.Color);
+}
+
+/// Design-B left icon rail — primary screen navigation. Fixed-width vertical
+/// column of icon buttons that switch `state.screen`; the active screen gets the
+/// accent wash + an inset accent bar. Rendered once by guiFrame, left of the
+/// screen content. Screen-specific actions stay in each screen's own top bar.
+pub fn renderIconRail(frame: *Frame) void {
+    const state = frame.state;
+    var rail = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .min_size_content = .{ .w = 54, .h = 0 },
+        .expand = .vertical,
+        .background = true,
+        .color_fill = td(tokens.active.bg1),
+        .color_border = td(tokens.active.line),
+        .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
+        .padding = .{ .x = 0, .y = 10, .w = 0, .h = 10 },
+    });
+    defer rail.deinit();
+
+    railItem(state, 0, "Library", entypo.home, .library);
+    railItem(state, 1, "Mods", entypo.tools, .universal_mods);
+    railItem(state, 2, "Downloads", entypo.download, .downloads);
+    railItem(state, 3, "Import", entypo.plus, .import_folder);
+    _ = dvui.spacer(@src(), .{ .expand = .vertical });
+    railItem(state, 4, "Settings", entypo.cog, .settings);
+    railItem(state, 5, "Diagnostics", entypo.help, .diagnostics);
+}
+
+fn railItem(state: *state_mod.State, key: u32, name: []const u8, icon: []const u8, screen: state_mod.Screen) void {
+    const t = tokens.active;
+    const on = state.screen == screen;
+    var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = key,
+        .min_size_content = .{ .w = 38, .h = 38 },
+        .gravity_x = 0.5,
+        .background = on,
+        .color_fill = td(t.acc_wash),
+        .border = if (on) .{ .x = 2, .y = 0, .w = 0, .h = 0 } else dvui.Rect.all(0),
+        .color_border = td(t.acc),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .margin = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+    });
+    defer cell.deinit();
+    dvui.icon(@src(), name, icon, .{}, .{
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 19, .h = 19 },
+        .color_text = td(if (on) t.acc else t.ink3),
+    });
+    if (dvui.clicked(cell.data(), .{})) state.screen = screen;
+}
+
+// ----- bottom status bar (global activity) -----
+
+fn statusDot(col: dvui.Color) void {
+    var d = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = col,
+        .corner_radius = dvui.Rect.all(3),
+        .min_size_content = .{ .w = 6, .h = 6 },
+        .gravity_y = 0.5,
+        .margin = .{ .x = 0, .y = 0, .w = 7, .h = 0 },
+    });
+    d.deinit();
+}
+
+fn statusMiniBar(frac: f32, w: f32) void {
+    const t = tokens.active;
+    const f = std.math.clamp(frac, 0, 1);
+    var outer = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .background = true,
+        .color_fill = td(t.bg3),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = w, .h = 5 },
+        .gravity_y = 0.5,
+    });
+    defer outer.deinit();
+    var inner = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = td(t.acc),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = w * f, .h = 5 },
+    });
+    inner.deinit();
+}
+
+fn statusJobTitle(frame: *Frame, job: *const downloads.Job) []const u8 {
+    if (job.game_id != 0) {
+        for (frame.games) |*g| {
+            if (g.f95_thread_id == job.game_id) return g.name;
+        }
+    }
+    return job.source_url;
+}
+
+fn statusSeg(key: u32, label: []const u8, n: u32, col: dvui.Color, font: dvui.Font) void {
+    var seg = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = key, .padding = .{ .x = 9, .y = 0, .w = 0, .h = 0 } });
+    defer seg.deinit();
+    var b: [48]u8 = undefined;
+    dvui.labelNoFmt(@src(), std.fmt.bufPrint(&b, "{s} {d}", .{ label, n }) catch label, .{}, .{ .gravity_y = 0.5, .color_text = col, .font = font });
+}
+
+/// Bottom status bar — an always-present thin strip showing global activity
+/// (download / install / sync). Idle shows "Ready". Rendered once by guiFrame
+/// at the bottom of the root, full-width under the rail + content.
+pub fn renderStatusBar(frame: *Frame) void {
+    const state = frame.state;
+    const t = tokens.active;
+    const m0 = dvui.Font.theme(.mono);
+    const mono = m0.withSize(m0.size * 0.82);
+
+    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 0, .h = 24 },
+        .background = true,
+        .color_fill = td(t.bg1),
+        .color_border = td(t.line),
+        .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
+        .padding = .{ .x = 12, .y = 0, .w = 12, .h = 0 },
+    });
+    defer bar.deinit();
+
+    // Scan download jobs: counts + the primary active download.
+    var n_down: u32 = 0;
+    var n_seed: u32 = 0;
+    var n_post: u32 = 0;
+    var primary: ?*const downloads.Job = null;
+    var it = frame.dl_mgr.jobs.iterator();
+    while (it.next()) |e| {
+        switch (e.value_ptr.status) {
+            .downloading => {
+                n_down += 1;
+                if (primary == null) primary = e.value_ptr;
+            },
+            .queued, .fetching_metadata, .verifying => n_down += 1,
+            .extracting, .applying => n_post += 1,
+            .seeding => n_seed += 1,
+            else => {},
+        }
+    }
+
+    // ---- left: primary activity ----
+    if (primary) |j| {
+        statusDot(td(t.acc));
+        dvui.labelNoFmt(@src(), statusJobTitle(frame, j), .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 9, .h = 1 } });
+        const frac: f32 = if (j.bytes_total) |tot|
+            (if (tot > 0) @as(f32, @floatFromInt(j.bytes_done)) / @as(f32, @floatFromInt(tot)) else 0)
+        else
+            0;
+        statusMiniBar(frac, 110);
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 9, .h = 1 } });
+        var b2: [48]u8 = undefined;
+        const pct: u32 = @intFromFloat(std.math.clamp(frac, 0, 1) * 100);
+        const mbps = @as(f64, @floatFromInt(j.download_speed)) / (1024.0 * 1024.0);
+        dvui.labelNoFmt(@src(), std.fmt.bufPrint(&b2, "{d}% · {d:.1} MB/s", .{ pct, mbps }) catch "", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink3), .font = mono });
+    } else if (n_post > 0) {
+        statusDot(td(t.warn));
+        dvui.labelNoFmt(@src(), "Installing…", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+    } else if (state.anyActiveSync()) {
+        statusDot(td(t.acc));
+        const nm = state.currentSyncName();
+        var b3: [96]u8 = undefined;
+        const lbl = if (nm.len > 0) (std.fmt.bufPrint(&b3, "Syncing {s}", .{nm}) catch "Syncing…") else "Syncing…";
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+    } else {
+        dvui.labelNoFmt(@src(), "Ready", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink3), .font = mono });
+    }
+
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    // ---- right: segment counts ----
+    if (n_down > 0) statusSeg(0xD0, "\u{2913}", n_down, td(t.acc), mono);
+    if (n_post > 0) statusSeg(0xD1, "install", n_post, td(t.warn), mono);
+    if (n_seed > 0) statusSeg(0xD2, "\u{2191} seeding", n_seed, td(t.ink3), mono);
+    {
+        const syncing = state.anyActiveSync();
+        dvui.labelNoFmt(@src(), if (syncing) "\u{27F3} syncing" else "\u{27F3} idle", .{}, .{
+            .id_extra = 0xD9,
+            .gravity_y = 0.5,
+            .color_text = td(if (syncing) t.acc else t.ink3),
+            .font = mono,
+            .padding = .{ .x = 9, .y = 0, .w = 0, .h = 0 },
+        });
+    }
+}
+
 pub fn renderSyncBanner(frame: *Frame) void {
     const state = frame.state;
     const has_active = state.anyActiveSync();
@@ -991,12 +1178,29 @@ pub fn renderSyncBanner(frame: *Frame) void {
     const has_image_work = state.anyActiveImage() or
         (state.image_queue != null and state.image_queue_head < state.image_queue_len) or
         state.image_total > 0;
+
+    // Debounce the image row: only show it once image work has been in
+    // flight for at least IMAGE_BANNER_MIN_NS. A burst that drains
+    // near-instantly (a lone cache-fast fetch, or a residual total>0
+    // window between jobs) never crosses the threshold, so the bar
+    // can't flash on and off. `enqueueImageFetch` already suppresses
+    // no-new-image jobs entirely; this catches every other transient.
+    const IMAGE_BANNER_MIN_NS: i128 = 150 * std.time.ns_per_ms;
+    const now_ns = dvui.frameTimeNS();
+    if (has_image_work) {
+        if (state.image_work_since_ns == 0) state.image_work_since_ns = now_ns;
+    } else {
+        state.image_work_since_ns = 0;
+    }
+    const image_row_visible = has_image_work and
+        (now_ns - state.image_work_since_ns) >= IMAGE_BANNER_MIN_NS;
+
     // Only surface the banner while a sync is genuinely in flight.
     // Terminal messages like "nothing to sync — all games already
     // populated" used to keep the banner pinned on every screen
     // (including during bookmark imports) — that's noisy and confusing.
     // Settled state messages live in their normal status-line slots.
-    if (!has_active and !has_queue and !has_image_work) return;
+    if (!has_active and !has_queue and !image_row_visible) return;
 
     // Stack: row 1 = sync (text + cover); row 2 = phase-2 (images).
     // The outer vbox gives both rows the same padded background so it
@@ -1014,7 +1218,7 @@ pub fn renderSyncBanner(frame: *Frame) void {
     if (has_active or has_queue) {
         renderSyncBannerSyncRow(frame);
     }
-    if (has_image_work) {
+    if (image_row_visible) {
         renderSyncBannerImageRow(frame);
     }
 }
@@ -1118,7 +1322,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
             .min_size_content = .{ .w = BANNER_BAR_W, .h = BANNER_BAR_H_SYNC },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .background = true,
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .gravity_y = 0.5,
@@ -1132,7 +1336,7 @@ fn renderSyncBannerSyncRow(frame: *Frame) void {
                     .h = BANNER_BAR_H_SYNC - 4,
                 },
                 .background = true,
-                .color_fill = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                .color_fill = tokens.toDvui(tokens.active.acc, dvui.Color),
                 .corner_radius = .all(2),
                 .gravity_y = 0.5,
             });
@@ -1278,7 +1482,7 @@ fn renderSyncBannerImageRow(frame: *Frame) void {
             .min_size_content = .{ .w = BANNER_BAR_W, .h = BANNER_BAR_H_IMAGE },
             .border = style.border_thin,
             .corner_radius = .all(3),
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
             .background = true,
             .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
             .gravity_y = 0.5,

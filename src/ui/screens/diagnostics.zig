@@ -45,7 +45,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
     diagSection(@src(), "Build");
     diagRow(@src(), "f69 version", build_options.version);
 
-    diagSep();
+    diagSep(@src());
 
     // --- paths ---
     diagSection(@src(), "Paths");
@@ -58,21 +58,21 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
     diagRow(@src(), "rpdl_token_path", info.rpdl_token_path);
     diagRow(@src(), "browser_path_file", info.browser_path_file);
 
-    diagSep();
+    diagSep(@src());
 
     // --- sandbox ---
     diagSection(@src(), "Sandbox");
     diagRow(@src(), "backend", frame.sandbox.backendName());
 
     // --- host env snapshot ---
-    diagSep();
+    diagSep(@src());
     diagSection(@src(), "Host env (captured at startup)");
     diagRow(@src(), "$HOME", info.host.home orelse "(unset)");
     diagRow(@src(), "$XDG_RUNTIME_DIR", info.host.xdg_runtime_dir orelse "(unset)");
     diagRow(@src(), "$WAYLAND_DISPLAY", info.host.wayland_display orelse "(unset)");
     diagRow(@src(), "$DISPLAY", info.host.x11_display orelse "(unset)");
 
-    diagSep();
+    diagSep(@src());
 
     // --- accounts / tokens ---
     diagSection(@src(), "Accounts");
@@ -91,7 +91,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
         .unknown => "unknown",
     });
 
-    diagSep();
+    diagSep(@src());
 
     // --- downloads ---
     {
@@ -116,7 +116,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
         }
     }
 
-    diagSep();
+    diagSep(@src());
 
     // --- installs from DB ---
     {
@@ -138,7 +138,7 @@ pub fn diagnosticsScreen(frame: *Frame) !bool {
         }
     }
 
-    diagSep();
+    diagSep(@src());
 
     // --- selected game tracker ---
     if (state.selected_thread) |tid| {
@@ -177,6 +177,8 @@ fn diagRow(src: anytype, key: []const u8, value: []const u8) void {
     dvui.label(src, "{s}", .{line}, .{});
 }
 
-fn diagSep() void {
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+fn diagSep(src: std.builtin.SourceLocation) void {
+    // Take the caller's @src() — using @src() here gives every call the same
+    // widget id (this one line), which dvui flags as a duplicate-id error.
+    _ = dvui.spacer(src, .{ .min_size_content = .{ .w = 1, .h = 10 } });
 }

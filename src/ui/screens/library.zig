@@ -6,11 +6,16 @@ const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
 
+const version_mod = @import("util_version");
+
 const types = @import("../types.zig");
 const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const comp = @import("ui_comp");
+const tokens = @import("ui_tokens");
+const reltime = @import("util_reltime");
 
 const State = types.State;
 const Frame = types.Frame;
@@ -73,14 +78,21 @@ pub fn libraryScreen(frame: *Frame) !bool {
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
 
-        // === nav group: status → config → exit ===
-        var dl_label_buf: [32]u8 = undefined;
-        const dl_label = if (frame.dl_mgr.jobCount() > 0)
-            std.fmt.bufPrint(&dl_label_buf, "Downloads ({d})", .{frame.dl_mgr.jobCount()}) catch "Downloads"
-        else
-            "Downloads";
-        if (components.iconButton(@src(), dl_label, entypo.download, .{})) state.screen = .downloads;
-        if (components.iconButton(@src(), "Settings", entypo.cog, .{})) state.screen = .settings;
+        // Downloads + Settings now live on the icon rail (primary nav).
+        // Only screen-specific actions remain here: account + quit.
+        // Account button — sign-in state + opens the Accounts popup.
+        {
+            const f95_in = state.login_status == .logged_in;
+            const rpdl_in = state.rpdl_status == .logged_in;
+            const acct_label: []const u8 = if (f95_in or rpdl_in) blk: {
+                const u = state.f95UserSlice();
+                break :blk if (f95_in and u.len > 0) u else "Account";
+            } else "Sign in";
+            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight } else .{};
+            if (components.iconButton(@src(), acct_label, entypo.user, acct_opts)) {
+                state.login_popup_open = !state.login_popup_open;
+            }
+        }
         if (components.iconButton(@src(), "Quit", entypo.cross, .{ .style = .err })) return false;
     }
 
@@ -96,7 +108,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
     });
     defer body.deinit();
 
-    sidebar(state);
+    sidebar(frame);
 
     _ = dvui.separator(@src(), .{
         .min_size_content = .{ .w = 1, .h = 1 },
@@ -122,7 +134,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
         // Sort: column dropdown + asc/desc toggle. Pretty labels so
         // the user sees "Sync state" rather than `sync_state`.
         dvui.label(@src(), "sort:", .{}, .{ .gravity_y = 0.5 });
-        const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state" };
+        const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state", "Last played version" };
         var sort_picked: usize = @intFromEnum(state.sort_column);
         if (style.dropdown(@src(), sort_labels, .{ .choice = &sort_picked }, .{}, .{
             .min_size_content = .{ .w = 130, .h = style.button_h },
@@ -147,10 +159,17 @@ pub fn libraryScreen(frame: *Frame) !bool {
         const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.search_buf } }, .{
             .expand = .horizontal,
             .gravity_y = 0.5,
+            .tag = "lib-search", // headless Layer-2 tests focus + type here
         });
         te.deinit();
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 16, .h = 1 } });
+
+        // Global (engine-wide) mods registry.
+        if (components.iconButton(@src(), "Global Mods", entypo.tools, .{ .gravity_y = 0.5, .tag = "lib-global-mods" })) {
+            state.screen = .universal_mods;
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
         // View toggle on the right — interacted with rarely once
         // you've picked a layout.
@@ -162,8 +181,13 @@ pub fn libraryScreen(frame: *Frame) !bool {
             .{ .id_extra = 2, .style = .highlight, .gravity_y = 0.5 }
         else
             .{ .id_extra = 2, .gravity_y = 0.5 };
+        const kanban_opts: dvui.Options = if (state.view == .kanban)
+            .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
+        else
+            .{ .id_extra = 3, .gravity_y = 0.5 };
         if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts)) state.view = .grid;
         if (components.iconOnly(@src(), "list", entypo.list, list_opts)) state.view = .list;
+        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts)) state.view = .kanban;
     }
 
     const query = state.searchSlice();
@@ -334,7 +358,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
                 .min_size_content = .{ .w = 240, .h = 14 },
                 .border = style.border_thin,
                 .corner_radius = .all(3),
-                .color_border = style.border_color,
+                .color_border = style.borderColor(),
                 .background = true,
                 .color_fill = .{ .r = 0x16, .g = 0x0B, .b = 0x10 },
                 .gravity_y = 0.5,
@@ -348,7 +372,7 @@ fn renderBookmarksProgress(frame: *Frame) void {
                         .h = 10,
                     },
                     .background = true,
-                    .color_fill = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                    .color_fill = tokens.toDvui(tokens.active.acc, dvui.Color),
                     .corner_radius = .all(2),
                     .gravity_y = 0.5,
                 });
@@ -396,12 +420,33 @@ const LIST_ROW_PITCH: f32 = 56.0;
 /// never reveals an unrendered row.
 const OVERSCAN_ROWS: usize = 2;
 
+/// Returns true when the game has a newer installed version than the
+/// last-played version, or when the game has been installed but never
+/// played. Both cases mean "there is something new the user hasn't seen".
+fn hasUnplayedUpdate(g: *const library.Game, install_v: ?[]const u8) bool {
+    const inst_v = install_v orelse return false;
+    if (g.last_played_version) |lpv| {
+        return version_mod.compare(inst_v, lpv) == .gt;
+    }
+    return true; // installed but never played → counts as unplayed update
+}
+
+/// True when the scraped latest F95 version is newer than what's installed —
+/// i.e. a new release is available to download. Requires an install (you can't
+/// "update" a game you don't have).
+fn hasUpdateAvailable(g: *const library.Game, install_v: ?[]const u8) bool {
+    const inst_v = install_v orelse return false;
+    const latest = g.latest_version orelse return false;
+    return version_mod.compare(latest, inst_v) == .gt;
+}
+
 /// Virtualize the library scroll: only emit cards/rows for the
 /// portion of the (filtered) list that's actually within the viewport
 /// (plus an overscan band). Off-screen rows collapse to a single
 /// spacer of equivalent height so the scrollbar tracks correctly.
 fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []const u8) void {
     const state = frame.state;
+    actions.dbgResetCoverMisses(); // DIAG: count cover-cache misses this frame
 
     const layout = if (state.view == .grid) gridLayout() else GridLayout{
         .cols = 1,
@@ -424,10 +469,28 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     // search box / toggling a filter checkbox / adding a game does.
     const sig = filterSignature(state, query, games);
     if (sig != state.lib_filter_cache_sig) {
+        // Label filter: build the union of games carrying any selected label
+        // once per refilter (not per frame). null = no label gating.
+        var label_set: ?std.AutoHashMap(u64, void) = null;
+        defer if (label_set) |*s| s.deinit();
+        if (state.label_filter_len > 0) {
+            var set = std.AutoHashMap(u64, void).init(frame.lib.alloc);
+            for (state.label_filter[0..state.label_filter_len]) |lid| {
+                const gids = frame.lib.gamesForLabel(lid) catch continue;
+                defer frame.lib.alloc.free(gids);
+                for (gids) |gid| set.put(gid, {}) catch {};
+            }
+            label_set = set;
+        }
+
+        const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
         var fresh: std.ArrayList(u32) = .empty;
         fresh.ensureTotalCapacity(frame.lib.alloc, games.len) catch {};
         for (games, 0..) |*g, i| {
-            if (cardVisible(state, g, query)) {
+            if (label_set) |s| {
+                if (!s.contains(g.f95_thread_id)) continue;
+            }
+            if (cardVisible(state, g, query, frame.install_versions, now_s)) {
                 fresh.append(frame.lib.alloc, @intCast(i)) catch break;
             }
         }
@@ -436,6 +499,19 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
         state.lib_filter_cache_sig = sig;
     }
     const filtered: []const u32 = state.lib_filter_cache_indices orelse &.{};
+
+    // List view = the dvui.grid table (sortable + resizable columns, its own
+    // virtual scroller). Card/grid view keeps the manual virtualization below.
+    if (state.view == .list) {
+        renderListTable(frame, games, filtered);
+        return;
+    }
+    // Kanban = one status column per DevStatus, each its own scroll.
+    if (state.view == .kanban) {
+        renderKanban(frame, games, filtered);
+        return;
+    }
+
     const total_visible: usize = filtered.len;
 
     const total_rows: usize = (total_visible + cols - 1) / cols;
@@ -477,6 +553,7 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
     switch (state.view) {
         .grid => renderGridWindow(frame, games, filtered, layout, start_idx, end_idx),
         .list => renderListWindow(frame, games, filtered, start_idx, end_idx),
+        .kanban => unreachable, // handled by the early return above
     }
 
     if (bot_spacer_h > 0.5) {
@@ -485,9 +562,11 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
             .min_size_content = .{ .w = 1, .h = bot_spacer_h },
         });
     }
+
 }
 
-fn sidebar(state: *State) void {
+fn sidebar(frame: *Frame) void {
+    const state = frame.state;
     var side = dvui.box(@src(), .{ .dir = .vertical }, .{
         .min_size_content = .{ .w = 200, .h = 100 },
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
@@ -511,7 +590,7 @@ fn sidebar(state: *State) void {
         dvui.label(@src(), "Sync:", .{}, .{ .gravity_y = 0.5, .min_size_content = .{ .w = 80, .h = 1 } });
         const sync_labels = &[_][]const u8{ "All", "Synced", "Unsynced" };
         var picked: usize = @intFromEnum(state.filters.sync_state);
-        if (style.dropdown(@src(), sync_labels, .{ .choice = &picked }, .{}, .{})) {
+        if (style.dropdown(@src(), sync_labels, .{ .choice = &picked }, .{}, .{ .tag = "filter-sync" })) {
             state.filters.sync_state = @enumFromInt(picked);
         }
     }
@@ -529,13 +608,30 @@ fn sidebar(state: *State) void {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF22 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_unplayed_updates, "Unplayed updates", .{ .tag = "filter-unplayed" });
+    }
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF23 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_status_changed, "Status changed", .{});
+    }
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = 0xF24 });
+        defer row.deinit();
+        _ = dvui.checkbox(@src(), &state.filter_update_available, "Update available", .{});
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+
+    {
         const eng = &state.filters.engine;
         var lbl_buf: [48]u8 = undefined;
         const lbl = if (eng.count() == 0)
             @as([]const u8, "Engine")
         else
             std.fmt.bufPrint(&lbl_buf, "Engine ({d})", .{eng.count()}) catch "Engine";
-        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
+        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal, .tag = "filter-engine-expander" })) {
             enumCheckbox(library.Engine, eng, .renpy, "Ren'Py");
             enumCheckbox(library.Engine, eng, .rpgm_mv, "RPGM MV");
             enumCheckbox(library.Engine, eng, .rpgm_mz, "RPGM MZ");
@@ -667,10 +763,33 @@ fn sidebar(state: *State) void {
                 dvui.label(@src(),
                     "Master tag list not refreshed yet. Open Settings → Library → Tags → Refresh.",
                     .{},
-                    .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } },
+                    .{ .color_text = style.labelDim() },
                 );
             } else {
                 renderTagCheckboxFilter(state);
+            }
+        }
+    }
+
+    // ----- user labels filter -----
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    {
+        const labels_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
+        defer if (labels_opt) |l| frame.lib.freeLabels(l);
+        const labels: []const library.UserLabel = labels_opt orelse &.{};
+        if (labels.len > 0) {
+            var lbl_buf: [48]u8 = undefined;
+            const hdr = if (state.label_filter_len == 0)
+                @as([]const u8, "Labels")
+            else
+                std.fmt.bufPrint(&lbl_buf, "Labels ({d})", .{state.label_filter_len}) catch "Labels";
+            if (dvui.expander(@src(), hdr, .{}, .{ .expand = .horizontal })) {
+                for (labels) |l| {
+                    var checked = state.labelFilterActive(l.id);
+                    if (dvui.checkbox(@src(), &checked, l.name, .{ .id_extra = @as(u64, @bitCast(l.id)) })) {
+                        state.toggleLabelFilter(l.id);
+                    }
+                }
             }
         }
     }
@@ -764,7 +883,7 @@ fn renderTagCheckboxFilter(state: *State) void {
     dvui.label(@src(),
         "Click to cycle: off → include → exclude → off",
         .{},
-        .{ .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 } },
+        .{ .color_text = style.labelDim() },
     );
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
 
@@ -783,11 +902,11 @@ fn renderTagCheckboxFilter(state: *State) void {
 
         const marker: []const u8 = if (in_include) "[+] " else if (in_exclude) "[-] " else "[ ] ";
         const text_color: dvui.Color = if (in_include)
-            .{ .r = 0x6F, .g = 0xC8, .b = 0x7A } // green
+            tokens.toDvui(tokens.active.ok, dvui.Color) // include
         else if (in_exclude)
-            .{ .r = 0xE9, .g = 0x4B, .b = 0x7A } // red
+            tokens.toDvui(tokens.active.danger, dvui.Color) // exclude
         else
-            .{ .r = 0xC0, .g = 0xA0, .b = 0xB8 };
+            tokens.toDvui(tokens.active.ink3, dvui.Color);
 
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = i,
@@ -821,7 +940,7 @@ fn renderTagCheckboxFilter(state: *State) void {
         var more_buf: [80]u8 = undefined;
         const more = std.fmt.bufPrint(&more_buf, "showing first {d} matches — narrow with the filter above", .{HARD_CAP}) catch "…";
         dvui.labelNoFmt(@src(), more, .{}, .{
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
         });
     }
 
@@ -843,7 +962,8 @@ fn renderTagCheckboxFilter(state: *State) void {
 /// the set → insert/remove. Zero allocations.
 fn enumCheckbox(comptime E: type, set: *std.EnumSet(E), comptime tag: E, label: []const u8) void {
     var checked = set.contains(tag);
-    _ = dvui.checkbox(@src(), &checked, label, .{ .id_extra = @intFromEnum(tag) });
+    // Stable comptime tag so headless tests can expectVisible/click a child.
+    _ = dvui.checkbox(@src(), &checked, label, .{ .id_extra = @intFromEnum(tag), .tag = "flt-" ++ @tagName(tag) });
     if (checked) set.insert(tag) else set.remove(tag);
 }
 
@@ -928,6 +1048,359 @@ fn renderGridWindow(
     }
 }
 
+// ----- kanban view (one status column each, independently scrolled) -----
+
+/// Width of a single kanban status column.
+const KANBAN_COL_W: f32 = 244.0;
+
+/// Card layout used inside a kanban column — full-width cards stacked
+/// vertically (reuses renderCard, so the cover/title/meta match grid view).
+fn kanbanCardLayout() GridLayout {
+    const card_w: f32 = KANBAN_COL_W - 24.0; // column padding + scrollbar gutter
+    const cover_h = card_w * COVER_H_PER_W;
+    return .{ .cols = 1, .card_w = card_w, .card_h = cover_h + CARD_TEXT_CHROME_H, .cover_h = cover_h };
+}
+
+/// Kanban groups by the *player's* progress (CompletionStatus), not the
+/// game's dev state. Columns left→right follow a natural backlog→done flow.
+const KANBAN_ORDER = [_]library.CompletionStatus{
+    .not_started, .in_queue, .in_progress, .replaying, .waiting_for_update, .completed, .abandoned,
+};
+
+fn renderKanban(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
+    // Horizontal scroll across columns; each column owns its vertical scroll
+    // (so columns scroll independently and to their own content height).
+    var hscroll = dvui.scrollArea(@src(), .{
+        .horizontal = .auto,
+        .vertical = .none,
+    }, .{ .expand = .both });
+    defer hscroll.deinit();
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .vertical });
+    defer row.deinit();
+
+    const layout = kanbanCardLayout();
+    for (KANBAN_ORDER) |st| {
+        renderKanbanColumn(frame, games, filtered, st, layout);
+    }
+}
+
+fn renderKanbanColumn(
+    frame: *Frame,
+    games: []const library.Game,
+    filtered: []const u32,
+    status: library.CompletionStatus,
+    layout: GridLayout,
+) void {
+    const state = frame.state;
+    const sidx: usize = @intFromEnum(status);
+
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .id_extra = sidx,
+        .min_size_content = .{ .w = KANBAN_COL_W, .h = 1 },
+        .max_size_content = .{ .w = KANBAN_COL_W, .h = 0 },
+        .expand = .vertical,
+        .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+    });
+    defer col.deinit();
+
+    // Count games in this column (for the header badge).
+    var count: usize = 0;
+    for (filtered) |gi| {
+        if (games[gi].completion_status == status) count += 1;
+    }
+
+    // Header: status chip + count.
+    {
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = sidx,
+            .expand = .horizontal,
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+        });
+        defer hdr.deinit();
+
+        const fill = components.completionStatusColor(status);
+        comp.chip(@src(), .{
+            .label = components.completionStatusShortLabel(status),
+            .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+            .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            .scale = 0.85,
+        }, .{
+            .gravity_y = 0.5,
+            .padding = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+            .corner_radius = .all(3),
+        });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        var cbuf: [16]u8 = undefined;
+        const cstr = std.fmt.bufPrint(&cbuf, "{d}", .{count}) catch "?";
+        dvui.labelNoFmt(@src(), cstr, .{}, .{
+            .gravity_y = 0.5,
+            .color_text = style.labelDim(),
+        });
+    }
+
+    // Body: each column scrolls on its own AND is virtualized like the grid
+    // view — otherwise kanban over the whole library renders thousands of
+    // cards (with cover decodes) per frame. We render only the on-screen
+    // window plus top/bottom spacers that reserve the full scroll height.
+    const pitch: f32 = layout.card_h + CARD_CHROME_H;
+    const virtual_h: f32 = @max(@as(f32, @floatFromInt(count)) * pitch, 1.0);
+    state.lib_kanban_scroll[sidx].vertical = .given;
+    state.lib_kanban_scroll[sidx].virtual_size.h = virtual_h;
+
+    var sc = dvui.scrollArea(@src(), .{
+        .scroll_info = &state.lib_kanban_scroll[sidx],
+    }, .{
+        .expand = .both,
+        .background = true,
+        .corner_radius = .all(6),
+    });
+    defer sc.deinit();
+
+    const vp_y: f32 = state.lib_kanban_scroll[sidx].viewport.y;
+    const vp_h: f32 = @max(state.lib_kanban_scroll[sidx].viewport.h, 1.0);
+    const overscan_px: f32 = @as(f32, @floatFromInt(OVERSCAN_ROWS)) * pitch;
+    const visible_top: f32 = @max(0.0, vp_y - overscan_px);
+    const visible_bot: f32 = vp_y + vp_h + overscan_px;
+    const start_idx: usize = @intFromFloat(@floor(visible_top / pitch));
+    const end_idx: usize = @min(count, @as(usize, @intFromFloat(@ceil(visible_bot / pitch))));
+
+    const top_h: f32 = @as(f32, @floatFromInt(@min(start_idx, count))) * pitch;
+    const rem: usize = if (end_idx < count) count - end_idx else 0;
+    const bot_h: f32 = @as(f32, @floatFromInt(rem)) * pitch;
+
+    if (top_h > 0.5) _ = dvui.spacer(@src(), .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = top_h },
+    });
+
+    // Walk the filtered set, counting matches; render only those whose
+    // match-index falls in the on-screen window.
+    var matched: usize = 0;
+    for (filtered) |gi| {
+        const g = &games[gi];
+        if (g.completion_status != status) continue;
+        defer matched += 1;
+        if (matched < start_idx or matched >= end_idx) continue;
+        renderCard(frame, g, layout);
+    }
+
+    if (bot_h > 0.5) _ = dvui.spacer(@src(), .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1, .h = bot_h },
+    });
+}
+
+// ----- dvui.grid-based list view (sortable / resizable columns) -----
+
+fn headerDir(state: anytype, sc: state_mod.SortColumn) dvui.GridWidget.SortDirection {
+    if (state.sort_column != sc) return .unsorted;
+    return if (state.sort_dir == .asc) .ascending else .descending;
+}
+
+fn applyHeaderSort(state: anytype, sc: state_mod.SortColumn, d: dvui.GridWidget.SortDirection) void {
+    state.sort_column = sc;
+    state.sort_dir = if (d == .descending) .desc else .asc;
+}
+
+fn colResize(state: anytype, col: usize) dvui.GridWidget.HeaderResizeWidget.InitOptions {
+    return .{ .sizes = &state.lib_col_widths, .num = col, .min_size = 50, .max_size = 800 };
+}
+
+/// Open the detail screen for a game. Called from every list-table cell so
+/// the whole row is clickable, not just the Name cell.
+fn goDetail(state: anytype, g: *const library.Game) void {
+    state.screen = .detail;
+    state.selected_thread = g.f95_thread_id;
+}
+
+fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const u32) void {
+    const state = frame.state;
+    const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
+
+    // `.given` must be set on the scroll-info STRUCT: GridWidget only copies
+    // scroll_opts.vertical onto its body scroll-info when no scroll_info is
+    // passed. With `.given`, the body honors the virtual_size the
+    // VirtualScroller computes from the full row count (full-length scrollbar).
+    state.lib_grid_scroll.vertical = .given;
+    var grid = dvui.grid(@src(), .colWidths(&state.lib_col_widths), .{
+        .scroll_opts = .{ .scroll_info = &state.lib_grid_scroll, .vertical_bar = .show },
+    }, .{ .expand = .both, .background = true });
+    defer grid.deinit();
+
+    const scroller = dvui.GridWidget.VirtualScroller.init(grid, .{
+        .total_rows = filtered.len,
+        .scroll_info = &state.lib_grid_scroll,
+    });
+    const first = scroller.startRow();
+    const last = scroller.endRow();
+
+    // headers: Name + Rating + Updated are sortable (map to the existing
+    // SortColumn); Engine + Version are display-only. All resizable.
+    {
+        var d = headerDir(state, .name);
+        if (dvui.gridHeadingSortable(@src(), grid, 0, "Name", &d, colResize(state, 0), .{})) applyHeaderSort(state, .name, d);
+    }
+    dvui.gridHeading(@src(), grid, 1, "Engine", colResize(state, 1), .{});
+    {
+        var d = headerDir(state, .rating);
+        if (dvui.gridHeadingSortable(@src(), grid, 2, "Rating", &d, colResize(state, 2), .{})) applyHeaderSort(state, .rating, d);
+    }
+    dvui.gridHeading(@src(), grid, 3, "Version", colResize(state, 3), .{});
+    {
+        var d = headerDir(state, .last_updated);
+        if (dvui.gridHeadingSortable(@src(), grid, 4, "Updated", &d, colResize(state, 4), .{})) applyHeaderSort(state, .last_updated, d);
+    }
+
+    var row = first;
+    while (row < last and row < filtered.len) : (row += 1) {
+        const g = &games[filtered[row]];
+        var cell_num = dvui.GridWidget.Cell.colRow(0, row);
+
+        // Name: progress dot + name + NEW chip (whole row clickable).
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            {
+                var nrow = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .id_extra = g.f95_thread_id,
+                    .expand = .horizontal,
+                    .gravity_y = 0.5,
+                });
+                defer nrow.deinit();
+
+                const sc = components.completionStatusColor(g.completion_status);
+                comp.dot(@src(), .{ .r = sc.r, .g = sc.g, .b = sc.b, .a = sc.a }, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 0, .y = 0, .w = 7, .h = 0 },
+                });
+                dvui.labelNoFmt(@src(), g.name, .{}, .{ .gravity_y = 0.5 });
+
+                const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(g.f95_thread_id) else null;
+                if (hasUnplayedUpdate(g, inst_v)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    const t = tokens.active;
+                    comp.chip(@src(), .{
+                        .label = "NEW",
+                        .fill = t.bg2,
+                        .text = t.accent2,
+                        .border = t.line,
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0xBB22,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
+                if (statusRecentlyChanged(g, now_s)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    comp.chip(@src(), .{
+                        .label = "STATUS",
+                        .fill = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff }, // amber
+                        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                        .border = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0x57A7,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
+                if (hasUpdateAvailable(g, inst_v)) {
+                    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 5, .h = 1 } });
+                    comp.chip(@src(), .{
+                        .label = "UPDATE",
+                        .fill = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff }, // cyan
+                        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                        .border = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                        .scale = 0.7,
+                    }, .{
+                        .id_extra = g.f95_thread_id ^ 0x09DA,
+                        .gravity_y = 0.5,
+                        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                        .corner_radius = .all(2),
+                    });
+                }
+            }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Engine
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            if (g.engine != .unknown) {
+                const fill = components.engineBadgeColor(g.engine);
+                comp.chip(@src(), .{
+                    .label = components.engineShortLabel(g.engine),
+                    .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                    .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                    .scale = 0.75,
+                }, .{
+                    .expand = .horizontal,
+                    .gravity_y = 0.5,
+                    // uniform gap from the column edges + taller "label" feel
+                    .margin = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
+                    .padding = .{ .x = 6, .y = 3, .w = 6, .h = 3 },
+                    .corner_radius = .all(3),
+                });
+            }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Rating (5 stars, filled to the rounded score)
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            if (g.rating) |r| {
+                var srow = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                });
+                defer srow.deinit();
+                const filled: usize = @intFromFloat(@round(std.math.clamp(r, 0, 5)));
+                const acc = tokens.toDvui(tokens.active.acc, dvui.Color);
+                const dim = style.labelDim();
+                var i: usize = 0;
+                while (i < 5) : (i += 1) {
+                    const on = i < filled;
+                    dvui.icon(@src(), "star", if (on) entypo.star else entypo.star_outlined, .{}, .{
+                        .id_extra = i,
+                        .gravity_y = 0.5,
+                        .min_size_content = .{ .w = 12, .h = 12 },
+                        .color_text = if (on) acc else dim,
+                    });
+                }
+            }
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Version
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            dvui.labelNoFmt(@src(), g.latest_version orelse "", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Updated
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            var ub: [16]u8 = undefined;
+            const us = reltime.ago(now_s, g.last_updated_at orelse 0, &ub);
+            dvui.labelNoFmt(@src(), us, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+    }
+}
+
 fn renderListWindow(
     frame: *Frame,
     games: []const library.Game,
@@ -955,47 +1428,87 @@ fn renderListWindow(
 
         if (g.engine != .unknown) {
             const fill = components.engineBadgeColor(g.engine);
-            var eng_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            comp.chip(@src(), .{
+                .label = components.engineShortLabel(g.engine),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .scale = 0.75,
+            }, .{
                 .id_extra = g.f95_thread_id,
                 .gravity_y = 0.5,
                 .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                 .corner_radius = .all(2),
-                .background = true,
-                .color_fill = fill,
-                .color_border = fill,
-                .border = style.border_thin,
-            });
-            defer eng_pill.deinit();
-            const body = dvui.Font.theme(.body);
-            dvui.labelNoFmt(@src(), components.engineShortLabel(g.engine), .{}, .{
-                .gravity_y = 0.5,
-                .gravity_x = 0.5,
-                .color_text = dvui.Color.white,
-                .font = body.withSize(body.size * 0.75),
             });
         }
 
         if (g.dev_status != .unknown) {
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
             const fill = components.devStatusColor(g.dev_status);
-            var st_pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            comp.chip(@src(), .{
+                .label = components.devStatusShortLabel(g.dev_status),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .scale = 0.75,
+            }, .{
                 .id_extra = g.f95_thread_id ^ 0xD5,
                 .gravity_y = 0.5,
                 .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                 .corner_radius = .all(2),
-                .background = true,
-                .color_fill = fill,
-                .color_border = fill,
-                .border = style.border_thin,
             });
-            defer st_pill.deinit();
-            const body = dvui.Font.theme(.body);
-            dvui.labelNoFmt(@src(), components.devStatusShortLabel(g.dev_status), .{}, .{
-                .gravity_y = 0.5,
-                .gravity_x = 0.5,
-                .color_text = dvui.Color.white,
-                .font = body.withSize(body.size * 0.75),
-            });
+        }
+
+        {
+            const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(g.f95_thread_id) else null;
+            if (hasUnplayedUpdate(g, inst_v)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                // Design B "NEW" chip — theme-following accent2 (validated comp layer).
+                const t = tokens.active;
+                comp.chip(@src(), .{
+                    .label = "NEW",
+                    .fill = t.bg2,
+                    .text = t.accent2,
+                    .border = t.line,
+                    .scale = 0.75,
+                }, .{
+                    .id_extra = g.f95_thread_id ^ 0xBB22,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                });
+            }
+            const now_s: i64 = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toSeconds();
+            if (statusRecentlyChanged(g, now_s)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                comp.chip(@src(), .{
+                    .label = "STATUS",
+                    .fill = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                    .border = .{ .r = 0xC0, .g = 0x84, .b = 0x1F, .a = 0xff },
+                    .scale = 0.75,
+                }, .{
+                    .id_extra = g.f95_thread_id ^ 0x57A7,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                });
+            }
+            if (hasUpdateAvailable(g, inst_v)) {
+                _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+                comp.chip(@src(), .{
+                    .label = "UPDATE",
+                    .fill = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                    .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+                    .border = .{ .r = 0x1F, .g = 0x9E, .b = 0xC0, .a = 0xff },
+                    .scale = 0.75,
+                }, .{
+                    .id_extra = g.f95_thread_id ^ 0x09DA,
+                    .gravity_y = 0.5,
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corner_radius = .all(2),
+                });
+            }
         }
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
@@ -1010,7 +1523,7 @@ fn renderListWindow(
             dvui.icon(@src(), "rating-star", entypo.star, .{}, .{
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 14, .h = 14 },
-                .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+                .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
             });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
             var rate_buf: [16]u8 = undefined;
@@ -1084,7 +1597,7 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
             .gravity_y = 0.5,
             .corner_radius = .all(3),
             .border = style.border_thin,
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         return;
     }
@@ -1096,7 +1609,7 @@ fn renderListThumb(bytes_opt: ?[]const u8, thread_id: u64) void {
         .corner_radius = .all(3),
         .border = style.border_thin,
         .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-        .color_border = style.border_color,
+        .color_border = style.borderColor(),
     });
     defer slot.deinit();
 }
@@ -1133,10 +1646,35 @@ fn filterSignature(state: *const State, query: []const u8, games: []const librar
     // causes one stale frame; acceptable.
     const set_count: usize = if (state.installed_set) |s| s.count() else 0;
     hasher.update(std.mem.asBytes(&set_count));
+    // Unplayed-updates filter: hash both the toggle and the install-
+    // generation counter so a new install immediately re-evaluates.
+    hasher.update(std.mem.asBytes(&state.filter_unplayed_updates));
+    hasher.update(std.mem.asBytes(&state.filter_status_changed));
+    hasher.update(std.mem.asBytes(&state.filter_update_available));
+    hasher.update(std.mem.asBytes(&state.snapshot_install_gen));
+    // Label filter — selected ids. (Re-assigning a label to a game while the
+    // filter is active needs a manual refresh; the common case of toggling
+    // the selection is covered here.)
+    hasher.update(std.mem.asBytes(&state.label_filter_len));
+    hasher.update(std.mem.sliceAsBytes(state.label_filter[0..state.label_filter_len]));
     return hasher.final();
 }
 
-fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) bool {
+/// Days a dev-status change stays "recent" for the chip + filter.
+const STATUS_CHANGE_RECENT_DAYS: i64 = 14;
+
+fn statusRecentlyChanged(g: *const library.Game, now_s: i64) bool {
+    const t = g.status_changed_at orelse return false;
+    return (now_s - t) < STATUS_CHANGE_RECENT_DAYS * 24 * 60 * 60;
+}
+
+fn cardVisible(
+    state: *const State,
+    g: *const library.Game,
+    query: []const u8,
+    install_versions: ?*const std.AutoHashMap(u64, []const u8),
+    now_s: i64,
+) bool {
     if (query.len > 0) {
         const name_match = types.asciiContainsIgnoreCase(g.name, query);
         const dev_match = if (g.developer) |d| types.asciiContainsIgnoreCase(d, query) else false;
@@ -1157,6 +1695,19 @@ fn cardVisible(state: *const State, g: *const library.Game, query: []const u8) b
             }
         },
     }
+
+    if (state.filter_unplayed_updates) {
+        const inst_v: ?[]const u8 = if (install_versions) |m| m.get(g.f95_thread_id) else null;
+        if (!hasUnplayedUpdate(g, inst_v)) return false;
+    }
+
+    if (state.filter_status_changed and !statusRecentlyChanged(g, now_s)) return false;
+
+    if (state.filter_update_available) {
+        const inst_v: ?[]const u8 = if (install_versions) |m| m.get(g.f95_thread_id) else null;
+        if (!hasUpdateAvailable(g, inst_v)) return false;
+    }
+
     return true;
 }
 
@@ -1171,8 +1722,8 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         .max_size_content = .{ .w = layout.card_w, .h = layout.card_h },
         .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
         .margin = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
-        .color_fill = style.card_fill,
-        .color_border = style.border_color,
+        .color_fill = style.cardFill(),
+        .color_border = style.borderColor(),
     });
     defer card.deinit();
 
@@ -1217,7 +1768,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         dvui.labelNoFmt(@src(), dev, .{}, .{
             .expand = .horizontal,
             .max_size_content = .{ .w = 0, .h = 14 },
-            .color_text = .{ .r = 0xC0, .g = 0x90, .b = 0xA8 },
+            .color_text = style.labelDim(),
             .font = dev_font,
             .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -1250,7 +1801,7 @@ fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
         dvui.icon(@src(), "rating-star", entypo.star, .{}, .{
             .gravity_y = 0.5,
             .min_size_content = .{ .w = 12, .h = 12 },
-            .color_text = .{ .r = 0xE9, .g = 0x4B, .b = 0x7A },
+            .color_text = tokens.toDvui(tokens.active.acc, dvui.Color),
         });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 3, .h = 1 } });
 
@@ -1346,7 +1897,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                     .min_size_content = .{ .w = 1, .h = 1 },
                     .corner_radius = style.corner_radius,
                     .border = style.border_thin,
-                    .color_border = style.border_color,
+                    .color_border = style.borderColor(),
                 });
             },
             .fit_backdrop => {
@@ -1360,7 +1911,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                         .background = true,
                         .corner_radius = style.corner_radius,
                         .border = style.border_thin,
-                        .color_border = style.border_color,
+                        .color_border = style.borderColor(),
                         .color_fill = style.letterbox_fill,
                     });
                     bg.deinit();
@@ -1388,7 +1939,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
                         .background = true,
                         .corner_radius = style.corner_radius,
                         .border = style.border_thin,
-                        .color_border = style.border_color,
+                        .color_border = style.borderColor(),
                         .color_fill = style.letterbox_fill,
                     });
                     bg.deinit();
@@ -1414,7 +1965,7 @@ fn renderCardCover(bytes_opt: ?[]const u8, thread_id: u64, engine: library.Engin
             .corner_radius = style.corner_radius,
             .border = style.border_thin,
             .color_fill = .{ .r = 0x2A, .g = 0x16, .b = 0x20 },
-            .color_border = style.border_color,
+            .color_border = style.borderColor(),
         });
         defer slot.deinit();
         dvui.label(@src(), "(no cover)", .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
@@ -1458,49 +2009,37 @@ fn renderInstallDot(thread_id: u64, state: actions.InstallDotState) void {
 fn renderStatusBadge(thread_id: u64, status: library.DevStatus) void {
     if (status == .unknown) return;
     const fill = components.devStatusColor(status);
-    var badge = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    comp.chip(@src(), .{
+        .label = components.devStatusShortLabel(status),
+        .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+        .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .scale = style.chip_font_scale,
+    }, .{
         .id_extra = thread_id,
         .gravity_x = 1.0,
         .gravity_y = 1.0,
-        .background = true,
         .corner_radius = .all(2),
         .padding = .all(0),
         .margin = .{ .x = 0, .y = 0, .w = 4, .h = 4 },
-        .color_fill = fill,
-        .color_border = fill,
-        .border = style.border_thin,
-    });
-    defer badge.deinit();
-    const body = dvui.Font.theme(.body);
-    dvui.labelNoFmt(@src(), components.devStatusShortLabel(status), .{}, .{
-        .color_text = dvui.Color.white,
-        .font = body.withSize(body.size * style.chip_font_scale),
-        .padding = style.chip_label_padding,
-        .margin = .all(0),
     });
 }
 
 fn renderEngineBadge(thread_id: u64, engine: library.Engine) void {
     const fill = components.engineBadgeColor(engine);
-    var badge = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    comp.chip(@src(), .{
+        .label = components.engineShortLabel(engine),
+        .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+        .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+        .scale = style.chip_font_scale,
+    }, .{
         .id_extra = thread_id,
         .gravity_x = 0,
         .gravity_y = 1.0,
-        .background = true,
         .corner_radius = .all(2),
         .padding = .all(0),
         .margin = .{ .x = 4, .y = 0, .w = 0, .h = 4 },
-        .color_fill = fill,
-        .color_border = fill,
-        .border = style.border_thin,
-    });
-    defer badge.deinit();
-    const body = dvui.Font.theme(.body);
-    dvui.labelNoFmt(@src(), components.engineShortLabel(engine), .{}, .{
-        .color_text = dvui.Color.white,
-        .font = body.withSize(body.size * style.chip_font_scale),
-        .padding = style.chip_label_padding,
-        .margin = .all(0),
     });
 }
 
@@ -1571,6 +2110,20 @@ fn gameLessThan(ctx: SortCtx, a: library.Game, b: library.Game) bool {
             const ub: i64 = b.last_updated_at orelse std.math.minInt(i64);
             if (ua == ub) return a.f95_thread_id < b.f95_thread_id;
             return if (asc) ua < ub else ua > ub;
+        },
+        .last_played_version => blk: {
+            const va = a.last_played_version;
+            const vb = b.last_played_version;
+            // Nulls always sort to the bottom (treated as "never played"),
+            // regardless of asc/desc. Treat null as "greater than everything"
+            // in the natural ascending order so desc reversal also lands
+            // them at the bottom of the visible list.
+            if (va == null and vb == null) break :blk a.f95_thread_id < b.f95_thread_id;
+            if (va == null) break :blk false; // a is null → a is "max", sinks
+            if (vb == null) break :blk true;  // b is null → a beats it
+            const ord = version_mod.compare(va.?, vb.?);
+            if (ord == .eq) break :blk a.f95_thread_id < b.f95_thread_id;
+            break :blk if (asc) ord == .lt else ord == .gt;
         },
     };
 }
