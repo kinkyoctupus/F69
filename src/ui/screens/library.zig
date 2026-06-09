@@ -1293,6 +1293,8 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
         var d = headerDir(state, .last_updated);
         if (dvui.gridHeadingSortable(@src(), grid, 4, "Updated", &d, colResize(state, 4), .{})) applyHeaderSort(state, .last_updated, d);
     }
+    dvui.gridHeading(@src(), grid, 5, "Played", colResize(state, 5), .{});
+    dvui.gridHeading(@src(), grid, 6, "", colResize(state, 6), .{});
 
     var row = first;
     while (row < last and row < filtered.len) : (row += 1) {
@@ -1438,6 +1440,37 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
             const us = reltime.ago(now_s, g.last_updated_at orelse 0, &ub);
             dvui.labelNoFmt(@src(), us, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
             if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Played (relative time of the last launch)
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            var pb: [16]u8 = undefined;
+            const ps = if (g.last_played_at) |lp| reltime.ago(now_s, lp, &pb) else "—";
+            dvui.labelNoFmt(@src(), ps, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            if (dvui.clicked(cell.data(), .{})) goDetail(state, g);
+        }
+        // Action: ▶ play when installed, ⬇ download otherwise (Design-B row button).
+        {
+            defer cell_num.col_num += 1;
+            var cell = grid.bodyCell(@src(), cell_num, .{});
+            defer cell.deinit();
+            const installed = if (frame.install_versions) |m| m.get(g.f95_thread_id) != null else false;
+            if (installed) {
+                if (components.iconOnly(@src(), "play", entypo.controller_play, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                    .gravity_x = 0.5,
+                    .style = .highlight,
+                })) actions.doLaunchGame(frame, g);
+            } else {
+                if (components.iconOnly(@src(), "dl", entypo.download, .{
+                    .id_extra = g.f95_thread_id,
+                    .gravity_y = 0.5,
+                    .gravity_x = 0.5,
+                })) goDetail(state, g);
+            }
         }
     }
 }
