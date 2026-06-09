@@ -59,6 +59,12 @@ pub const startSyncAll = actions.startSyncAll;
 pub const doLogin = actions.doLogin;
 pub const doFolderScan = actions.doFolderScan;
 pub const tickFolderScan = actions.tickFolderScan;
+/// Register the bundled Design-B fonts onto a dvui window (Layer-2 GUI
+/// tests need this before rendering, just like runMainLoop does, else the
+/// theme's font families log "not in dvui database" errors).
+pub fn registerBundledFonts(win: *dvui.Window) void {
+    fonts.registerBundled(win);
+}
 /// Headless test harness — builds the full service graph + a Frame on a
 /// caller-supplied dvui testing window. See src/ui/test_harness.zig.
 pub const Harness = @import("test_harness.zig").Harness;
@@ -406,7 +412,9 @@ fn applyDesignBFonts(t: *dvui.Theme) void {
     t.font_mono = t.font_mono.withFamily(fonts.FAMILY_MONO);
 }
 
-fn guiFrame(frame: *Frame) !bool {
+/// Build one UI frame. `pub` so the Layer-2 headless GUI tests
+/// (src/testkit/) can drive the real render via dvui's testing backend.
+pub fn guiFrame(frame: *Frame) !bool {
     dvui.themeSet(themedForActive());
     // Snapshot caches: install_versions + games_by_thread. Both
     // survive across frames (owned by `lib.alloc`, lifetime managed

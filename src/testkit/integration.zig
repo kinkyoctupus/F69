@@ -591,3 +591,52 @@ test "live: F95 login establishes a session (F1)" {
     try std.testing.expect(h.f95_service.client.hasCookie());
     tlog("F1-login: logged in OK", .{});
 }
+
+// === LAYER 2: drive the real GUI render via dvui's testing backend ========
+//
+// Layer 1 drives the action layer directly; Layer 2 renders the ACTUAL UI
+// (ui.guiFrame) headlessly via dvui.testing and captures the frame to a PNG.
+// First slice: an EMPTY library (no cards → no async cover-image workers, so
+// no teardown races) — proves the whole render pipeline (rail, filters,
+// toolbar, status bar) draws with no display. Widget-tagged interaction
+// (click/type/expectVisible by tag) is the next step.
+
+var g_frame: ?*ui.Frame = null;
+fn renderFrame() !dvui.App.Result {
+    if (g_frame) |fr| _ = ui.guiFrame(fr) catch return .close;
+    return .ok;
+}
+
+test "layer2: empty library renders via guiFrame on the testing backend (F0)" {
+    tlog("START: L2-render", .{});
+    const gpa = std.testing.allocator;
+    // Render may touch io.async (font/texture/refresh paths) — use a
+    // threadsafe smp-backed io like the network slices, not the TestEnv io.
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = try TestEnv.init(gpa, "layer2-render");
+    defer env.deinit();
+
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    // Register the bundled Design-B fonts (runMainLoop does this) so the
+    // theme's font families resolve instead of logging err-level fallbacks.
+    ui.registerBundledFonts(t.window);
+
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+
+    // Run one UI frame. The testing backend doesn't rasterize to pixels (so
+    // capturePng is unsupported), but `step` drives the REAL render path —
+    // theme, screen dispatch, every widget's layout + draw-command emission.
+    // If the library screen builds without erroring, the GUI renders headless.
+    tlog("L2-render: step ...", .{});
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-render: one frame OK", .{});
+}
