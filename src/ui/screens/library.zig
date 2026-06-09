@@ -88,7 +88,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
                 const u = state.f95UserSlice();
                 break :blk if (f95_in and u.len > 0) u else "Account";
             } else "Sign in";
-            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight } else .{};
+            const acct_opts: dvui.Options = if (f95_in or rpdl_in) .{ .style = .highlight, .tag = "acct-button" } else .{ .tag = "acct-button" };
             if (components.iconButton(@src(), acct_label, entypo.user, acct_opts)) {
                 state.login_popup_open = !state.login_popup_open;
             }

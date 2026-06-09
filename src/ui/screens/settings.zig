@@ -119,8 +119,11 @@ fn catGroup(key: u32, label: []const u8) void {
 fn catItem(state: *State, label: []const u8, cat: state_mod.SettingsTab) void {
     const t = tokens.active;
     const on = state.settings_tab == cat;
+    var cat_tag_buf: [40]u8 = undefined;
+    const cat_tag = std.fmt.bufPrint(&cat_tag_buf, "setcat-{s}", .{@tagName(cat)}) catch "setcat";
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = @intFromEnum(cat),
+        .tag = cat_tag,
         .expand = .horizontal,
         .background = on,
         .color_fill = dcol(t.acc_wash),

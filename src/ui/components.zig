@@ -340,7 +340,9 @@ pub fn renderLoginPopup(frame: *Frame) void {
     if (!state.login_popup_open) return;
 
     var win = dvui.floatingWindow(@src(), .{ .open_flag = &state.login_popup_open }, .{
-        .min_size_content = .{ .w = 340, .h = 0 },
+        // Compact card panel (Design-B), not a full-width modal.
+        .min_size_content = .{ .w = 360, .h = 0 },
+        .max_size_content = .{ .w = 380, .h = 900 },
     });
     defer win.deinit();
     _ = dvui.windowHeader("Accounts", "", &state.login_popup_open);
@@ -529,8 +531,94 @@ pub fn renderLaunchDiagPopup(frame: *Frame) void {
 /// F95 login sub-card inside the popup. Self-contained — owns its
 /// own status line + form. Submit triggers `actions.doLogin`; the
 /// auth helper auto-closes the popup on success.
+/// Account-card header (Design-B): circular avatar + service name + a
+/// `domain · descriptor` subtitle + a signed-in/out status pill. Shared by the
+/// F95 + RPDL cards. Called once per card (distinct parent boxes) so the inner
+/// `@src()` ids don't collide.
+fn accountHeader(letter: []const u8, name: []const u8, subtitle: []const u8, signed_in: bool) void {
+    const t = tokens.active;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer row.deinit();
+
+    // avatar circle
+    {
+        var av = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .min_size_content = .{ .w = 32, .h = 32 },
+            .max_size_content = .{ .w = 32, .h = 32 },
+            .background = true,
+            .color_fill = td(if (signed_in) t.acc else t.bg3),
+            .corner_radius = dvui.Rect.all(16),
+            .gravity_y = 0.5,
+        });
+        defer av.deinit();
+        dvui.labelNoFmt(@src(), letter, .{}, .{
+            .gravity_x = 0.5,
+            .gravity_y = 0.5,
+            .style = .highlight,
+            .color_text = td(if (signed_in) t.ink_on_acc else t.ink2),
+        });
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
+
+    // name + subtitle
+    {
+        var info = dvui.box(@src(), .{ .dir = .vertical }, .{ .gravity_y = 0.5 });
+        defer info.deinit();
+        dvui.labelNoFmt(@src(), name, .{}, .{ .style = .highlight, .color_text = td(t.ink) });
+        const body = dvui.Font.theme(.body);
+        dvui.labelNoFmt(@src(), subtitle, .{}, .{
+            .color_text = td(t.ink3),
+            .font = body.withSize(body.size * 0.85),
+        });
+    }
+
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    // status pill (green "signed in" with dot, else grey "signed out")
+    {
+        var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .background = true,
+            .color_fill = td(t.bg2),
+            .color_border = td(if (signed_in) t.ok else t.line),
+            .border = dvui.Rect.all(1),
+            .corner_radius = dvui.Rect.all(11),
+            .padding = .{ .x = 9, .y = 3, .w = 9, .h = 3 },
+            .gravity_y = 0.5,
+        });
+        defer pill.deinit();
+        if (signed_in) {
+            var d = dvui.box(@src(), .{}, .{
+                .background = true,
+                .color_fill = td(t.ok),
+                .corner_radius = dvui.Rect.all(3),
+                .min_size_content = .{ .w = 6, .h = 6 },
+                .gravity_y = 0.5,
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+            });
+            d.deinit();
+        }
+        dvui.labelNoFmt(@src(), if (signed_in) "signed in" else "signed out", .{}, .{
+            .color_text = td(if (signed_in) t.ok else t.ink3),
+            .gravity_y = 0.5,
+        });
+    }
+}
+
+/// Transient status/error line under an account header (signing in… / failed).
+fn accountStatusLine(msg: []const u8, is_err: bool) void {
+    const t = tokens.active;
+    if (msg.len == 0) return;
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    dvui.labelNoFmt(@src(), msg, .{}, .{
+        .color_text = td(if (is_err) t.danger else t.ink3),
+        .expand = .horizontal,
+    });
+}
+
 fn renderF95LoginCard(frame: *Frame) void {
     const state = frame.state;
+    const t = tokens.active;
+    const signed_in = state.login_status == .logged_in;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCB00,
         .expand = .horizontal,
@@ -539,64 +627,58 @@ fn renderF95LoginCard(frame: *Frame) void {
         .corner_radius = style.corner_radius,
         .color_fill = style.cardFill(),
         .color_border = style.borderColor(),
-        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+        .padding = .{ .x = 14, .y = 12, .w = 14, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
     defer card.deinit();
 
-    dvui.label(@src(), "F95Zone", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    accountHeader("F", "F95Zone", "f95zone.to · donor DDL + bookmarks", signed_in);
 
-    // Status line. Cheap repeat of the Settings → Accounts pattern.
-    const status_text = switch (state.login_status) {
-        .unknown => "(checking)",
-        .logged_out => "not signed in",
-        .logged_in => "signed in",
-        .logging_in => "signing in…",
-        .err => "error",
-    };
-    dvui.label(@src(), "status: {s}", .{status_text}, .{});
-    if (!state.login_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.loginMsg(), .{}, .{ .color_text = helpTextColor() });
+    {
+        const msg = if (!state.login_msg.isEmpty()) state.loginMsg() else switch (state.login_status) {
+            .logging_in => "signing in…",
+            .err => "sign-in failed",
+            else => "",
+        };
+        accountStatusLine(msg, state.login_status == .err);
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
 
-    // Signed in → show identity + Sign out instead of the form.
-    if (state.login_status == .logged_in) {
+    // Signed in → username + Sign out on one row.
+    if (signed_in) {
+        var srow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer srow.deinit();
         const u = state.f95UserSlice();
-        if (u.len > 0) {
-            dvui.label(@src(), "Signed in as {s}", .{u}, .{ .color_text = helpTextColor() });
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
-        }
-        if (style.button(@src(), "Sign out of F95Zone", .{}, .{ .style = .err, .expand = .horizontal })) {
+        dvui.labelNoFmt(@src(), if (u.len > 0) u else "(signed in)", .{}, .{
+            .gravity_y = 0.5,
+            .color_text = td(t.ink),
+        });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (style.button(@src(), "Sign out", .{}, .{ .style = .err, .gravity_y = 0.5 })) {
             actions.doLogout(frame);
         }
         return;
     }
 
-    // Form: user / pass / Sign in.
+    // Signed out → inline form (in-field placeholders, no labels).
     {
-        dvui.label(@src(), "username", .{}, .{});
-        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.f95_user_buf } }, .{
-            .expand = .horizontal,
-            .id_extra = 0xCB01,
-        });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.f95_user_buf },
+            .placeholder = "Username",
+        }, .{ .expand = .horizontal, .id_extra = 0xCB01 });
         te.deinit();
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     {
-        dvui.label(@src(), "password", .{}, .{});
         const te = style.textEntry(@src(), .{
             .text = .{ .buffer = &state.f95_pass_buf },
             .password_char = "•",
-        }, .{
-            .expand = .horizontal,
-            .id_extra = 0xCB02,
-        });
+            .placeholder = "Password",
+        }, .{ .expand = .horizontal, .id_extra = 0xCB02 });
         te.deinit();
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    if (style.button(@src(), "Sign in to F95Zone", .{}, .{ .style = .highlight, .expand = .horizontal })) {
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    if (style.button(@src(), "Sign in to F95Zone", .{}, .{ .style = .highlight })) {
         actions.doLogin(frame, state.f95UserSlice(), state.f95PassSlice());
     }
 }
@@ -607,6 +689,8 @@ fn renderF95LoginCard(frame: *Frame) void {
 /// users won't have heard of it.
 fn renderRpdlLoginCard(frame: *Frame) void {
     const state = frame.state;
+    const t = tokens.active;
+    const signed_in = state.rpdl_status == .logged_in;
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = 0xCC00,
         .expand = .horizontal,
@@ -615,66 +699,70 @@ fn renderRpdlLoginCard(frame: *Frame) void {
         .corner_radius = style.corner_radius,
         .color_fill = style.cardFill(),
         .color_border = style.borderColor(),
-        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+        .padding = .{ .x = 14, .y = 12, .w = 14, .h = 12 },
         .margin = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
     });
     defer card.deinit();
 
-    dvui.label(@src(), "RPDL (optional)", .{}, .{ .style = .highlight });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
-    dvui.labelNoFmt(
-        @src(),
-        "Community-run torrent mirror. f69 falls back to RPDL when " ++
-            "an F95 download has no DDL — sign in if you have an account, " ++
-            "or create one at dl.rpdl.net.",
-        .{},
-        .{ .expand = .horizontal, .color_text = helpTextColor() },
-    );
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+    accountHeader("R", "RPDL", "dl.rpdl.net · torrent mirror", signed_in);
 
-    const status_text = switch (state.rpdl_status) {
-        .unknown => "(unknown)",
-        .logged_out => "not signed in",
-        .logged_in => "signed in",
-        .logging_in => "signing in…",
-        .err => "error",
-    };
-    dvui.label(@src(), "status: {s}", .{status_text}, .{});
-    if (!state.rpdl_msg.isEmpty()) {
-        dvui.labelNoFmt(@src(), state.rpdlMsg(), .{}, .{ .color_text = helpTextColor() });
+    if (!signed_in) {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+        dvui.labelNoFmt(
+            @src(),
+            "Optional — community torrent fallback when an F95 download has no DDL.",
+            .{},
+            .{ .expand = .horizontal, .color_text = td(t.ink3) },
+        );
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
 
-    if (state.rpdl_status == .logged_in) {
-        if (style.button(@src(), "Sign out of RPDL", .{}, .{ .style = .err, .expand = .horizontal })) {
+    {
+        const msg = if (!state.rpdl_msg.isEmpty()) state.rpdlMsg() else switch (state.rpdl_status) {
+            .logging_in => "signing in…",
+            .err => "sign-in failed",
+            else => "",
+        };
+        accountStatusLine(msg, state.rpdl_status == .err);
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+
+    if (signed_in) {
+        var srow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer srow.deinit();
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (style.button(@src(), "Sign out", .{}, .{ .style = .err, .gravity_y = 0.5 })) {
             actions.doRpdlLogout(frame);
         }
         return;
     }
 
     {
-        dvui.label(@src(), "username", .{}, .{});
-        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.rpdl_user_buf } }, .{
-            .expand = .horizontal,
-            .id_extra = 0xCC11,
-        });
+        const te = style.textEntry(@src(), .{
+            .text = .{ .buffer = &state.rpdl_user_buf },
+            .placeholder = "Username",
+        }, .{ .expand = .horizontal, .id_extra = 0xCC11 });
         te.deinit();
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
     {
-        dvui.label(@src(), "password", .{}, .{});
         const te = style.textEntry(@src(), .{
             .text = .{ .buffer = &state.rpdl_pass_buf },
             .password_char = "•",
-        }, .{
-            .expand = .horizontal,
-            .id_extra = 0xCC12,
-        });
+            .placeholder = "Password",
+        }, .{ .expand = .horizontal, .id_extra = 0xCC12 });
         te.deinit();
     }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-    if (style.button(@src(), "Sign in to RPDL", .{}, .{ .style = .highlight, .expand = .horizontal })) {
-        actions.doRpdlLogin(frame, state.rpdlUserSlice(), state.rpdlPassSlice());
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    {
+        var brow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer brow.deinit();
+        if (style.button(@src(), "Sign in to RPDL", .{}, .{ .style = .highlight, .gravity_y = 0.5 })) {
+            actions.doRpdlLogin(frame, state.rpdlUserSlice(), state.rpdlPassSlice());
+        }
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (style.button(@src(), "create account ↗", .{}, .{ .gravity_y = 0.5, .color_text = td(t.acc) })) {
+            actions.openExternalUrl(frame, "https://dl.rpdl.net/register");
+        }
     }
 }
 
