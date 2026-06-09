@@ -609,6 +609,7 @@ pub fn build(b: *std.Build) void {
         integration_mod.addImport("compat", compat_mod);
         integration_mod.addImport("f95", f95_mod_);
         integration_mod.addImport("f95_indexer", f95_indexer_mod);
+        integration_mod.addImport("installer", installer_mod);
 
         const integration_tests = b.addTest(.{ .root_module = integration_mod });
         const run_integration = b.addRunArtifact(integration_tests);
