@@ -25,7 +25,6 @@ const sandbox = @import("sandbox");
 const convert = @import("convert");
 const compat = @import("compat");
 const dvui = @import("dvui");
-const SDLBackend = @import("sdl3gpu-backend");
 
 const state_mod = @import("state.zig");
 const types = @import("types.zig");
@@ -67,22 +66,15 @@ pub fn runMainLoop(
     compat_svc: *compat.Service,
     initial_rpdl_token: ?[]const u8,
     info: RuntimeInfo,
+    // The windowing backend is created + owned by the caller. The GUI
+    // entry point (main) builds an SDL3-GPU backend and passes it here;
+    // the headless test harness never calls this loop (it drives the
+    // action layer directly), so the SDL-specific backend methods below
+    // are only ever instantiated against the real SDL backend.
+    backend: anytype,
 ) !void {
     const io = init.io;
     const gpa = init.gpa;
-
-    SDLBackend.enableSDLLogging();
-
-    var backend = try SDLBackend.initWindow(.{
-        .io = io,
-        .allocator = gpa,
-        .size = .{ .w = 1280.0, .h = 800.0 },
-        .min_size = .{ .w = 900.0, .h = 600.0 },
-        .vsync = true,
-        .title = "f69",
-        .icon = null,
-    });
-    defer backend.deinit();
 
     var win = try dvui.Window.init(@src(), gpa, backend.backend(), .{
         .theme = types.consoleTheme(backend.preferredColorScheme() orelse .dark),

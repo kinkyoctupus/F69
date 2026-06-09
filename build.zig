@@ -317,7 +317,10 @@ pub fn build(b: *std.Build) void {
         null;
     if (dvui_dep_opt) |dep| {
         ui_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
-        ui_mod.addImport("sdl3gpu-backend", dep.module("sdl3"));
+        // The SDL3-GPU backend lives only in the exe now — `ui` is
+        // backend-agnostic so it can be rebuilt against dvui's testing
+        // backend for headless integration tests. main owns the window.
+        exe_mod.addImport("sdl3gpu-backend", dep.module("sdl3"));
         exe_mod.addImport("dvui", dep.module("dvui_sdl3gpu"));
     }
 
