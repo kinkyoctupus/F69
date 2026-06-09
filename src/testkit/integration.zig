@@ -771,3 +771,43 @@ test "layer2: clicking a toolbar button navigates screens (F0 interaction)" {
     try std.testing.expectEqual(ui.Screen.universal_mods, h.state.screen);
     tlog("L2-nav: OK", .{});
 }
+
+test "layer2: detail screen renders + tab click switches tab (F0 interaction)" {
+    tlog("START: L2-detail", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-detail");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    // Game with no cover_url → detail page renders without an async fetch.
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 7, .name = "Detail Game", .developer = "Dev", .engine = .renpy });
+    try h.reloadGames();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.selected_thread = 7;
+    h.state.screen = .detail;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    // Default tab is Description (overview); we never left the detail screen.
+    try std.testing.expectEqual(ui.Screen.detail, h.state.screen);
+    try std.testing.expect(h.state.detail_tab == .overview);
+    tlog("L2-detail: rendered, tab={s}", .{@tagName(h.state.detail_tab)});
+
+    // Click the "Journal" tab → detail_tab flips to .journal.
+    try dvui.testing.moveTo("Journal");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-detail: after Journal click tab={s}", .{@tagName(h.state.detail_tab)});
+    try std.testing.expect(h.state.detail_tab == .journal);
+    tlog("L2-detail: OK", .{});
+}
