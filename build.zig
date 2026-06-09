@@ -539,6 +539,83 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("ui_theme_store", ui_theme_store_mod);
     exe_mod.addImport("ui_theme_store", ui_theme_store_mod);
 
+    // ---- Headless integration-test artifact (Layer 1) ----
+    // A second `ui` module graph built against dvui's *testing* backend
+    // (pure CPU — no SDL/Vulkan/window) so f69's action + screen layer
+    // can be driven headlessly + uniformly on any OS. See
+    // docs/test-automation-research.md. Reuses every non-dvui sub-module;
+    // only the dvui-importing modules (ui + ui_comp) get a testing twin.
+    // Wired only when gui is enabled (default). Run: `zig build test-integration`.
+    if (dvui_dep_opt != null) {
+        const dvui_testing_dep = b.dependency("dvui", .{
+            .target = target,
+            .optimize = optimize,
+            .backend = @as([]const u8, "testing"),
+        });
+        const dvui_testing = dvui_testing_dep.module("dvui_testing");
+        const dvui_testing_backend = dvui_testing_dep.module("testing");
+
+        const ui_comp_test_mod = mod(b, "ui_comp_testing", "src/ui/comp.zig", target, optimize);
+        ui_comp_test_mod.addImport("ui_tokens", ui_tokens_mod);
+        ui_comp_test_mod.addImport("dvui", dvui_testing);
+
+        // Same source as ui_mod, wired identically EXCEPT dvui→testing and
+        // ui_comp→testing. Source of truth for this list is the
+        // ui_mod.addImport(...) sites above; a miss here is a loud compile
+        // error, so they can't silently drift.
+        const ui_test_mod = mod(b, "ui_testing", "src/ui/ui.zig", target, optimize);
+        ui_test_mod.addImport("library", library_mod);
+        ui_test_mod.addImport("recipe", recipe_mod);
+        ui_test_mod.addImport("resolver", resolver_mod);
+        ui_test_mod.addImport("f95", f95_mod_);
+        ui_test_mod.addImport("f95_indexer", f95_indexer_mod);
+        ui_test_mod.addImport("downloads", downloads_mod);
+        ui_test_mod.addImport("sandbox", sandbox_mod);
+        ui_test_mod.addImport("convert", convert_mod);
+        ui_test_mod.addImport("compat", compat_mod);
+        ui_test_mod.addImport("installer", installer_mod);
+        ui_test_mod.addImport("importers", importers_mod);
+        ui_test_mod.addImport("image", image_mod);
+        ui_test_mod.addImport("util_version", util_version_mod);
+        ui_test_mod.addImport("util_file_picker", file_picker_mod);
+        ui_test_mod.addImport("util_atomic_io", util_atomic_io_mod);
+        ui_test_mod.addImport("build_options", build_opts_mod);
+        ui_test_mod.addImport("util_notify", util_notify_mod);
+        ui_test_mod.addImport("util_rpgm_crypt", util_rpgm_crypt_mod);
+        ui_test_mod.addImport("util_rpa", util_rpa_mod);
+        ui_test_mod.addImport("ui_tokens", ui_tokens_mod);
+        ui_test_mod.addImport("util_argv", util_argv_mod);
+        ui_test_mod.addImport("util_reltime", util_reltime_mod);
+        ui_test_mod.addImport("ui_engine_palette", ui_engine_palette_mod);
+        ui_test_mod.addImport("ui_theme_store", ui_theme_store_mod);
+        ui_test_mod.addImport("dvui", dvui_testing);
+        ui_test_mod.addImport("ui_comp", ui_comp_test_mod);
+
+        const integration_mod = b.createModule(.{
+            .root_source_file = b.path("src/testkit/integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        integration_mod.addImport("ui", ui_test_mod);
+        integration_mod.addImport("dvui", dvui_testing);
+        integration_mod.addImport("dvui_testing_backend", dvui_testing_backend);
+        integration_mod.addImport("util_test_env", util_test_env_mod);
+        integration_mod.addImport("util_setting", util_setting_mod);
+        integration_mod.addImport("library", library_mod);
+        integration_mod.addImport("downloads", downloads_mod);
+        integration_mod.addImport("recipe", recipe_mod);
+        integration_mod.addImport("sandbox", sandbox_mod);
+        integration_mod.addImport("convert", convert_mod);
+        integration_mod.addImport("compat", compat_mod);
+        integration_mod.addImport("f95", f95_mod_);
+        integration_mod.addImport("f95_indexer", f95_indexer_mod);
+
+        const integration_tests = b.addTest(.{ .root_module = integration_mod });
+        const run_integration = b.addRunArtifact(integration_tests);
+        const integration_step = b.step("test-integration", "Headless action-layer integration tests (dvui testing backend)");
+        integration_step.dependOn(&run_integration.step);
+    }
+
     const test_targets = [_]*std.Build.Module{
         exe_mod,           ui_tokens_mod,     ui_sortx_mod,     ui_columns_mod,  util_argv_mod,
         util_reltime_mod,  ui_comp_mod,       ui_theme_store_mod,  util_ratelimit_mod,

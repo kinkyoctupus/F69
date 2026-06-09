@@ -49,6 +49,11 @@ pub const MAX_PARALLEL_SYNC = state_mod.MAX_PARALLEL_SYNC;
 pub const MAX_PARALLEL_IMAGE = state_mod.MAX_PARALLEL_IMAGE;
 pub const DEFAULT_PARALLEL = state_mod.DEFAULT_PARALLEL;
 pub const setImageCpuLimit = actions.setImageCpuLimit;
+// Re-exports for the headless integration harness (src/testkit/). These
+// let the Layer-1 test driver reach the action layer + Frame deps
+// without the harness having to know ui-internal module layout. See
+// docs/test-automation-research.md.
+pub const persistUiScaleIfDirty = actions.persistUiScaleIfDirty;
 pub const Frame = types.Frame;
 pub const RuntimeInfo = types.RuntimeInfo;
 pub const Browser = types.Browser;
