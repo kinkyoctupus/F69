@@ -590,7 +590,7 @@ fn sidebar(frame: *Frame) void {
         dvui.label(@src(), "Sync:", .{}, .{ .gravity_y = 0.5, .min_size_content = .{ .w = 80, .h = 1 } });
         const sync_labels = &[_][]const u8{ "All", "Synced", "Unsynced" };
         var picked: usize = @intFromEnum(state.filters.sync_state);
-        if (style.dropdown(@src(), sync_labels, .{ .choice = &picked }, .{}, .{})) {
+        if (style.dropdown(@src(), sync_labels, .{ .choice = &picked }, .{}, .{ .tag = "filter-sync" })) {
             state.filters.sync_state = @enumFromInt(picked);
         }
     }
