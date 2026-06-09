@@ -21,6 +21,7 @@ const library = @import("library");
 const recipe = @import("recipe");
 const f95_indexer = @import("f95_indexer");
 const installer = @import("installer");
+const convert = @import("convert");
 const net = std.Io.net;
 const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
@@ -519,4 +520,74 @@ test "headless: install a mod archive extracts + applies + tracks (F6)" {
     // The tracker recorded the writes (so uninstall can reverse them).
     try std.testing.expect(tracker.entries.items.len >= 1);
     tlog("F6: body done (entering teardown: tracker.deinit, env.deinit)", .{});
+}
+
+// --- F8: convert — engine detection + .none no-op (deterministic) ---------
+//
+// The real renpy/rpgm convert paths spawn subprocesses (steam-run / ldd /
+// nwjs) which would hit the same SIGCHLD-corruption hang as a shelled-out
+// command in this multi-io test binary — so this slice covers only the
+// subprocess-free paths: engine detection from an install fingerprint, and
+// the `.none` spec being a clean no-op through the harness's convert service.
+
+test "headless: convert detects Ren'Py + .none is a no-op (F8)" {
+    tlog("START: F8-convert", .{});
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "convert-detect");
+    defer env.deinit();
+
+    var tw: TestWindow = undefined;
+    try tw.init(gpa, env.io);
+    defer tw.deinit();
+    var h = try ui.Harness.init(gpa, env.io, &tw.window, env.root);
+    defer h.deinit();
+
+    // Ren'Py fingerprint: convert.detectEngine requires BOTH renpy/ and game/.
+    try env.writeFile("install/renpy/bootstrap.py", "");
+    try env.writeFile("install/game/script.rpy", "");
+    const install_dir = try env.path("install");
+    defer gpa.free(install_dir);
+
+    try std.testing.expectEqual(convert.Engine.renpy, convert.detectEngine(env.io, install_dir));
+
+    // .none must return cleanly (no SDK, no subprocess, no mutation).
+    try h.convert_svc.convert(install_dir, .none, false);
+    tlog("F8-convert: done", .{});
+}
+
+// --- F1: F95 login (opt-in --live) ----------------------------------------
+//
+// Real network test, gated on creds via libc getenv (the testing backend
+// links libc). Skips cleanly when F69_TEST_F95_USER/PASS are unset (CI
+// default), so it never flakes a normal run. Login is synchronous HTTP (no
+// subprocess); the async donor probe it kicks off is drained before teardown.
+
+test "live: F95 login establishes a session (F1)" {
+    tlog("START: F1-login", .{});
+    const user_c = std.c.getenv("F69_TEST_F95_USER") orelse return error.SkipZigTest;
+    const pass_c = std.c.getenv("F69_TEST_F95_PASS") orelse return error.SkipZigTest;
+    const user = std.mem.span(user_c);
+    const pass = std.mem.span(pass_c);
+    if (user.len == 0 or pass.len == 0) return error.SkipZigTest;
+
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = try TestEnv.init(gpa, "live-login");
+    defer env.deinit();
+    var tw: TestWindow = undefined;
+    try tw.init(gpa, io);
+    defer tw.deinit();
+    var h = try ui.Harness.init(gpa, io, &tw.window, env.root);
+    defer h.deinit();
+
+    var f = h.frame();
+    ui.doLogin(&f, user, pass);
+    h.drainWorkers(300); // let the donor-status probe finish
+
+    try std.testing.expect(h.state.login_status == .logged_in);
+    try std.testing.expect(h.f95_service.client.hasCookie());
+    tlog("F1-login: logged in OK", .{});
 }

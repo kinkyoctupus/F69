@@ -56,6 +56,7 @@ pub const setImageCpuLimit = actions.setImageCpuLimit;
 pub const persistUiScaleIfDirty = actions.persistUiScaleIfDirty;
 pub const Filters = state_mod.Filters;
 pub const startSyncAll = actions.startSyncAll;
+pub const doLogin = actions.doLogin;
 pub const doFolderScan = actions.doFolderScan;
 pub const tickFolderScan = actions.tickFolderScan;
 /// Headless test harness — builds the full service graph + a Frame on a
