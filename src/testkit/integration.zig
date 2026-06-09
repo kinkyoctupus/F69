@@ -20,6 +20,7 @@ const dvui = @import("dvui");
 const library = @import("library");
 const recipe = @import("recipe");
 const f95_indexer = @import("f95_indexer");
+const installer = @import("installer");
 const net = std.Io.net;
 const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
@@ -30,29 +31,53 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+// --- hang-trace logging --------------------------------------------------
+// The `zig build` test runner CAPTURES each test's stderr and only shows it
+// after the test finishes — so std.debug.print is invisible while a test runs
+// or hangs. So we also append to a file via libc (the testing backend links
+// libc), opened+closed per call so every line is flushed to disk and survives
+// a hang. Watch it live:
+//   rm -f /tmp/f69-int.log ; tail -F /tmp/f69-int.log
+// The last "START" with no matching "END"/"done" is exactly where it parked.
+fn tlog(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "[int] " ++ fmt ++ "\n", args) catch return;
+    std.debug.print("{s}", .{line}); // shown when running the test binary directly
+    const f = std.c.fopen("/tmp/f69-int.log", "a") orelse return;
+    defer _ = std.c.fclose(f);
+    _ = std.c.fwrite(line.ptr, 1, line.len, f);
+}
+
 /// A localhost HTTP fixture server for the F95Checker cache API. Serves
 /// canned `/fast` + `/full/{id}` responses so the indexer client can be
-/// tested deterministically (the indexer's base_url is injectable). Handles
-/// exactly `expected_requests` connections then the worker thread exits on
-/// its own — no shutdown race. The server struct is heap-stable (the worker
-/// borrows it by pointer).
+/// tested deterministically (the indexer's base_url is injectable).
+///
+/// HANG-PROOF SHUTDOWN: the worker serves an unbounded number of requests
+/// (so a caller making more/fewer requests than expected can't desync it).
+/// On `deinit` it sets `stop`, then makes a throwaway connection to its own
+/// port to WAKE the parked `accept()` — on Linux that's the only portable
+/// way to unblock a blocking accept (closing the listener doesn't). The
+/// woken worker sees `stop` and exits; `deinit` then joins it and closes the
+/// listener. Crucially this leaves the io with NO outstanding accept, so the
+/// caller's `threaded.deinit()` (which waits on outstanding io ops) can't
+/// hang — that wait-on-a-parked-accept was the real cause of the stuck runs.
 const FixtureServer = struct {
     const FAST_JSON = "{\"12345\": 1700000000}";
     const FULL_JSON = "{\"name\": \"Eva's Ecstasy\", \"version\": \"1.3\", \"developer\": \"GilgaGames\"}";
 
-    gpa: std.mem.Allocator,
     io: std.Io,
     server: net.Server,
     port: u16,
     thread: std.Thread,
+    stop: std.atomic.Value(bool),
 
-    fn start(gpa: std.mem.Allocator, io: std.Io, expected_requests: usize) !*FixtureServer {
-        const self = try gpa.create(FixtureServer);
-        errdefer gpa.destroy(self);
-        self.gpa = gpa;
+    fn start(io: std.Io) !*FixtureServer {
+        const self = try std.heap.page_allocator.create(FixtureServer);
+        errdefer std.heap.page_allocator.destroy(self);
         self.io = io;
+        self.stop = std.atomic.Value(bool).init(false);
 
-        // Bind a fixed loopback port, retrying on collision.
+        // Bind a loopback port, retrying on collision.
         var port: u16 = 41700;
         self.server = while (port < 41760) : (port += 1) {
             const addr = net.IpAddress.parseIp4("127.0.0.1", port) catch continue;
@@ -60,14 +85,19 @@ const FixtureServer = struct {
         } else return error.NoFreePort;
         self.port = port;
 
-        self.thread = try std.Thread.spawn(.{}, serve, .{ self, expected_requests });
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
         return self;
     }
 
-    fn serve(self: *FixtureServer, expected_requests: usize) void {
-        var i: usize = 0;
-        while (i < expected_requests) : (i += 1) {
+    fn serve(self: *FixtureServer) void {
+        while (true) {
             var stream = self.server.accept(self.io) catch break;
+            // A shutdown wake-connection (or a real one arriving after stop):
+            // close without reading and exit.
+            if (self.stop.load(.acquire)) {
+                stream.close(self.io);
+                break;
+            }
             defer stream.close(self.io);
             var rbuf: [8192]u8 = undefined;
             var wbuf: [8192]u8 = undefined;
@@ -83,9 +113,17 @@ const FixtureServer = struct {
     }
 
     fn deinit(self: *FixtureServer) void {
+        self.stop.store(true, .release);
+        // Wake the parked accept() with a throwaway self-connection.
+        if (net.IpAddress.parseIp4("127.0.0.1", self.port)) |addr| {
+            if (addr.connect(self.io, .{ .mode = .stream })) |s| {
+                var st = s;
+                st.close(self.io);
+            } else |_| {}
+        } else |_| {}
         self.thread.join();
         self.server.deinit(self.io);
-        self.gpa.destroy(self);
+        std.heap.page_allocator.destroy(self);
     }
 };
 
@@ -126,6 +164,7 @@ const TestWindow = struct {
 // the action layer driven directly.
 
 test "headless: ui_scale persists through the action layer and reloads" {
+    tlog("START: uiscale-persist", .{});
     const ta = std.testing.allocator;
     var env = try TestEnv.init(ta, "headless-uiscale");
     defer env.deinit();
@@ -148,6 +187,7 @@ test "headless: ui_scale persists through the action layer and reloads" {
 }
 
 test "headless: ui_scale not rewritten when unchanged (no dirty)" {
+    tlog("START: uiscale-clean", .{});
     const ta = std.testing.allocator;
     var env = try TestEnv.init(ta, "headless-uiscale-clean");
     defer env.deinit();
@@ -178,6 +218,7 @@ test "headless: ui_scale not rewritten when unchanged (no dirty)" {
 // → drive action → drain → assert on real state.
 
 test "headless: folder scan detects a Ren'Py game (F4.2)" {
+    tlog("START: F4.2-folderscan", .{});
     const gpa = std.testing.allocator;
     var env = try TestEnv.init(gpa, "headless-folderscan");
     defer env.deinit();
@@ -218,6 +259,7 @@ test "headless: folder scan detects a Ren'Py game (F4.2)" {
 // need a Frame; DB/logic round-trips use the service directly.
 
 test "headless: engine filter selects matching games after a DB round-trip (F3)" {
+    tlog("START: F3-filter", .{});
     const gpa = std.testing.allocator;
     var env = try TestEnv.init(gpa, "headless-filter");
     defer env.deinit();
@@ -252,6 +294,7 @@ test "headless: engine filter selects matching games after a DB round-trip (F3)"
 // recipe subsystem through the same Repo the Download/Install actions use.
 
 test "headless: game recipe saves to disk and reloads by thread (F7)" {
+    tlog("START: F7-recipe", .{});
     const gpa = std.testing.allocator;
     var env = try TestEnv.init(gpa, "headless-recipe");
     defer env.deinit();
@@ -287,6 +330,8 @@ test "headless: game recipe saves to disk and reloads by thread (F7)" {
 // Two requests: /fast then /full. No real internet, fully deterministic.
 
 test "headless: indexer client fetches + parses against a fixture server (F2)" {
+    tlog("START F2-client", .{});
+    defer tlog("END   F2-client (all defers ran)", .{});
     const gpa = std.testing.allocator;
     // The Threaded io's gpa backs io.async (the HTTP client's concurrent
     // connect) and is touched from multiple threads, so it MUST be
@@ -294,11 +339,19 @@ test "headless: indexer client fetches + parses against a fixture server (F2)" {
     // io; the test's own allocations still go through testing.allocator so
     // leaks are caught.
     var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
-    defer threaded.deinit();
+    defer {
+        tlog("F2-client: threaded.deinit() ...", .{});
+        threaded.deinit();
+        tlog("F2-client: threaded.deinit() done", .{});
+    }
     const io = threaded.io();
 
-    var fx = try FixtureServer.start(gpa, io, 2);
-    defer fx.deinit();
+    var fx = try FixtureServer.start(io);
+    defer {
+        tlog("F2-client: fx.deinit() ...", .{});
+        fx.deinit();
+        tlog("F2-client: fx.deinit() done", .{});
+    }
 
     var url_buf: [64]u8 = undefined;
     const base = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}", .{fx.port});
@@ -329,23 +382,39 @@ test "headless: indexer client fetches + parses against a fixture server (F2)" {
 // together harness + fixture + worker-drain + DB.
 
 test "headless: sync action populates a game from the indexer fixture (F2 e2e)" {
+    tlog("START F2-e2e", .{});
+    defer tlog("END   F2-e2e (all defers ran)", .{});
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
-    defer threaded.deinit();
+    defer {
+        tlog("F2-e2e: threaded.deinit() ...", .{});
+        threaded.deinit();
+        tlog("F2-e2e: threaded.deinit() done", .{});
+    }
     const io = threaded.io();
 
     var env = try TestEnv.init(gpa, "sync-action");
     defer env.deinit();
 
-    var fx = try FixtureServer.start(gpa, io, 2); // /fast + /full
-    defer fx.deinit();
+    tlog("F2-e2e: fixture start", .{});
+    var fx = try FixtureServer.start(io);
+    defer {
+        tlog("F2-e2e: fx.deinit() ...", .{});
+        fx.deinit();
+        tlog("F2-e2e: fx.deinit() done", .{});
+    }
 
     var tw: TestWindow = undefined;
     try tw.init(gpa, io);
     defer tw.deinit();
 
+    tlog("F2-e2e: harness init", .{});
     var h = try ui.Harness.init(gpa, io, &tw.window, env.root);
-    defer h.deinit();
+    defer {
+        tlog("F2-e2e: harness.deinit() ...", .{});
+        h.deinit();
+        tlog("F2-e2e: harness.deinit() done", .{});
+    }
 
     // Point the harness's indexer at the fixture; ensure indexer backend.
     var url_buf: [64]u8 = undefined;
@@ -356,9 +425,12 @@ test "headless: sync action populates a game from the indexer fixture (F2 e2e)" 
     _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 12345, .name = "(unsynced)" });
     try h.reloadGames();
 
+    tlog("F2-e2e: startSyncAll", .{});
     var f = h.frame();
     ui.startSyncAll(&f);
+    tlog("F2-e2e: drainWorkers ...", .{});
     h.drainWorkers(500);
+    tlog("F2-e2e: drainWorkers done", .{});
 
     // The DB row should now carry the scraped name.
     try h.reloadGames();
@@ -367,4 +439,84 @@ test "headless: sync action populates a game from the indexer fixture (F2 e2e)" 
         break :blk null;
     } orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("Eva's Ecstasy", g.name);
+    tlog("F2-e2e: body asserts passed (entering teardown)", .{});
+}
+
+// --- F12: DB migrations apply on a fresh open + survive a reopen ----------
+//
+// Resilience slice: a fresh DB applies every migration; data written then
+// persists across a close/reopen (the migration head is idempotent — reopen
+// must not re-run or corrupt). Mirrors what every restart does.
+
+test "headless: fresh DB migrates + data survives a reopen (F12)" {
+    tlog("START: F12-dbmigrate", .{});
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "db-migrate");
+    defer env.deinit();
+    const db_path = try env.path("f69.db");
+    defer gpa.free(db_path);
+
+    // Fresh open runs all migrations; write a row.
+    {
+        var lib = try library.Library.open(gpa, db_path);
+        defer lib.close();
+        _ = try lib.insertIfMissing(&.{ .f95_thread_id = 7, .name = "Persisted", .engine = .renpy });
+    }
+
+    // Reopen (idempotent migration head) — the row must still be there.
+    {
+        var lib = try library.Library.open(gpa, db_path);
+        defer lib.close();
+        const games = try lib.listGames();
+        defer lib.freeGames(games);
+        try std.testing.expectEqual(@as(usize, 1), games.len);
+        try std.testing.expectEqualStrings("Persisted", games[0].name);
+    }
+}
+
+// --- F6: install a mod archive — real extract + apply + tracker -----------
+//
+// Drives the production install path: a real .tar.gz (game/mod.rpy) is
+// extracted, applied into a fresh install dir, and recorded in the tracker.
+// Asserts the modded file landed and the tracker logged the writes.
+//
+// The archive is an EMBEDDED fixture (@embedFile), NOT built by shelling out
+// to `tar` — earlier tests create+destroy std.Io.Threaded ios, which
+// install/restore SIGCHLD handlers, so spawning a child here deadlocks in
+// child-wait. Embedding sidesteps the subprocess entirely (and drops the
+// `tar`-must-exist dependency).
+
+test "headless: install a mod archive extracts + applies + tracks (F6)" {
+    tlog("START: F6-install", .{});
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "install-mod");
+    defer env.deinit();
+
+    try env.writeFile("mod.tar.gz", @embedFile("fixtures/mod-fixture.tar.gz"));
+    const archive = try env.path("mod.tar.gz");
+    defer gpa.free(archive);
+
+    try env.mkdirP("install");
+    const install_dir = try env.path("install");
+    defer gpa.free(install_dir);
+    const log_path = try env.path("install/.f69-mods.json");
+    defer gpa.free(log_path);
+
+    var tracker = installer.Tracker.init(gpa, env.io, log_path);
+    defer tracker.deinit();
+
+    tlog("F6: applyModArchive ...", .{});
+    try installer.applyModArchive(gpa, env.io, "modid01", archive, install_dir, &tracker, .{});
+    tlog("F6: applyModArchive done", .{});
+
+    // The modded file landed in the install dir.
+    const landed = try env.path("install/game/mod.rpy");
+    defer gpa.free(landed);
+    const got = try std.Io.Dir.cwd().readFileAlloc(env.io, landed, gpa, .limited(1024));
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "label injected") != null);
+
+    // The tracker recorded the writes (so uninstall can reverse them).
+    try std.testing.expect(tracker.entries.items.len >= 1);
+    tlog("F6: body done (entering teardown: tracker.deinit, env.deinit)", .{});
 }
