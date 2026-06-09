@@ -18,6 +18,7 @@ const std = @import("std");
 const ui = @import("ui");
 const dvui = @import("dvui");
 const library = @import("library");
+const recipe = @import("recipe");
 const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
 const util_setting = @import("util_setting");
@@ -181,4 +182,38 @@ test "headless: engine filter selects matching games after a DB round-trip (F3)"
         if (filters.match(g)) matched += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), matched);
+}
+
+// --- F7: recipe save + reload round-trip ---------------------------------
+//
+// Drives the harness's recipe repo (the real ZON serialize → disk → parse
+// path) and asserts a saved game recipe reloads by thread id. Exercises the
+// recipe subsystem through the same Repo the Download/Install actions use.
+
+test "headless: game recipe saves to disk and reloads by thread (F7)" {
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "headless-recipe");
+    defer env.deinit();
+
+    var tw: TestWindow = undefined;
+    try tw.init(gpa, env.io);
+    defer tw.deinit();
+
+    var h = try ui.Harness.init(gpa, env.io, &tw.window, env.root);
+    defer h.deinit();
+
+    const rec = recipe.GameRecipe{
+        .id = "test-game-1",
+        .name = "Test Game",
+        .f95_thread = 12345,
+        .version = "1.0",
+        .engine = .renpy,
+    };
+    try h.recipe_repo.saveGame(&rec);
+
+    var found = (try h.recipe_repo.findGameByThread(12345)) orelse return error.TestUnexpectedResult;
+    defer found.deinit();
+    try std.testing.expectEqualStrings("Test Game", found.recipe.name);
+    try std.testing.expectEqual(@as(u64, 12345), found.recipe.f95_thread);
+    try std.testing.expectEqualStrings("1.0", found.recipe.version);
 }
