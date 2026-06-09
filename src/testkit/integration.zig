@@ -959,3 +959,43 @@ test "layer2: engine filter expander reveals its children on click (F3 condition
     try dvui.testing.expectVisible("flt-renpy");
     tlog("L2-expander: expanded, flt-renpy visible — OK", .{});
 }
+
+test "layer2: sync dropdown opens + keyboard-selects an entry (F3 interaction)" {
+    tlog("START: L2-dropdown", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-dropdown");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(h.state.filters.sync_state == .all); // default
+    tlog("L2-dropdown: rendered, sync_state={s}", .{@tagName(h.state.filters.sync_state)});
+
+    // Open the dropdown, move down to the next entry, confirm with Enter.
+    try dvui.testing.moveTo("filter-sync");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame); // menu drops
+    _ = try dvui.testing.step(renderFrame);
+    try dvui.testing.pressKey(.down, .none);
+    _ = try dvui.testing.step(renderFrame);
+    try dvui.testing.pressKey(.enter, .none);
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-dropdown: after select sync_state={s}", .{@tagName(h.state.filters.sync_state)});
+    // Moved off the default → some non-.all entry is now selected.
+    try std.testing.expect(h.state.filters.sync_state != .all);
+    tlog("L2-dropdown: OK", .{});
+}
