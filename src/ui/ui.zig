@@ -385,12 +385,47 @@ pub fn runMainLoop(
         if (!try guiFrame(&frame)) break :main_loop;
 
         const end_micros = try win.end(.{});
+        dumpTags(&win);
         try backend.setCursor(win.cursorRequested());
         try backend.textInputRect(win.textInputRequested());
         try backend.renderPresent();
 
         const wait_event_micros = win.waitTime(end_micros);
         interrupted = try backend.waitEventTimeout(wait_event_micros);
+    }
+}
+
+// --- live widget-tag dump (F69_TAG_DUMP=<path>) ----------------------------
+// When the env var is set, write every tagged widget's physical-pixel rect to
+// the file each frame: "name<TAB>x<TAB>y<TAB>w<TAB>h<TAB>visible". An external
+// GUI driver (VM screenshot + dotool) resolves a widget by tag name to an exact
+// screen coordinate instead of eyeballing a screenshot. Off (one getenv) unless
+// the var is present, so zero cost in normal runs. Uses libc (the app links it).
+var g_tag_dump_checked: bool = false;
+var g_tag_dump_path: ?[*:0]const u8 = null;
+
+fn dumpTags(win: *dvui.Window) void {
+    if (!g_tag_dump_checked) {
+        g_tag_dump_checked = true;
+        g_tag_dump_path = std.c.getenv("F69_TAG_DUMP");
+    }
+    const path = g_tag_dump_path orelse return;
+    const f = std.c.fopen(path, "w") orelse return;
+    defer _ = std.c.fclose(f);
+    {
+        // Framebuffer size first, so the driver can map physical rects → screen.
+        const wp = win.rect_pixels;
+        var hbuf: [128]u8 = undefined;
+        const hline = std.fmt.bufPrint(&hbuf, "__window\t{d:.1}\t{d:.1}\t{d:.1}\t{d:.1}\t1\n", .{ wp.x, wp.y, wp.w, wp.h }) catch return;
+        _ = std.c.fwrite(hline.ptr, 1, hline.len, f);
+    }
+    var it = win.tags.iterator();
+    while (it.next()) |e| {
+        const td = e.value_ptr.*;
+        const r = td.rect;
+        var buf: [320]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "{s}\t{d:.1}\t{d:.1}\t{d:.1}\t{d:.1}\t{d}\n", .{ e.key_ptr.*, r.x, r.y, r.w, r.h, @intFromBool(td.visible) }) catch continue;
+        _ = std.c.fwrite(line.ptr, 1, line.len, f);
     }
 }
 

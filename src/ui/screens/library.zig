@@ -185,9 +185,9 @@ pub fn libraryScreen(frame: *Frame) !bool {
             .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
         else
             .{ .id_extra = 3, .gravity_y = 0.5 };
-        if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts)) state.view = .grid;
-        if (components.iconOnly(@src(), "list", entypo.list, list_opts)) state.view = .list;
-        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts)) state.view = .kanban;
+        if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts.override(.{ .tag = "view-grid" }))) state.view = .grid;
+        if (components.iconOnly(@src(), "list", entypo.list, list_opts.override(.{ .tag = "view-list" }))) state.view = .list;
+        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts.override(.{ .tag = "view-kanban" }))) state.view = .kanban;
     }
 
     const query = state.searchSlice();
@@ -1713,8 +1713,12 @@ fn cardVisible(
 
 fn renderCard(frame: *Frame, g: *const library.Game, layout: GridLayout) void {
     const state = frame.state;
+    // Per-game tag ("card-<thread_id>") for the live GUI driver (ui.zig dumpTags).
+    var card_tag_buf: [32]u8 = undefined;
+    const card_tag = std.fmt.bufPrint(&card_tag_buf, "card-{d}", .{g.f95_thread_id}) catch "card";
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = g.f95_thread_id,
+        .tag = card_tag,
         .background = true,
         .border = style.border_thin,
         .corner_radius = .all(6),

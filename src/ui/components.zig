@@ -191,6 +191,7 @@ pub fn iconOnly(
     return dvui.buttonIcon(src, name, tvg, .{}, ICON_OPTS, .{
         .min_size_content = ICON_SIZE,
         .id_extra = opts.id_extra orelse 0,
+        .tag = opts.tag, // forward so the live GUI driver can address toolbar/rail icons
         .style = opts.style,
         .gravity_x = opts.gravity_x,
         .gravity_y = opts.gravity_y,
@@ -1010,8 +1011,13 @@ pub fn renderIconRail(frame: *Frame) void {
 fn railItem(state: *state_mod.State, key: u32, name: []const u8, icon: []const u8, screen: state_mod.Screen) void {
     const t = tokens.active;
     const on = state.screen == screen;
+    // Stable per-screen tag ("rail-library", …) so the live GUI driver can
+    // address each rail nav target by name (see ui.zig dumpTags).
+    var tag_buf: [40]u8 = undefined;
+    const tag_str = std.fmt.bufPrint(&tag_buf, "rail-{s}", .{@tagName(screen)}) catch "rail";
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = key,
+        .tag = tag_str,
         .min_size_content = .{ .w = 38, .h = 38 },
         .gravity_x = 0.5,
         .background = on,

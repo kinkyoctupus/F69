@@ -63,7 +63,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer top.deinit();
 
-        if (components.iconOnly(@src(), "back", entypo.chevron_left, .{})) {
+        if (components.iconOnly(@src(), "back", entypo.chevron_left, .{ .tag = "detail-back" })) {
             state.screen = .library;
             state.selected_thread = null;
             state.clearTransientToasts();
