@@ -368,23 +368,9 @@ pub fn humanRate(buf: []u8, bytes_per_sec: u64) []const u8 {
 /// form.
 pub fn renderLoginPopup(frame: *Frame) void {
     const state = frame.state;
-    if (!state.login_popup_open) {
-        state.login_popup_positioned = false;
-        return;
-    }
+    if (!state.login_popup_open) return;
 
-    // Design-B: anchor the panel top-right (under the account button) on first
-    // open; dvui owns the rect after that (the user can drag it).
-    if (!state.login_popup_positioned) {
-        const wr = dvui.windowRect();
-        state.login_popup_rect = .{ .x = @max(@as(f32, 8), wr.w - 392), .y = 46, .w = 372, .h = 0 };
-        state.login_popup_positioned = true;
-    }
-
-    var win = dvui.floatingWindow(@src(), .{
-        .open_flag = &state.login_popup_open,
-        .rect = &state.login_popup_rect,
-    }, .{
+    var win = dvui.floatingWindow(@src(), .{ .open_flag = &state.login_popup_open }, .{
         // Compact card panel (Design-B), not a full-width modal.
         .min_size_content = .{ .w = 360, .h = 0 },
         .max_size_content = .{ .w = 380, .h = 900 },

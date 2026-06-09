@@ -1214,10 +1214,6 @@ pub const State = struct {
     /// prevents re-opening within the same session.
     login_popup_open: bool = false,
     login_popup_skipped: bool = false,
-    /// Accounts popup position (Design-B anchors it top-right under the account
-    /// button); seeded once per open, then dvui owns it (draggable).
-    login_popup_rect: dvui.Rect = .{},
-    login_popup_positioned: bool = false,
     /// In-flight bookmarks pull (worker thread). `actions/bookmarks.zig`
     /// defines the actual job struct.
     pending_bookmarks: ?*owned.BookmarksJob = null,
