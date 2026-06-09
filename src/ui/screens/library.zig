@@ -159,6 +159,7 @@ pub fn libraryScreen(frame: *Frame) !bool {
         const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.search_buf } }, .{
             .expand = .horizontal,
             .gravity_y = 0.5,
+            .tag = "lib-search", // headless Layer-2 tests focus + type here
         });
         te.deinit();
 
