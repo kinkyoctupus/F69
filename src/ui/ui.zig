@@ -54,6 +54,11 @@ pub const setImageCpuLimit = actions.setImageCpuLimit;
 // without the harness having to know ui-internal module layout. See
 // docs/test-automation-research.md.
 pub const persistUiScaleIfDirty = actions.persistUiScaleIfDirty;
+pub const doFolderScan = actions.doFolderScan;
+pub const tickFolderScan = actions.tickFolderScan;
+/// Headless test harness — builds the full service graph + a Frame on a
+/// caller-supplied dvui testing window. See src/ui/test_harness.zig.
+pub const Harness = @import("test_harness.zig").Harness;
 pub const Frame = types.Frame;
 pub const RuntimeInfo = types.RuntimeInfo;
 pub const Browser = types.Browser;

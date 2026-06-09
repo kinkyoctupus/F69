@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const dvui = @import("dvui");
+const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
 const util_setting = @import("util_setting");
 
@@ -23,6 +25,34 @@ const util_setting = @import("util_setting");
 test {
     std.testing.refAllDecls(@This());
 }
+
+/// A dvui window on the testing backend (pure CPU — no display). The
+/// backend value must outlive the window (the window's render vtable
+/// points back at it), so both are returned by-pointer-stable locals in
+/// the caller and torn down window-first.
+const TestWindow = struct {
+    backend: TestBackend,
+    window: dvui.Window,
+
+    // Fills `self` in place — the backend must sit at a stable address
+    // before the window captures `&self.backend` in its render vtable, so
+    // this can't return by value.
+    fn init(self: *TestWindow, gpa: std.mem.Allocator, io: std.Io) !void {
+        dvui.io = io;
+        const sz = dvui.Size{ .w = 1280, .h = 800 };
+        self.backend = TestBackend.init(.{
+            .allocator = gpa,
+            .size = dvui.Size.Natural.cast(sz),
+            .size_pixels = sz.scale(2.0, dvui.Size.Physical),
+        });
+        self.window = try dvui.Window.init(@src(), gpa, self.backend.backend(), .{});
+    }
+
+    fn deinit(self: *TestWindow) void {
+        self.window.deinit();
+        self.backend.deinit();
+    }
+};
 
 // --- F10: settings persistence -------------------------------------------
 //
@@ -73,4 +103,46 @@ test "headless: ui_scale not rewritten when unchanged (no dirty)" {
     const maybe = util_setting.readSingleLine(env.io, ta, path) catch null;
     if (maybe) |s| ta.free(s);
     try std.testing.expect(maybe == null);
+}
+
+// --- F4.2: folder scan (full Frame harness, no network) ------------------
+//
+// The first Frame-driven slice: builds the complete service graph + a
+// Frame on a testing window via ui.Harness, then drives the real folder-
+// scan action (doFolderScan + pump tickFolderScan to completion) against
+// a synthetic Ren'Py install, asserting the scan detected it. This is the
+// template every remaining feature suite follows: build harness → frame()
+// → drive action → drain → assert on real state.
+
+test "headless: folder scan detects a Ren'Py game (F4.2)" {
+    const gpa = std.testing.allocator;
+    var env = try TestEnv.init(gpa, "headless-folderscan");
+    defer env.deinit();
+
+    // A scannable tree: <root>/games/MyGame/renpy/bootstrap.py is the
+    // Ren'Py fingerprint folder_scan looks for.
+    try env.writeFile("games/MyGame/renpy/bootstrap.py", "");
+    const scan_dir = try env.path("games");
+    defer gpa.free(scan_dir);
+
+    var tw: TestWindow = undefined;
+    try tw.init(gpa, env.io);
+    defer tw.deinit();
+
+    var h = try ui.Harness.init(gpa, env.io, &tw.window, env.root);
+    defer h.deinit();
+
+    var f = h.frame();
+    ui.doFolderScan(&f, scan_dir);
+
+    // Pump the scan forward until the session reports done (bounded so a
+    // bug can't hang the test).
+    var guard: usize = 0;
+    while (guard < 100_000) : (guard += 1) {
+        ui.tickFolderScan(&f);
+        if (std.mem.indexOf(u8, h.state.folderScanMsg(), "done") != null) break;
+    }
+
+    try std.testing.expect(std.mem.indexOf(u8, h.state.folderScanMsg(), "done") != null);
+    try std.testing.expect(h.state.folder_scan_row_count >= 1);
 }
