@@ -927,19 +927,23 @@ test "layer2: sidebar filter checkbox click flips bound state (F3 interaction)" 
     tlog("L2-checkbox: OK", .{});
 }
 
-test "layer2: engine filter expander reveals its children on click (F3 conditional)" {
-    tlog("START: L2-expander", .{});
+test "layer2: sidebar engine filter row toggles the engine set (F3 interaction)" {
+    tlog("START: L2-engine", .{});
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    var env = try TestEnv.init(gpa, "layer2-expander");
+    var env = try TestEnv.init(gpa, "layer2-engine");
     defer env.deinit();
     var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
     defer t.deinit();
     ui.registerBundledFonts(t.window);
     var h = try ui.Harness.init(gpa, io, t.window, env.root);
     defer h.deinit();
+
+    // A Ren'Py game → the flat ENGINE filter list shows a "Ren'Py" row.
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 1, .name = "Alpha", .developer = "Dev", .engine = .renpy });
+    try h.reloadGames();
 
     var fr = h.frame();
     g_frame = &fr;
@@ -949,17 +953,17 @@ test "layer2: engine filter expander reveals its children on click (F3 condition
     _ = try dvui.testing.step(renderFrame);
     _ = try dvui.testing.step(renderFrame);
 
-    // Collapsed by default: the Ren'Py child is not in the tag registry.
-    try std.testing.expect(dvui.tagGet("flt-renpy") == null);
-    tlog("L2-expander: collapsed, flt-renpy absent", .{});
+    // Design-B sidebar: engine filter is an always-visible flat counted list.
+    try dvui.testing.expectVisible("filter-eng-renpy");
+    try std.testing.expect(!h.state.filters.engine.contains(.renpy));
+    tlog("L2-engine: Ren'Py row visible, not selected", .{});
 
-    // Click the Engine expander → its enum checkboxes render.
-    try dvui.testing.moveTo("filter-engine-expander");
+    // Click the Ren'Py row → it enters the engine filter set.
+    try dvui.testing.moveTo("filter-eng-renpy");
     try dvui.testing.click(.left);
     _ = try dvui.testing.step(renderFrame);
-    _ = try dvui.testing.step(renderFrame);
-    try dvui.testing.expectVisible("flt-renpy");
-    tlog("L2-expander: expanded, flt-renpy visible — OK", .{});
+    try std.testing.expect(h.state.filters.engine.contains(.renpy));
+    tlog("L2-engine: clicked → Ren'Py selected — OK", .{});
 }
 
 test "layer2: sync dropdown opens + keyboard-selects an entry (F3 interaction)" {

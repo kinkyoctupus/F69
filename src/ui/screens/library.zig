@@ -527,8 +527,69 @@ fn renderVirtualizedList(frame: *Frame, games: []const library.Game, query: []co
 
 }
 
+/// Small dim uppercase sidebar group header (STATUS / UPDATES / ENGINE / TAGS).
+fn sideGroup(label: []const u8) void {
+    const key = @intFromPtr(label.ptr);
+    _ = dvui.spacer(@src(), .{ .id_extra = key, .min_size_content = .{ .w = 1, .h = 12 } });
+    const body = dvui.Font.theme(.body);
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .id_extra = key,
+        .color_text = style.labelDim(),
+        .font = body.withSize(body.size * 0.80),
+    });
+    _ = dvui.spacer(@src(), .{ .id_extra = key, .min_size_content = .{ .w = 1, .h = 4 } });
+}
+
+/// Flat clickable filter row (Design-B sidebar): optional colored status dot +
+/// label on the left, right-aligned count. Active = teal wash + teal text.
+/// Returns true the frame it's clicked. `id` must be unique within the sidebar.
+fn filterRow(id: u32, label: []const u8, count: u32, active: bool, dot_color: ?dvui.Color, tag: ?[]const u8) bool {
+    const t = tokens.active;
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = id,
+        .tag = tag,
+        .expand = .horizontal,
+        .background = active,
+        .color_fill = tokens.toDvui(t.acc_wash, dvui.Color),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .padding = .{ .x = 8, .y = 4, .w = 8, .h = 4 },
+        .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+    });
+    defer row.deinit();
+    if (dot_color) |dc| {
+        var d = dvui.box(@src(), .{}, .{
+            .background = true,
+            .color_fill = dc,
+            .corner_radius = dvui.Rect.all(3),
+            .min_size_content = .{ .w = 7, .h = 7 },
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+        });
+        d.deinit();
+    }
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = tokens.toDvui(if (active) t.acc else t.ink2, dvui.Color),
+    });
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+    if (count > 0) {
+        var cnt_buf: [16]u8 = undefined;
+        const cs = std.fmt.bufPrint(&cnt_buf, "{d}", .{count}) catch "";
+        dvui.labelNoFmt(@src(), cs, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+    }
+    return dvui.clicked(row.data(), .{});
+}
+
 fn sidebar(frame: *Frame) void {
     const state = frame.state;
+
+    // Per-axis counts for the flat filter lists (Design-B), computed once.
+    var eng_counts = std.EnumArray(library.Engine, u32).initFill(0);
+    var ds_counts = std.EnumArray(library.DevStatus, u32).initFill(0);
+    for (frame.games) |g| {
+        eng_counts.getPtr(g.engine).* += 1;
+        ds_counts.getPtr(g.dev_status).* += 1;
+    }
     var side = dvui.box(@src(), .{ .dir = .vertical }, .{
         .min_size_content = .{ .w = 200, .h = 100 },
         .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
@@ -537,8 +598,6 @@ fn sidebar(frame: *Frame) void {
     });
     defer side.deinit();
 
-    dvui.label(@src(), "Filters", .{}, .{});
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
     var scroll = dvui.scrollArea(@src(), .{}, .{
         .expand = .both,
@@ -587,29 +646,39 @@ fn sidebar(frame: *Frame) void {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     {
+        sideGroup("ENGINE");
         const eng = &state.filters.engine;
-        var lbl_buf: [48]u8 = undefined;
-        const lbl = if (eng.count() == 0)
-            @as([]const u8, "Engine")
-        else
-            std.fmt.bufPrint(&lbl_buf, "Engine ({d})", .{eng.count()}) catch "Engine";
-        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal, .tag = "filter-engine-expander" })) {
-            enumCheckbox(library.Engine, eng, .renpy, "Ren'Py");
-            enumCheckbox(library.Engine, eng, .rpgm_mv, "RPGM MV");
-            enumCheckbox(library.Engine, eng, .rpgm_mz, "RPGM MZ");
-            enumCheckbox(library.Engine, eng, .rpgm_vx, "RPGM VX/Ace");
-            enumCheckbox(library.Engine, eng, .unity, "Unity");
-            enumCheckbox(library.Engine, eng, .unreal, "Unreal");
-            enumCheckbox(library.Engine, eng, .html, "HTML");
-            enumCheckbox(library.Engine, eng, .flash, "Flash");
-            enumCheckbox(library.Engine, eng, .java, "Java");
-            enumCheckbox(library.Engine, eng, .wolf_rpg, "Wolf RPG");
-            enumCheckbox(library.Engine, eng, .qsp, "QSP");
-            enumCheckbox(library.Engine, eng, .tyranobuilder, "TyranoBuilder");
-            enumCheckbox(library.Engine, eng, .twine, "Twine");
-            enumCheckbox(library.Engine, eng, .other, "Other");
-            enumCheckbox(library.Engine, eng, .unknown, "Unknown");
+        const EngSpec = struct { e: library.Engine, l: []const u8 };
+        const eng_specs = [_]EngSpec{
+            .{ .e = .renpy, .l = "Ren'Py" },
+            .{ .e = .rpgm_mv, .l = "RPGM MV" },
+            .{ .e = .rpgm_mz, .l = "RPGM MZ" },
+            .{ .e = .rpgm_vx, .l = "RPGM VX/Ace" },
+            .{ .e = .unity, .l = "Unity" },
+            .{ .e = .unreal, .l = "Unreal" },
+            .{ .e = .html, .l = "HTML" },
+            .{ .e = .flash, .l = "Flash" },
+            .{ .e = .java, .l = "Java" },
+            .{ .e = .wolf_rpg, .l = "Wolf RPG" },
+            .{ .e = .qsp, .l = "QSP" },
+            .{ .e = .tyranobuilder, .l = "TyranoBuilder" },
+            .{ .e = .twine, .l = "Twine" },
+            .{ .e = .other, .l = "Other" },
+            .{ .e = .unknown, .l = "Unknown" },
+        };
+        var any = false;
+        inline for (eng_specs) |s| {
+            const cnt = eng_counts.get(s.e);
+            const sel = eng.contains(s.e);
+            if (cnt > 0 or sel) {
+                any = true;
+                const tag: ?[]const u8 = if (s.e == .renpy) "filter-eng-renpy" else null;
+                if (filterRow(0x100 + @as(u32, @intFromEnum(s.e)), s.l, cnt, sel, null, tag)) {
+                    if (sel) eng.remove(s.e) else eng.insert(s.e);
+                }
+            }
         }
+        if (!any) dvui.labelNoFmt(@src(), "  (no games yet)", .{}, .{ .color_text = style.labelDim() });
     }
 
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
@@ -671,19 +740,29 @@ fn sidebar(frame: *Frame) void {
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
     {
+        sideGroup("STATUS");
         const ds = &state.filters.dev_status;
-        var lbl_buf: [48]u8 = undefined;
-        const lbl = if (ds.count() == 0)
-            @as([]const u8, "Game state")
-        else
-            std.fmt.bufPrint(&lbl_buf, "Game state ({d})", .{ds.count()}) catch "Game state";
-        if (dvui.expander(@src(), lbl, .{}, .{ .expand = .horizontal })) {
-            enumCheckbox(library.DevStatus, ds, .in_progress, "Ongoing");
-            enumCheckbox(library.DevStatus, ds, .completed, "Completed");
-            enumCheckbox(library.DevStatus, ds, .on_hold, "On hold");
-            enumCheckbox(library.DevStatus, ds, .abandoned, "Abandoned");
-            enumCheckbox(library.DevStatus, ds, .orphaned, "Orphaned (gone from F95)");
-            enumCheckbox(library.DevStatus, ds, .unknown, "Unknown");
+        // "All" clears the dev-status filter (no game-state restriction).
+        if (filterRow(0x200, "All", @intCast(frame.games.len), ds.count() == 0, null, "filter-status-all")) {
+            ds.* = @TypeOf(ds.*).initEmpty();
+        }
+        const DsSpec = struct { s: library.DevStatus, l: []const u8 };
+        const ds_specs = [_]DsSpec{
+            .{ .s = .in_progress, .l = "Ongoing" },
+            .{ .s = .completed, .l = "Completed" },
+            .{ .s = .on_hold, .l = "On hold" },
+            .{ .s = .abandoned, .l = "Abandoned" },
+            .{ .s = .orphaned, .l = "Orphaned" },
+            .{ .s = .unknown, .l = "Unknown" },
+        };
+        inline for (ds_specs) |s| {
+            const cnt = ds_counts.get(s.s);
+            const sel = ds.contains(s.s);
+            if (cnt > 0 or sel) {
+                if (filterRow(0x210 + @as(u32, @intFromEnum(s.s)), s.l, cnt, sel, components.devStatusColor(s.s), null)) {
+                    if (sel) ds.remove(s.s) else ds.insert(s.s);
+                }
+            }
         }
     }
 
