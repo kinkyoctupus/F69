@@ -8,6 +8,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const entypo = dvui.entypo;
 const library = @import("library");
+const downloads = @import("downloads");
 
 const types = @import("types.zig");
 const state_mod = @import("state.zig");
@@ -1025,6 +1026,141 @@ fn railItem(state: *state_mod.State, key: u32, name: []const u8, icon: []const u
         .color_text = td(if (on) t.acc else t.ink3),
     });
     if (dvui.clicked(cell.data(), .{})) state.screen = screen;
+}
+
+// ----- bottom status bar (global activity) -----
+
+fn statusDot(col: dvui.Color) void {
+    var d = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = col,
+        .corner_radius = dvui.Rect.all(3),
+        .min_size_content = .{ .w = 6, .h = 6 },
+        .gravity_y = 0.5,
+        .margin = .{ .x = 0, .y = 0, .w = 7, .h = 0 },
+    });
+    d.deinit();
+}
+
+fn statusMiniBar(frac: f32, w: f32) void {
+    const t = tokens.active;
+    const f = std.math.clamp(frac, 0, 1);
+    var outer = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .background = true,
+        .color_fill = td(t.bg3),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = w, .h = 5 },
+        .gravity_y = 0.5,
+    });
+    defer outer.deinit();
+    var inner = dvui.box(@src(), .{}, .{
+        .background = true,
+        .color_fill = td(t.acc),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = w * f, .h = 5 },
+    });
+    inner.deinit();
+}
+
+fn statusJobTitle(frame: *Frame, job: *const downloads.Job) []const u8 {
+    if (job.game_id != 0) {
+        for (frame.games) |*g| {
+            if (g.f95_thread_id == job.game_id) return g.name;
+        }
+    }
+    return job.source_url;
+}
+
+fn statusSeg(key: u32, label: []const u8, n: u32, col: dvui.Color, font: dvui.Font) void {
+    var seg = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = key, .padding = .{ .x = 9, .y = 0, .w = 0, .h = 0 } });
+    defer seg.deinit();
+    var b: [48]u8 = undefined;
+    dvui.labelNoFmt(@src(), std.fmt.bufPrint(&b, "{s} {d}", .{ label, n }) catch label, .{}, .{ .gravity_y = 0.5, .color_text = col, .font = font });
+}
+
+/// Bottom status bar — an always-present thin strip showing global activity
+/// (download / install / sync). Idle shows "Ready". Rendered once by guiFrame
+/// at the bottom of the root, full-width under the rail + content.
+pub fn renderStatusBar(frame: *Frame) void {
+    const state = frame.state;
+    const t = tokens.active;
+    const m0 = dvui.Font.theme(.mono);
+    const mono = m0.withSize(m0.size * 0.82);
+
+    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 0, .h = 24 },
+        .background = true,
+        .color_fill = td(t.bg1),
+        .color_border = td(t.line),
+        .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
+        .padding = .{ .x = 12, .y = 0, .w = 12, .h = 0 },
+    });
+    defer bar.deinit();
+
+    // Scan download jobs: counts + the primary active download.
+    var n_down: u32 = 0;
+    var n_seed: u32 = 0;
+    var n_post: u32 = 0;
+    var primary: ?*const downloads.Job = null;
+    var it = frame.dl_mgr.jobs.iterator();
+    while (it.next()) |e| {
+        switch (e.value_ptr.status) {
+            .downloading => {
+                n_down += 1;
+                if (primary == null) primary = e.value_ptr;
+            },
+            .queued, .fetching_metadata, .verifying => n_down += 1,
+            .extracting, .applying => n_post += 1,
+            .seeding => n_seed += 1,
+            else => {},
+        }
+    }
+
+    // ---- left: primary activity ----
+    if (primary) |j| {
+        statusDot(td(t.acc));
+        dvui.labelNoFmt(@src(), statusJobTitle(frame, j), .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 9, .h = 1 } });
+        const frac: f32 = if (j.bytes_total) |tot|
+            (if (tot > 0) @as(f32, @floatFromInt(j.bytes_done)) / @as(f32, @floatFromInt(tot)) else 0)
+        else
+            0;
+        statusMiniBar(frac, 110);
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 9, .h = 1 } });
+        var b2: [48]u8 = undefined;
+        const pct: u32 = @intFromFloat(std.math.clamp(frac, 0, 1) * 100);
+        const mbps = @as(f64, @floatFromInt(j.download_speed)) / (1024.0 * 1024.0);
+        dvui.labelNoFmt(@src(), std.fmt.bufPrint(&b2, "{d}% · {d:.1} MB/s", .{ pct, mbps }) catch "", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink3), .font = mono });
+    } else if (n_post > 0) {
+        statusDot(td(t.warn));
+        dvui.labelNoFmt(@src(), "Installing…", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+    } else if (state.anyActiveSync()) {
+        statusDot(td(t.acc));
+        const nm = state.currentSyncName();
+        var b3: [96]u8 = undefined;
+        const lbl = if (nm.len > 0) (std.fmt.bufPrint(&b3, "Syncing {s}", .{nm}) catch "Syncing…") else "Syncing…";
+        dvui.labelNoFmt(@src(), lbl, .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink2), .font = mono });
+    } else {
+        dvui.labelNoFmt(@src(), "Ready", .{}, .{ .gravity_y = 0.5, .color_text = td(t.ink3), .font = mono });
+    }
+
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    // ---- right: segment counts ----
+    if (n_down > 0) statusSeg(0xD0, "\u{2913}", n_down, td(t.acc), mono);
+    if (n_post > 0) statusSeg(0xD1, "install", n_post, td(t.warn), mono);
+    if (n_seed > 0) statusSeg(0xD2, "\u{2191} seeding", n_seed, td(t.ink3), mono);
+    {
+        const syncing = state.anyActiveSync();
+        dvui.labelNoFmt(@src(), if (syncing) "\u{27F3} syncing" else "\u{27F3} idle", .{}, .{
+            .id_extra = 0xD9,
+            .gravity_y = 0.5,
+            .color_text = td(if (syncing) t.acc else t.ink3),
+            .font = mono,
+            .padding = .{ .x = 9, .y = 0, .w = 0, .h = 0 },
+        });
+    }
 }
 
 pub fn renderSyncBanner(frame: *Frame) void {
