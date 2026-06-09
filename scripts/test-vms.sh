@@ -99,8 +99,11 @@ build_slim(){ [ $BUILT_SLIM = 1 ] && return 0
   log "host: zig build portable-slim"; ( cd "$PROJECT_ROOT" && zig build portable-slim ) || return 1
   tar cf "$TAR_SLIM" -C "$PROJECT_ROOT/zig-out/portable-slim" f69 run.sh DEPS.md && BUILT_SLIM=1; }
 build_windows(){ [ $BUILT_WIN = 1 ] && return 0
-  log "host: zig build -Dtarget=x86_64-windows"
-  ( cd "$PROJECT_ROOT" && zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe ) || return 1
+  # Use the verified path: build-windows.sh stands up the mingw C-lib prefix
+  # (nix/windows-deps.nix) THEN cross-compiles. Bare `zig build -Dtarget` skips
+  # the prefix and fails on the avif/acl/archive mingw deps.
+  log "host: scripts/build-windows.sh (mingw prefix + x86_64-windows-gnu)"
+  ( cd "$PROJECT_ROOT" && bash scripts/build-windows.sh ReleaseSafe ) >/tmp/winbuild.log 2>&1 || return 1
   WIN_EXE="$(find "$PROJECT_ROOT/zig-out" -name 'f69.exe' | head -1)"; [ -n "$WIN_EXE" ] && BUILT_WIN=1; }
 
 # deliver+launch a Linux build on the guest; sets START to the remote f69 start command,
@@ -197,8 +200,8 @@ run_linux_cell(){ local vm=$1 build=$2; BUILD=$build
     case "$vm" in
       cachyos) ;;  # AUR handled below
       bazzite) [ $BAZZITE_NATIVE = 1 ] || { record "$vm" native SKIP "rpm-ostree layering (use --bazzite-native)" ""; return; };;
-      pikaos)  record "$vm" native XFAIL ".deb container build incomplete (build.zig)" ""; return;;
-      nobara)  record "$vm" native XFAIL ".rpm container build untested (build.zig)" ""; return;;
+      pikaos)  record "$vm" native XFAIL "CI .deb targets bookworm; PikaOS=sid sonames differ (base-lock) — rebuild with F69_DEB_BASE=debian:sid" ""; return;;
+      nobara)  record "$vm" native XFAIL "CI .rpm targets fedora:latest; Fedora 43 older glibc (base-lock) — rebuild with F69_RPM_BASE=fedora:43" ""; return;;
     esac
   fi
   log "$vm/$build: deliver"
@@ -251,7 +254,7 @@ run_windows_cell(){ BUILD=windows
   if [ $xc = 1 ]; then
     record windows windows PASS "cross-compiled $(basename "$WIN_EXE") ($(du -h "$WIN_EXE"|cut -f1)); VM RDP $rdp; install/launch manual" "$(basename "$WIN_EXE")"
   else
-    record windows windows FAIL "cross-compile failed (mingw deps unwired: acl/avif); VM RDP $rdp" ""
+    record windows windows FAIL "cross-compile failed (see /tmp/winbuild.log); VM RDP $rdp" ""
   fi
   log "NOTE: f69.exe install/launch on Windows is manual (RDP :${hp##* } user ${USER[windows]:-w10}); no in-guest agent for type/click yet."; }
 
