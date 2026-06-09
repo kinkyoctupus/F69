@@ -318,3 +318,53 @@ test "headless: indexer client fetches + parses against a fixture server (F2)" {
     try std.testing.expectEqualStrings("1.3", full.version.?);
     try std.testing.expectEqualStrings("GilgaGames", full.developer.?);
 }
+
+// --- F2 end-to-end: sync action populates a game row from the fixture ----
+//
+// The full pipeline through the harness: an unsynced game + the real
+// startSyncAll action (indexer backend) → batched /fast pre-flight → /full
+// for the changed game → applyScrape to the DB. Drives it against the
+// localhost fixture (2 requests) and drains the async sync workers to
+// completion, then asserts the game row got its scraped metadata. Ties
+// together harness + fixture + worker-drain + DB.
+
+test "headless: sync action populates a game from the indexer fixture (F2 e2e)" {
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = try TestEnv.init(gpa, "sync-action");
+    defer env.deinit();
+
+    var fx = try FixtureServer.start(gpa, io, 2); // /fast + /full
+    defer fx.deinit();
+
+    var tw: TestWindow = undefined;
+    try tw.init(gpa, io);
+    defer tw.deinit();
+
+    var h = try ui.Harness.init(gpa, io, &tw.window, env.root);
+    defer h.deinit();
+
+    // Point the harness's indexer at the fixture; ensure indexer backend.
+    var url_buf: [64]u8 = undefined;
+    h.indexer_client.base_url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}", .{fx.port});
+    h.state.refresh_backend = .indexer;
+
+    // An unsynced game the sync should fill in.
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 12345, .name = "(unsynced)" });
+    try h.reloadGames();
+
+    var f = h.frame();
+    ui.startSyncAll(&f);
+    h.drainWorkers(500);
+
+    // The DB row should now carry the scraped name.
+    try h.reloadGames();
+    const g = blk: {
+        for (h.games) |*x| if (x.f95_thread_id == 12345) break :blk x;
+        break :blk null;
+    } orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Eva's Ecstasy", g.name);
+}
