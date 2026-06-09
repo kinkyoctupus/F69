@@ -102,8 +102,11 @@ build_windows(){ [ $BUILT_WIN = 1 ] && return 0
   # Use the verified path: build-windows.sh stands up the mingw C-lib prefix
   # (nix/windows-deps.nix) THEN cross-compiles. Bare `zig build -Dtarget` skips
   # the prefix and fails on the avif/acl/archive mingw deps.
-  log "host: scripts/build-windows.sh (mingw prefix + x86_64-windows-gnu)"
-  ( cd "$PROJECT_ROOT" && bash scripts/build-windows.sh ReleaseSafe ) >/tmp/winbuild.log 2>&1 || return 1
+  # MUST be ReleaseFast (the script's default): ReleaseSafe turns on _FORTIFY_SOURCE →
+  # MinGW fortified <wchar.h> inlines → zig 0.16 translate-c "unused local constant" in every
+  # @cImport. See build.zig:192 + build-windows.sh.
+  log "host: scripts/build-windows.sh (mingw prefix + x86_64-windows-gnu, ReleaseFast)"
+  ( cd "$PROJECT_ROOT" && bash scripts/build-windows.sh ) >/tmp/winbuild.log 2>&1 || return 1
   WIN_EXE="$(find "$PROJECT_ROOT/zig-out" -name 'f69.exe' | head -1)"; [ -n "$WIN_EXE" ] && BUILT_WIN=1; }
 
 # deliver+launch a Linux build on the guest; sets START to the remote f69 start command,
