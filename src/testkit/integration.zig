@@ -19,6 +19,8 @@ const ui = @import("ui");
 const dvui = @import("dvui");
 const library = @import("library");
 const recipe = @import("recipe");
+const f95_indexer = @import("f95_indexer");
+const net = std.Io.net;
 const TestBackend = @import("dvui_testing_backend");
 const TestEnv = @import("util_test_env").TestEnv;
 const util_setting = @import("util_setting");
@@ -27,6 +29,65 @@ const util_setting = @import("util_setting");
 test {
     std.testing.refAllDecls(@This());
 }
+
+/// A localhost HTTP fixture server for the F95Checker cache API. Serves
+/// canned `/fast` + `/full/{id}` responses so the indexer client can be
+/// tested deterministically (the indexer's base_url is injectable). Handles
+/// exactly `expected_requests` connections then the worker thread exits on
+/// its own — no shutdown race. The server struct is heap-stable (the worker
+/// borrows it by pointer).
+const FixtureServer = struct {
+    const FAST_JSON = "{\"12345\": 1700000000}";
+    const FULL_JSON = "{\"name\": \"Eva's Ecstasy\", \"version\": \"1.3\", \"developer\": \"GilgaGames\"}";
+
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    server: net.Server,
+    port: u16,
+    thread: std.Thread,
+
+    fn start(gpa: std.mem.Allocator, io: std.Io, expected_requests: usize) !*FixtureServer {
+        const self = try gpa.create(FixtureServer);
+        errdefer gpa.destroy(self);
+        self.gpa = gpa;
+        self.io = io;
+
+        // Bind a fixed loopback port, retrying on collision.
+        var port: u16 = 41700;
+        self.server = while (port < 41760) : (port += 1) {
+            const addr = net.IpAddress.parseIp4("127.0.0.1", port) catch continue;
+            break addr.listen(io, .{ .reuse_address = true }) catch continue;
+        } else return error.NoFreePort;
+        self.port = port;
+
+        self.thread = try std.Thread.spawn(.{}, serve, .{ self, expected_requests });
+        return self;
+    }
+
+    fn serve(self: *FixtureServer, expected_requests: usize) void {
+        var i: usize = 0;
+        while (i < expected_requests) : (i += 1) {
+            var stream = self.server.accept(self.io) catch break;
+            defer stream.close(self.io);
+            var rbuf: [8192]u8 = undefined;
+            var wbuf: [8192]u8 = undefined;
+            var sr = stream.reader(self.io, &rbuf);
+            var sw = stream.writer(self.io, &wbuf);
+            var hs = std.http.Server.init(&sr.interface, &sw.interface);
+            var req = hs.receiveHead() catch continue;
+            const body = if (std.mem.startsWith(u8, req.head.target, "/fast")) FAST_JSON else FULL_JSON;
+            req.respond(body, .{
+                .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
+            }) catch {};
+        }
+    }
+
+    fn deinit(self: *FixtureServer) void {
+        self.thread.join();
+        self.server.deinit(self.io);
+        self.gpa.destroy(self);
+    }
+};
 
 /// A dvui window on the testing backend (pure CPU — no display). The
 /// backend value must outlive the window (the window's render vtable
@@ -216,4 +277,44 @@ test "headless: game recipe saves to disk and reloads by thread (F7)" {
     try std.testing.expectEqualStrings("Test Game", found.recipe.name);
     try std.testing.expectEqual(@as(u64, 12345), found.recipe.f95_thread);
     try std.testing.expectEqualStrings("1.0", found.recipe.version);
+}
+
+// --- F2: indexer sync against a localhost fixture (deterministic) --------
+//
+// The first network slice. Stands up a localhost HTTP server serving canned
+// F95Checker cache-API responses, points an indexer client at it (base_url
+// is injectable), and asserts the real request-build → HTTP → parse path.
+// Two requests: /fast then /full. No real internet, fully deterministic.
+
+test "headless: indexer client fetches + parses against a fixture server (F2)" {
+    const gpa = std.testing.allocator;
+    // The Threaded io's gpa backs io.async (the HTTP client's concurrent
+    // connect) and is touched from multiple threads, so it MUST be
+    // threadsafe — testing.allocator isn't. Use the smp allocator for the
+    // io; the test's own allocations still go through testing.allocator so
+    // leaks are caught.
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var fx = try FixtureServer.start(gpa, io, 2);
+    defer fx.deinit();
+
+    var url_buf: [64]u8 = undefined;
+    const base = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}", .{fx.port});
+    var client = f95_indexer.Client.init(gpa, io, base);
+
+    // /fast — change-timestamp probe.
+    const fast = try client.fastCheck(&.{12345});
+    defer gpa.free(fast);
+    try std.testing.expectEqual(@as(usize, 1), fast.len);
+    try std.testing.expectEqual(@as(u64, 12345), fast[0].id);
+    try std.testing.expectEqual(@as(i64, 1700000000), fast[0].last_change);
+
+    // /full — the metadata the sync worker maps onto the game row.
+    var full = try client.fullCheck(12345, 0);
+    defer full.deinit();
+    try std.testing.expectEqualStrings("Eva's Ecstasy", full.name.?);
+    try std.testing.expectEqualStrings("1.3", full.version.?);
+    try std.testing.expectEqualStrings("GilgaGames", full.developer.?);
 }
