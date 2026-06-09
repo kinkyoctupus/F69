@@ -269,7 +269,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
 fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
     const t = tokens.active;
-    const HERO_H: f32 = 230;
+    const HERO_H: f32 = 168;
 
     var hero = dvui.overlay(@src(), .{
         .id_extra = game.f95_thread_id,
@@ -812,12 +812,12 @@ fn factsRow(row_id: *u32, label: []const u8, value: FactsValue) void {
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = row_id.*,
         .expand = .horizontal,
-        .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+        .padding = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
     });
     defer row.deinit();
     row_id.* += 1;
     dvui.labelNoFmt(@src(), label, .{}, .{
-        .min_size_content = .{ .w = 120, .h = 20 },
+        .min_size_content = .{ .w = 120, .h = 18 },
         .gravity_y = 0.5,
         .color_text = style.labelDim(),
     });
@@ -825,7 +825,7 @@ fn factsRow(row_id: *u32, label: []const u8, value: FactsValue) void {
         .text => |t| dvui.labelNoFmt(@src(), t, .{}, .{
             .gravity_y = 0.5,
             .expand = .horizontal,
-            .min_size_content = .{ .w = 0, .h = 20 },
+            .min_size_content = .{ .w = 0, .h = 18 },
         }),
     }
 }
