@@ -17,6 +17,11 @@ const sandbox_mod = @import("sandbox");
 const convert_mod = @import("convert");
 const compat_mod = @import("compat");
 const ui = @import("ui");
+// The SDL3-GPU windowing backend. main owns the window backend's
+// lifetime and hands it to `ui.runMainLoop`; the `ui` module itself is
+// backend-agnostic (so it can be rebuilt against dvui's testing backend
+// for headless integration tests). Only the GUI exe links SDL.
+const SDLBackend = @import("sdl3gpu-backend");
 const util_setting = @import("util_setting");
 const theme_store = @import("ui_theme_store");
 const build_options = @import("build_options");
@@ -516,6 +521,21 @@ pub fn main(init: std.process.Init) !void {
     const ui_exe_dir = resolveExeDir(gpa, init.io, init.minimal.environ) catch try gpa.dupe(u8, ".");
     defer gpa.free(ui_exe_dir);
 
+    // Window backend — created + owned here so the `ui` module stays
+    // backend-agnostic (rebuildable against dvui's testing backend for
+    // headless tests). Must outlive the window dvui builds from it.
+    SDLBackend.enableSDLLogging();
+    var backend = try SDLBackend.initWindow(.{
+        .io = init.io,
+        .allocator = gpa,
+        .size = .{ .w = 1280.0, .h = 800.0 },
+        .min_size = .{ .w = 900.0, .h = 600.0 },
+        .vsync = true,
+        .title = "f69",
+        .icon = null,
+    });
+    defer backend.deinit();
+
     try ui.runMainLoop(init, &lib, &f95_service, &indexer_client, &dl_mgr, &recipe_repo, &sandbox, &host_launcher, &convert_svc, &compat_svc, rpdl_token, .{
         .exe_dir = ui_exe_dir,
         .data_root = data_root,
@@ -564,7 +584,7 @@ pub fn main(init: std.process.Init) !void {
         .min_session_seconds_path = min_session_seconds_path,
         .initial_min_session_seconds = initial_min_session_seconds,
         .host = host,
-    });
+    }, &backend);
 }
 
 /// Parse `<data_root>/auto_check`. Format is `key=value` per line.
