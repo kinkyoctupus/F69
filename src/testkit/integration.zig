@@ -640,3 +640,57 @@ test "layer2: empty library renders via guiFrame on the testing backend (F0)" {
     _ = try dvui.testing.step(renderFrame);
     tlog("L2-render: one frame OK", .{});
 }
+
+test "layer2: every primary screen renders without error (F0)" {
+    tlog("START: L2-screens", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-screens");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+
+    // Screens that render from default state (no selected game / no async).
+    const screens = [_]ui.Screen{ .library, .settings, .downloads, .diagnostics, .universal_mods, .import_urls, .import_folder };
+    for (screens) |scr| {
+        h.state.screen = scr;
+        tlog("L2-screens: {s}", .{@tagName(scr)});
+        _ = try dvui.testing.step(renderFrame);
+    }
+    tlog("L2-screens: all OK", .{});
+}
+
+test "layer2: library renders a game card (F0/F3)" {
+    tlog("START: L2-card", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-card");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    // A game with NO cover_url → no async image fetch; renders a card.
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 99, .name = "Test Game", .developer = "Dev", .engine = .renpy, .rating = 4.3 });
+    try h.reloadGames();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-card: rendered card OK", .{});
+}

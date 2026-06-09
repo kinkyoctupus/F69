@@ -55,6 +55,7 @@ pub const setImageCpuLimit = actions.setImageCpuLimit;
 // docs/test-automation-research.md.
 pub const persistUiScaleIfDirty = actions.persistUiScaleIfDirty;
 pub const Filters = state_mod.Filters;
+pub const Screen = state_mod.Screen;
 pub const startSyncAll = actions.startSyncAll;
 pub const doLogin = actions.doLogin;
 pub const doFolderScan = actions.doFolderScan;
