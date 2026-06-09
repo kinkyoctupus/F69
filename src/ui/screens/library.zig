@@ -54,7 +54,14 @@ pub fn libraryScreen(frame: *Frame) !bool {
         });
         defer top.deinit();
 
-        dvui.label(@src(), "f69 — {d} games", .{games.len}, .{ .gravity_y = 0.5 });
+        // Design-B title: "Library" + a dim "N games · M updates" subtitle.
+        dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .style = .highlight });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
+        {
+            var cnt_buf: [48]u8 = undefined;
+            const cnt = std.fmt.bufPrint(&cnt_buf, "{d} games", .{games.len}) catch "";
+            dvui.labelNoFmt(@src(), cnt, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+        }
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
         // Right-anchored, wrapping button cluster. `expand =
