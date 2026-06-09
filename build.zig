@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     // entry. UI's Diagnostics screen and main.zig's `--version` CLI flag
     // import this to show "f69 vX.Y.Z" so bug reports identify the build.
     // Keep in sync with `.version` in build.zig.zon.
-    const app_version: []const u8 = "0.9.1";
+    const app_version: []const u8 = "0.10.0";
     const build_opts = b.addOptions();
     build_opts.addOption([]const u8, "version", app_version);
     const build_opts_mod = build_opts.createModule();
@@ -912,7 +912,9 @@ fn makeDeb(b: *std.Build, version: []const u8, enable_container: bool) !void {
 
 fn makeRpm(b: *std.Build, version: []const u8, enable_container: bool) !void {
     const alloc = b.allocator;
-    const date = try runCapture(b, &.{ "date", "+%a %b %d %Y" });
+    // RPM's %changelog requires English day/month abbreviations (Tue, not
+    // the host locale's "di"). Force LC_ALL=C so the date is parseable.
+    const date = try runCapture(b, &.{ "env", "LC_ALL=C", "date", "+%a %b %d %Y" });
     defer alloc.free(date);
     const date_trimmed = std.mem.trim(u8, date, " \n\r\t");
 
@@ -1369,10 +1371,17 @@ fn buildInContainer(b: *std.Build, distro: Distro, version: []const u8) !void {
     // the .spec.
     try stageDistroFiles(b, distro, work_dir);
 
+    // Base container image. Native packages dynamically link system libs,
+    // so a package only runs where the target's library sonames + glibc
+    // match the build base. Override per-target to build a package that
+    // actually installs on a given distro version, e.g.:
+    //   F69_RPM_BASE=fedora:43  zig build rpm -Dcontainer-build=true
+    //   F69_DEB_BASE=ubuntu:24.04 zig build deb -Dcontainer-build=true
+    const env = b.graph.environ_map;
     const image = switch (distro) {
         .aur => "archlinux:latest",
-        .deb => "debian:bookworm-slim",
-        .rpm => "fedora:latest",
+        .deb => env.get("F69_DEB_BASE") orelse "debian:bookworm-slim",
+        .rpm => env.get("F69_RPM_BASE") orelse "fedora:latest",
     };
 
     // Bind-mount work_dir at /work (read-write) inside the container.
@@ -1651,7 +1660,8 @@ const DEB_CONTAINER_SCRIPT =
     \\    libwayland-dev libxkbcommon-dev libdecor-0-dev \
     \\    libavif-dev libdav1d-dev libsqlite3-dev libssl-dev \
     \\    libarchive-dev libdbus-1-dev \
-    \\    liblzma-dev libbz2-dev zlib1g-dev libxml2-dev
+    \\    liblzma-dev libbz2-dev zlib1g-dev libxml2-dev \
+    \\    libzstd-dev liblz4-dev nettle-dev libacl1-dev
     \\
     \\# Zig isn't in Debian's apt yet — fetch the official 0.16 tarball.
     \\# Pin to whatever the project's flake.nix uses; bump as needed.
@@ -1674,8 +1684,10 @@ const DEB_CONTAINER_SCRIPT =
     \\# keep the dep listed so downstream packagers see it.
     \\dpkg-buildpackage -us -uc -b -d
     \\
-    \\# `.deb` lands a level up.
-    \\mv ../*.deb /work/
+    \\# `.deb` lands a level up — which is /work itself (the source tree is
+    \\# /work/f69-<ver>), so the files are already in place. Tolerate the
+    \\# self-move so `set -e` doesn't abort before the chown below.
+    \\mv ../*.deb /work/ 2>/dev/null || true
     \\
     \\# Hand ownership back to the host user.
     \\chown -R "${HOST_UID}:${HOST_GID}" /work
@@ -1692,10 +1704,12 @@ const RPM_CONTAINER_SCRIPT =
     \\    ! -name 'build-in-container.sh' \
     \\    -exec rm -rf {} +
     \\
-    \\dnf install -y rpm-build rpmdevtools zig pkgconfig \
+    \\dnf install -y rpm-build rpmdevtools patchelf zig pkgconfig \
     \\    wayland-devel libxkbcommon-devel libdecor-devel \
-    \\    libavif-devel dav1d-devel sqlite-devel openssl-devel \
-    \\    libarchive-devel dbus-devel
+    \\    libavif-devel libdav1d-devel sqlite-devel openssl-devel \
+    \\    libarchive-devel dbus-devel \
+    \\    libzstd-devel lz4-devel nettle-devel libacl-devel \
+    \\    bzip2-devel zlib-devel xz-devel libxml2-devel
     \\
     \\# Set up the rpmbuild tree, stage tarball + spec, build.
     \\rpmdev-setuptree
@@ -1834,7 +1848,9 @@ const DEBIAN_CONTROL =
     \\Maintainer: f69 contributors <noreply@example.com>
     \\Build-Depends: debhelper-compat (= 13), zig, pkg-config, libwayland-dev,
     \\ libxkbcommon-dev, libdecor-0-dev, libavif-dev, libdav1d-dev,
-    \\ libsqlite3-dev, libssl-dev, libarchive-dev, libdbus-1-dev
+    \\ libsqlite3-dev, libssl-dev, libarchive-dev, libdbus-1-dev,
+    \\ liblzma-dev, libbz2-dev, zlib1g-dev, libxml2-dev,
+    \\ libzstd-dev, liblz4-dev, nettle-dev, libacl1-dev
     \\Standards-Version: 4.6.2
     \\Homepage: https://github.com/your-org/f69
     \\
@@ -1993,6 +2009,11 @@ const RPM_SPEC =
     \\# omitting it would break the spec on dev shells, while listing
     \\# it as %dir would break the regular Fedora container build.
     \\%{{_datadir}}/%{{name}}/
+    \\# Desktop integration — .desktop entry + scalable icon installed by
+    \\# the build's desktop-integration step. rpm is strict: every installed
+    \\# file must be declared here or the build fails "unpackaged file(s)".
+    \\%{{_datadir}}/applications/%{{name}}.desktop
+    \\%{{_datadir}}/icons/hicolor/scalable/apps/%{{name}}.svg
     \\
     \\%changelog
     \\* {s} f69 contributors <noreply@example.com> - {s}-1
