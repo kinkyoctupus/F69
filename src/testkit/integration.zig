@@ -891,3 +891,71 @@ test "layer2: delete-confirm bar appears on click + cancels (F0 conditional)" {
     try std.testing.expectEqual(ui.Screen.detail, h.state.screen); // never deleted/left
     tlog("L2-confirm: OK", .{});
 }
+
+test "layer2: sidebar filter checkbox click flips bound state (F3 interaction)" {
+    tlog("START: L2-checkbox", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-checkbox");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    const before = h.state.filter_unplayed_updates;
+    tlog("L2-checkbox: rendered, filter_unplayed={}", .{before});
+
+    // Click the "Unplayed updates" sidebar checkbox → bound bool inverts.
+    try dvui.testing.moveTo("filter-unplayed");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    tlog("L2-checkbox: after click filter_unplayed={}", .{h.state.filter_unplayed_updates});
+    try std.testing.expectEqual(!before, h.state.filter_unplayed_updates);
+    tlog("L2-checkbox: OK", .{});
+}
+
+test "layer2: engine filter expander reveals its children on click (F3 conditional)" {
+    tlog("START: L2-expander", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-expander");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+
+    // Collapsed by default: the Ren'Py child is not in the tag registry.
+    try std.testing.expect(dvui.tagGet("flt-renpy") == null);
+    tlog("L2-expander: collapsed, flt-renpy absent", .{});
+
+    // Click the Engine expander → its enum checkboxes render.
+    try dvui.testing.moveTo("filter-engine-expander");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try dvui.testing.expectVisible("flt-renpy");
+    tlog("L2-expander: expanded, flt-renpy visible — OK", .{});
+}
