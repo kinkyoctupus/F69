@@ -68,8 +68,8 @@ pub fn detailScreen(frame: *Frame) !bool {
             state.selected_thread = null;
             state.clearTransientToasts();
         }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
-        dvui.labelNoFmt(@src(), game.name, .{}, .{ .gravity_y = 0.5 });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+        dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
         if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err })) {
@@ -110,15 +110,9 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer hdr.deinit();
 
-        renderCarousel(frame, game);
-
-        renderRibbon(frame, game);
+        renderBannerHero(frame, game);
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
-        renderIdentityPillRow(frame, game);
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
 
         renderActionRow(frame, game);
         renderMkxpZSettingsRow(frame, game);
@@ -266,6 +260,105 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
         .color_text = style.labelDim(),
     })) {
         actions.openInBrowser(frame, game.f95_thread_id);
+    }
+}
+
+/// Design-B banner hero — full-bleed cover banner with the title + developer +
+/// identity chips overlaid at the bottom over a scrim; clicking it opens the
+/// carousel popup. Replaces the old inline carousel + separate title + pill row.
+fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    const t = tokens.active;
+    const HERO_H: f32 = 230;
+
+    var hero = dvui.overlay(@src(), .{
+        .id_extra = game.f95_thread_id,
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 0, .h = HERO_H },
+        .max_size_content = .height(HERO_H),
+        .background = true,
+        .color_fill = tokens.toDvui(t.bg2, dvui.Color),
+        .corner_radius = dvui.Rect.all(tokens.r_lg),
+    });
+    defer hero.deinit();
+
+    // image layer — the cover, aspect-fit + centered.
+    if (actions.coverBytes(frame, game.f95_thread_id)) |bytes| {
+        _ = dvui.image(@src(), .{
+            .source = .{ .imageFile = .{ .bytes = bytes, .name = "hero" } },
+            .shrink = .ratio,
+        }, .{
+            .expand = .both,
+            .gravity_x = 0.5,
+            .gravity_y = 0.5,
+            .corner_radius = dvui.Rect.all(tokens.r_lg),
+        });
+    }
+
+    // bottom scrim for text legibility (semi-transparent dark band).
+    {
+        var scrim = dvui.box(@src(), .{}, .{
+            .gravity_y = 1.0,
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 0, .h = 92 },
+            .background = true,
+            .color_fill = .{ .r = 0x07, .g = 0x0b, .b = 0x0f, .a = 0xCC },
+        });
+        scrim.deinit();
+    }
+
+    // title + developer + chips, bottom-left.
+    {
+        var ov = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .gravity_y = 1.0,
+            .gravity_x = 0.0,
+            .expand = .horizontal,
+            .padding = .{ .x = 16, .y = 10, .w = 16, .h = 12 },
+        });
+        defer ov.deinit();
+
+        dvui.labelNoFmt(@src(), game.name, .{}, .{ .color_text = tokens.toDvui(t.ink, dvui.Color), .font = dvui.Font.theme(.title) });
+        if (game.developer) |dev| if (dev.len > 0) {
+            dvui.labelNoFmt(@src(), dev, .{}, .{ .color_text = tokens.toDvui(t.ink2, dvui.Color) });
+        };
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
+
+        var chips = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer chips.deinit();
+        if (game.engine != .unknown) {
+            const fill = components.engineBadgeColor(game.engine);
+            comp.chip(@src(), .{
+                .label = components.engineShortLabel(game.engine),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            }, .{ .id_extra = game.f95_thread_id ^ 0xE1, .gravity_y = 0.5, .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 } });
+        }
+        if (game.dev_status != .unknown) {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            const fill = components.devStatusColor(game.dev_status);
+            comp.chip(@src(), .{
+                .label = components.devStatusShortLabel(game.dev_status),
+                .fill = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+                .border = .{ .r = fill.r, .g = fill.g, .b = fill.b, .a = fill.a },
+            }, .{ .id_extra = game.f95_thread_id ^ 0xE2, .gravity_y = 0.5, .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 } });
+        }
+        if (game.rating) |r| {
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+            renderRatingStars(r);
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            var lbl_buf: [48]u8 = undefined;
+            const s = std.fmt.bufPrint(&lbl_buf, "{d:.1} ({d})", .{ r, game.vote_count orelse 0 }) catch "";
+            dvui.labelNoFmt(@src(), s, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink2, dvui.Color) });
+        }
+    }
+
+    // click → carousel popup.
+    if (dvui.clicked(hero.data(), .{})) {
+        state.image_popup_open = true;
+        state.carousel_for_thread = game.f95_thread_id;
+        state.carousel_index = 0;
     }
 }
 
