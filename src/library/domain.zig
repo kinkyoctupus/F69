@@ -360,6 +360,9 @@ pub const UniversalMod = struct {
     /// Stored modfile (archive) path the apply pipeline consumes.
     modfile_path: []const u8,
     created_at: i64 = 0,
+    /// User toggle: a disabled universal mod is skipped by Apply and shown
+    /// muted in the list. Default on.
+    enabled: bool = true,
 };
 
 pub const PlaySession = struct {

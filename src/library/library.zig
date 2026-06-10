@@ -391,12 +391,12 @@ pub const Library = struct {
         }
         var rows = if (engine) |e|
             self.conn.inner.rows(
-                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods WHERE engine = ? ORDER BY name COLLATE NOCASE",
+                "SELECT id, name, engine, modfile_path, created_at, enabled FROM universal_mods WHERE engine = ? ORDER BY name COLLATE NOCASE",
                 .{@tagName(e)},
             ) catch return errs.Error.DatabaseError
         else
             self.conn.inner.rows(
-                "SELECT id, name, engine, modfile_path, created_at FROM universal_mods ORDER BY name COLLATE NOCASE",
+                "SELECT id, name, engine, modfile_path, created_at, enabled FROM universal_mods ORDER BY name COLLATE NOCASE",
                 .{},
             ) catch return self.dbFail();
         defer rows.deinit();
@@ -410,6 +410,7 @@ pub const Library = struct {
                 .engine = std.meta.stringToEnum(dom.Engine, r.text(2)) orelse .unknown,
                 .modfile_path = path,
                 .created_at = r.int(4),
+                .enabled = r.int(5) != 0,
             }) catch return errs.Error.OutOfMemory;
         }
         return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
@@ -448,6 +449,28 @@ pub const Library = struct {
             return true;
         }
         return false;
+    }
+
+    /// Flip a universal mod's global enabled flag.
+    pub fn setUniversalModEnabled(self: *Library, mod_id: i64, enabled: bool) errs.Error!void {
+        self.conn.inner.exec(
+            "UPDATE universal_mods SET enabled = ? WHERE id = ?",
+            .{ @as(i64, if (enabled) 1 else 0), mod_id },
+        ) catch return self.dbFail();
+    }
+
+    /// How many games have opted out of a given universal mod.
+    pub fn countDisabledForMod(self: *Library, mod_id: i64) errs.Error!u32 {
+        const row = self.conn.inner.row(
+            "SELECT count(*) FROM game_universal_mod_disabled WHERE universal_mod_id = ?",
+            .{mod_id},
+        ) catch return self.dbFail();
+        if (row) |r| {
+            var rr = r;
+            defer rr.deinit();
+            return @intCast(rr.int(0));
+        }
+        return 0;
     }
 
     pub fn setGameModBackupMode(self: *Library, thread_id: u64, mode: dom.BackupModePref) errs.Error!void {
@@ -1490,6 +1513,12 @@ const migrations = [_]Migration{
         \\);
         ,
     },
+    .{
+        .id = 21,
+        .sql =
+        \\ALTER TABLE universal_mods ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+        ,
+    },
 };
 
 fn runMigrations(alloc: std.mem.Allocator, conn: *dbu.Conn) !void {
@@ -2022,6 +2051,27 @@ test "library: universal mods registry + per-game disable" {
     try std.testing.expect(try lib.isUniversalModDisabled(42, renpy_id));
     try lib.setUniversalModDisabled(42, renpy_id, false);
     try std.testing.expect(!try lib.isUniversalModDisabled(42, renpy_id));
+
+    // Global enabled flag defaults on; toggle persists.
+    {
+        const all = try lib.listUniversalMods(.renpy);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expect(all[0].enabled);
+    }
+    try lib.setUniversalModEnabled(renpy_id, false);
+    {
+        const all = try lib.listUniversalMods(.renpy);
+        defer lib.freeUniversalMods(all);
+        try std.testing.expect(!all[0].enabled);
+    }
+
+    // countDisabledForMod tracks opt-outs.
+    try std.testing.expectEqual(@as(u32, 0), try lib.countDisabledForMod(renpy_id));
+    try lib.setUniversalModDisabled(7, renpy_id, true);
+    try lib.setUniversalModDisabled(8, renpy_id, true);
+    try std.testing.expectEqual(@as(u32, 2), try lib.countDisabledForMod(renpy_id));
+    try lib.setUniversalModDisabled(7, renpy_id, false);
+    try lib.setUniversalModDisabled(8, renpy_id, false);
 
     // Delete cascades to disables.
     try lib.setUniversalModDisabled(42, renpy_id, true);
