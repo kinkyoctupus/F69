@@ -1,10 +1,10 @@
 # f69 — CI / release pipeline.
 #
 # Triggers:
-#   - push to main:    run tests + build all artifacts (no release attached)
+#   - push to main:    run tests only (no artifacts — keeps main pushes cheap)
 #   - tag v*:          run tests + build all artifacts + publish a GitHub Release
 #   - PR:              run tests only
-#   - manual dispatch: run everything (no release)
+#   - manual dispatch: run tests + build all artifacts (no release attached)
 #
 # The deb / rpm jobs run in their target distro's container so the
 # native packaging tools (dpkg-buildpackage, rpmbuild) work without
@@ -54,6 +54,9 @@ jobs:
   portable:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -83,6 +86,9 @@ jobs:
   portable-slim:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -111,6 +117,9 @@ jobs:
   arch:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     container:
       image: archlinux:latest
     steps:
@@ -162,6 +171,9 @@ jobs:
   debian:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     container:
       image: debian:bookworm-slim
     env:
@@ -205,6 +217,9 @@ jobs:
   fedora:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     container:
       image: fedora:latest
     steps:
@@ -243,6 +258,9 @@ jobs:
   windows:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v27
@@ -269,6 +287,9 @@ jobs:
   nix:
     runs-on: ubuntu-latest
     needs: test
+    # Artifacts build only on a tag (release) or a manual run — never on a
+    # plain push to main.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     continue-on-error: true   # impure-zig-fetch problem documented in flake.nix
     steps:
       - uses: actions/checkout@v4
