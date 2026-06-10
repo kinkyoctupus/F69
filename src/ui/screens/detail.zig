@@ -331,7 +331,7 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
             var ti = dvui.box(@src(), .{ .dir = .vertical }, .{
                 .gravity_y = 1.0,
                 .background = true,
-                .color_fill = .{ .r = 0x06, .g = 0x09, .b = 0x0d, .a = 0xE2 },
+                .color_fill = .{ .r = 0x06, .g = 0x09, .b = 0x0d, .a = 0x55 },
                 .padding = .{ .x = 12, .y = 9, .w = 16, .h = 11 },
                 .corner_radius = dvui.Rect.all(8),
             });
