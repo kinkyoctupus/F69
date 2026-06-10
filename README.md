@@ -2,7 +2,7 @@
 
 A native F95 game manager for Linux and Windows. You can also add custom games.
 
-<p align="center"><img src=".github/images/f69-library.png" alt="f69 library view — 1489 games in a sidebar-filtered grid"></p>
+<p align="center"><img src=".github/images/f69-library.png" alt="f69 library view — 1509 games in a sidebar-filtered grid"></p>
 
 Status: alpha (0.10.x).
 
