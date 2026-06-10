@@ -278,6 +278,7 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
 
     var hero = dvui.overlay(@src(), .{
         .id_extra = game.f95_thread_id,
+        .tag = "hero-banner",
         .expand = .horizontal,
         .min_size_content = .{ .w = 0, .h = HERO_H },
         .max_size_content = .height(HERO_H),
@@ -305,31 +306,13 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
         });
     }
 
-    // 2. subtle bottom gradient (two low-alpha bands) — just enough for the
-    //    title to read; leaves most of the shot unobstructed.
-    {
-        var s1 = dvui.box(@src(), .{}, .{
-            .gravity_y = 1.0,
-            .expand = .horizontal,
-            .min_size_content = .{ .w = 0, .h = 128 },
-            .background = true,
-            .color_fill = .{ .r = 0x05, .g = 0x08, .b = 0x0b, .a = 0x3C },
-        });
-        s1.deinit();
-        var s2 = dvui.box(@src(), .{}, .{
-            .gravity_y = 1.0,
-            .expand = .horizontal,
-            .min_size_content = .{ .w = 0, .h = 70 },
-            .background = true,
-            .color_fill = .{ .r = 0x05, .g = 0x08, .b = 0x0b, .a = 0x66 },
-        });
-        s2.deinit();
-    }
+    // 2. (no full-width scrim — contrast comes from an opaque block behind the
+    //    title/chips group in the bottom-left, see the content row below.)
 
     // 3. nav arrows overlaid on the edges + dots (only with >1 image).
     if (total > 1) {
-        if (heroNavArrow(@src(), entypo.chevron_left, 0.0)) state.carousel_index = (idx + total - 1) % total;
-        if (heroNavArrow(@src(), entypo.chevron_right, 1.0)) state.carousel_index = (idx + 1) % total;
+        if (heroNavArrow(@src(), "hero-prev", entypo.chevron_left, 0.0)) state.carousel_index = (idx + total - 1) % total;
+        if (heroNavArrow(@src(), "hero-next", entypo.chevron_right, 1.0)) state.carousel_index = (idx + 1) % total;
         heroCounter(idx, total, bytes_opt); // Cinemascope: one counter chip, not a dot cluster
     }
 
@@ -342,11 +325,16 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
         });
         defer crow.deinit();
 
-        heroCoverInset(actions.coverBytes(frame, game.f95_thread_id), game.f95_thread_id);
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 14, .h = 1 } });
-
         {
-            var ti = dvui.box(@src(), .{ .dir = .vertical }, .{ .gravity_y = 1.0 });
+            // mostly-opaque block in the bottom-left for contrast behind the
+            // title + chips (replaces the full-width scrim).
+            var ti = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .gravity_y = 1.0,
+                .background = true,
+                .color_fill = .{ .r = 0x06, .g = 0x09, .b = 0x0d, .a = 0xE2 },
+                .padding = .{ .x = 12, .y = 9, .w = 16, .h = 11 },
+                .corner_radius = dvui.Rect.all(8),
+            });
             defer ti.deinit();
             dvui.labelNoFmt(@src(), game.name, .{}, .{ .color_text = tokens.toDvui(t.ink, dvui.Color), .font = dvui.Font.theme(.title) });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 6 } });
@@ -374,15 +362,20 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
 }
 
 /// Overlaid edge nav arrow for the V3 hero. `gx` = 0 (left) or 1 (right).
-fn heroNavArrow(src: std.builtin.SourceLocation, tvg: []const u8, gx: f32) bool {
-    return components.iconOnly(src, "hero-nav", tvg, .{
+fn heroNavArrow(src: std.builtin.SourceLocation, tag: []const u8, tvg: []const u8, gx: f32) bool {
+    // Bigger than the toolbar icons — call buttonIcon directly so we can set a
+    // larger content size + generous vertical padding for a tall hit target.
+    return dvui.buttonIcon(src, "hero-nav", tvg, .{}, .{}, .{
         .id_extra = if (gx < 0.5) @as(u64, 1) else @as(u64, 8),
+        .tag = tag,
         .gravity_x = gx,
         .gravity_y = 0.5,
-        .margin = .{ .x = 6, .y = 0, .w = 6, .h = 0 },
+        .min_size_content = .{ .w = 30, .h = 30 },
+        .margin = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
+        .padding = .{ .x = 11, .y = 18, .w = 11, .h = 18 },
         .background = true,
         .color_fill = .{ .r = 0x0a, .g = 0x0e, .b = 0x12, .a = 0xB0 },
-        .corner_radius = dvui.Rect.all(6),
+        .corner_radius = dvui.Rect.all(8),
     });
 }
 
@@ -1179,16 +1172,27 @@ fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
     else
         actions.slideBytes(frame, game.f95_thread_id, idx);
 
+    // Track the OS window: fill it minus a small margin, every frame, so the
+    // lightbox scales with window resizes (and never drifts off-screen).
+    const m: f32 = 20;
+    const wr = dvui.windowRect();
+    state.image_popup_rect = .{
+        .x = m,
+        .y = m,
+        .w = @max(320, wr.w - 2 * m),
+        .h = @max(240, wr.h - 2 * m),
+    };
     var fw = dvui.floatingWindow(@src(), .{
         .modal = true,
         .open_flag = &state.image_popup_open,
+        .rect = &state.image_popup_rect,
+        .resize = .none, // it's a fixed full-window lightbox — no edge resize
     }, .{
-        .min_size_content = .{ .w = 980, .h = 660 },
-        .max_size_content = .{ .w = 1680, .h = 1040 },
         .background = true,
         .color_fill = .{ .r = 0x06, .g = 0x0a, .b = 0x0e, .a = 0xF2 },
     });
     defer fw.deinit();
+    fw.dragAreaSet(.{}); // and no click-drag move (default drag area = whole window)
 
     // header: subject (left) · counter+resolution (right) · ✕
     {
@@ -1211,31 +1215,25 @@ fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
         if (components.iconOnly(@src(), "lb-close", entypo.cross, .{ .gravity_y = 0.5 })) state.image_popup_open = false;
     }
 
-    // body: ‹ | image | ›
+    // body: image fit-by-ratio + centred (like the hero), with big edge arrows
+    // overlaid — not a flex row (which left-anchors the image).
     {
-        var body = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both, .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 } });
+        var body = dvui.overlay(@src(), .{ .expand = .both, .padding = .{ .x = 8, .y = 0, .w = 8, .h = 8 } });
         defer body.deinit();
-        var prev = false;
-        if (total > 1) prev = components.iconOnly(@src(), "lb-prev", entypo.chevron_left, .{ .gravity_y = 0.5, .gravity_x = 0.0 });
         if (bytes_opt) |b| {
             _ = dvui.image(@src(), .{ .source = .{ .imageFile = .{ .bytes = b, .name = "lb-img" } }, .shrink = .ratio }, .{
                 .id_extra = idx,
-                .expand = .both,
+                .expand = .ratio,
                 .gravity_x = 0.5,
                 .gravity_y = 0.5,
-                .corner_radius = dvui.Rect.all(tokens.r_lg),
-                .border = style.border_thin,
-                .color_border = style.borderColor(),
             });
         } else {
-            var ph = dvui.box(@src(), .{}, .{ .expand = .both });
-            defer ph.deinit();
             dvui.label(@src(), "(image not available)", .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
         }
-        var next = false;
-        if (total > 1) next = components.iconOnly(@src(), "lb-next", entypo.chevron_right, .{ .gravity_y = 0.5, .gravity_x = 1.0 });
-        if (prev) state.carousel_index = (idx + total - 1) % total;
-        if (next) state.carousel_index = (idx + 1) % total;
+        if (total > 1) {
+            if (heroNavArrow(@src(), "lb-prev", entypo.chevron_left, 0.0)) state.carousel_index = (idx + total - 1) % total;
+            if (heroNavArrow(@src(), "lb-next", entypo.chevron_right, 1.0)) state.carousel_index = (idx + 1) % total;
+        }
     }
 
     // bottom filmstrip (centred)

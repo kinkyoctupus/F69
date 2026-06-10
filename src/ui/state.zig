@@ -622,6 +622,10 @@ pub const State = struct {
     /// window. dvui's `windowHeader` X-button writes false here when
     /// the user closes it.
     image_popup_open: bool = false,
+    /// Lightbox window rect, rewritten each frame to (window − margin) so the
+    /// modal tracks the OS window size. Held in state because dvui's
+    /// floatingWindow wants a stable `*Rect` across frames.
+    image_popup_rect: dvui.Rect = .{},
     /// Multi-slot cache for the carousel slides' on-disk bytes. Slot
     /// 0 holds the full-resolution cover (path: `covers_dir/<tid>`);
     /// slots 1..N hold screenshots (path: `covers_dir/<tid>.s<idx>`).
