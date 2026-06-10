@@ -155,6 +155,8 @@ pub fn detailScreen(frame: *Frame) !bool {
         if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Journal", state.detail_tab == .journal)) state.detail_tab = .journal;
         if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (components.tabButton("Settings", state.detail_tab == .settings)) state.detail_tab = .settings;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -173,6 +175,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             .notes => renderNotesTab(frame, game),
             .guides => renderGuidesTab(frame, game),
             .journal => renderJournalTab(frame, game),
+            .settings => renderSettingsTab(frame, game),
         }
     }
 
@@ -358,6 +361,7 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
         {
             var acts = dvui.box(@src(), .{ .dir = .horizontal }, .{ .gravity_y = 1.0 });
             defer acts.deinit();
+            renderHeroUpdate(frame, game);
             renderHeroPlay(frame, game);
         }
     }
@@ -372,6 +376,27 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
 /// Hero Play control. A split button: the primary half launches the active
 /// install (the Overview-picked one, else the newest); a ▾ caret lists every
 /// installed version to pick + launch. Shows Stop while the game runs.
+/// Hero "Update to X" — shown next to Play when an install is outdated and
+/// nothing's already downloading/installing. Secondary styling (Play stays the
+/// teal primary). Moved here from the action row (design-B: ▶ Play · ⤓ Update).
+fn renderHeroUpdate(frame: *Frame, game: *const library.Game) void {
+    if (actions.isGameRunning(frame, game.f95_thread_id)) return;
+    if (actions.hasActiveDownloadForGame(frame, game.f95_thread_id)) return;
+    if (actions.isInstallingForGame(frame, game.f95_thread_id)) return;
+    if (actions.installDotState(frame, game) != .outdated) return;
+    const newer = game.latest_version orelse "latest";
+    var buf: [48]u8 = undefined;
+    const lbl = std.fmt.bufPrint(&buf, "Update to {s}", .{newer}) catch "Update";
+    if (components.iconButton(@src(), lbl, entypo.cloud, .{ .gravity_y = 0.5, .tag = "hero-update" })) {
+        if (actions.hasAutoFetchableSource(frame, game.f95_thread_id)) {
+            actions.doDownloadGame(frame, game);
+        } else {
+            actions.openManualInstallForUpdate(frame.state, newer);
+        }
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
+}
+
 fn renderHeroPlay(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
 
@@ -1479,22 +1504,10 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 //  Tab bodies — Description / Changelog / Notes / Downloads
 // ============================================================
 
+/// Overview tab — about the GAME: the thread/store blurb + the description.
+/// (Tags render full-width above the tabs; per-game actions + config moved to
+/// the Settings tab so this pane stays lean — see renderSettingsTab.)
 fn renderOverview(frame: *Frame, game: *library.Game) void {
-    const state = frame.state;
-
-    // Actions + per-game settings live here (moved out of the V3 header).
-    renderActionRow(frame, game);
-    renderMkxpZSettingsRow(frame, game);
-    renderDetailStatusLine(frame, game);
-    if (state.convert_help_open) renderConvertHelp();
-    if (state.manual_install_open) renderManualInstallPanel(frame, game);
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
-    renderDetailFactsGrid(frame, game);
-
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
     if (game.thread_info_md) |info| {
         renderStructuredText(frame, info, game.f95_thread_id ^ 0xF6);
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
@@ -1502,6 +1515,21 @@ fn renderOverview(frame: *Frame, game: *library.Game) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     }
     renderWrappedText(game.description_md, "No description yet. Sync this game to populate.");
+}
+
+/// Settings / Manage tab — the per-game action set + configuration that used
+/// to crowd the Overview pane: launch & version management, file + tool
+/// actions, status/rating/sandbox/version-pin/labels/auto-update/custom-launch,
+/// and the facts grid.
+fn renderSettingsTab(frame: *Frame, game: *library.Game) void {
+    const state = frame.state;
+    renderActionRow(frame, game);
+    renderMkxpZSettingsRow(frame, game);
+    renderDetailStatusLine(frame, game);
+    if (state.convert_help_open) renderConvertHelp();
+    if (state.manual_install_open) renderManualInstallPanel(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    renderDetailFactsGrid(frame, game);
 }
 
 /// V3 compact meta bar — read-only `installed · dev · played` key/values, with
@@ -1544,9 +1572,37 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-    if (components.iconButton(@src(), "Mods", entypo.tools, .{ .gravity_y = 0.5 })) {
+    // ⛶ Sandbox → jump to the Settings tab where sandbox is configured.
+    if (components.iconButton(@src(), "Sandbox", entypo.box, .{ .gravity_y = 0.5 })) {
+        state.detail_tab = .settings;
+    }
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+
+    // ⊞ Mods (n) → per-game mods screen. n = enabled universal mods of this
+    // engine that this game hasn't opted out of.
+    const n_mods = gameModCount(frame, game);
+    var mods_buf: [24]u8 = undefined;
+    const mods_label = if (n_mods > 0)
+        std.fmt.bufPrint(&mods_buf, "Mods ({d})", .{n_mods}) catch "Mods"
+    else
+        "Mods";
+    if (components.iconButton(@src(), mods_label, entypo.tools, .{ .gravity_y = 0.5 })) {
         state.screen = .mods_for_game;
     }
+}
+
+/// Count of universal mods currently active on this game: enabled, of the
+/// game's engine, and not opted-out for this game.
+fn gameModCount(frame: *Frame, game: *const library.Game) usize {
+    const mods = frame.lib.listUniversalMods(game.engine) catch return 0;
+    defer frame.lib.freeUniversalMods(mods);
+    var n: usize = 0;
+    for (mods) |m| {
+        if (!m.enabled) continue;
+        const disabled = frame.lib.isUniversalModDisabled(game.f95_thread_id, m.id) catch false;
+        if (!disabled) n += 1;
+    }
+    return n;
 }
 
 /// One `LABEL value` pair (mono) for the compact meta bar. `src` unique per call.
@@ -1993,28 +2049,7 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    if (!actions.isGameRunning(frame, game.f95_thread_id) and
-        !actions.hasActiveDownloadForGame(frame, game.f95_thread_id) and
-        !actions.isInstallingForGame(frame, game.f95_thread_id) and
-        actions.installDotState(frame, game) == .outdated)
-    {
-        const newer = game.latest_version orelse "latest";
-        var btn_buf: [48]u8 = undefined;
-        const btn_label = std.fmt.bufPrint(&btn_buf, "Update to {s}", .{newer}) catch "Update";
-        if (components.iconButton(@src(), btn_label, entypo.cloud, .{
-            .color_fill = launch_fill,
-            .color_fill_hover = launch_hover,
-            .color_fill_press = launch_press,
-            .color_text = launch_text,
-            .color_border = launch_fill,
-        })) {
-            if (actions.hasAutoFetchableSource(frame, game.f95_thread_id)) {
-                actions.doDownloadGame(frame, game);
-            } else {
-                actions.openManualInstallForUpdate(frame.state, newer);
-            }
-        }
-    }
+    // (Update-to-X moved to the hero — see renderHeroUpdate.)
 
     const installs = frame.lib.listInstalls(game.f95_thread_id) catch &[_]library.Install{};
     defer frame.lib.freeInstalls(@constCast(installs));

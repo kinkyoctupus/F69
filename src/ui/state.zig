@@ -138,7 +138,7 @@ pub const SortColumn = enum { name, rating, weighted, votes, last_updated, sync_
 pub const SortDir = enum { asc, desc };
 pub const LoginStatus = enum { unknown, logged_out, logged_in, logging_in, err };
 pub const View = enum { grid, list, kanban };
-pub const Tab = enum { overview, changelog, downloads, notes, guides, journal };
+pub const Tab = enum { overview, changelog, downloads, notes, guides, journal, settings };
 
 /// Filter tabs for the Mods page. Each filters the master list of
 /// (archive, recipe) pairs by state:
