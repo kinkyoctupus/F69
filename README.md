@@ -296,6 +296,36 @@ zig build test
 
 Style + workflow notes live in [`CLAUDE.md`](CLAUDE.md). tldr: caveman prose, lead with files-modified lists, no unnecessary abstractions.
 
+## Credits & thanks:
+
+f69 stands on a lot of other people's work.
+
+**Tools it bundles or drives:**
+
+- **[mkxp-z](https://github.com/mkxp-z/mkxp-z)** (LGPL-2.1+, Amaryllis Kulla & contributors) — the runtime that makes RPG Maker XP / VX / VX Ace games run natively on Linux, vendored under `third_party/mkxp-z/`.
+- **[aria2](https://aria2.github.io/)** — the download engine f69 drives over JSON-RPC.
+- **[NW.js](https://nwjs.io/)** — pulled in for the RPG Maker MV / Ren'Py Windows→Linux conversions.
+
+**Formats & techniques** — f69's built-in Ren'Py / RPG Maker tools are its own implementations of well-known community formats; thanks to the projects that pioneered and documented them:
+
+- **UnRen** (Sam, F95Zone) — the Ren'Py `.rpa` extractor + developer-console enabler that f69's "Extract .rpa" and "Ren'Py console" tools reimplement.
+- **[Petschko's RPG Maker MV/MZ Decrypter](https://github.com/Petschko/Java-RPG-Maker-MV-Decrypter)** — the reference for the `System.json` `encryptionKey` decryption behind f69's "Decrypt RPGM assets".
+- **[Ren'Py](https://www.renpy.org/)** and **[RPG Maker](https://www.rpgmakerweb.com/)** themselves.
+
+**Libraries:**
+
+- **[Zig](https://ziglang.org/)** — the language + build system.
+- **[dvui](https://github.com/david-vanderson/dvui)** (David Vanderson) — the immediate-mode GUI toolkit the whole interface is built on.
+- **[SDL3](https://www.libsdl.org/)** — windowing + the GPU rendering backend.
+- **[zqlite](https://github.com/karlseguin/zqlite.zig)** + **[websocket.zig](https://github.com/karlseguin/websocket.zig)** (Karl Seguin) — the SQLite wrapper and the aria2 WebSocket transport.
+- **[SQLite](https://sqlite.org/)** — the library database.
+- **[libavif](https://github.com/AOMediaCodec/libavif)** + **[dav1d](https://code.videolan.org/videolan/dav1d)** — AVIF cover-art decoding.
+- **[libarchive](https://www.libarchive.org/)** — archive extraction (zip / 7z / rar / …).
+- **[FreeType](https://freetype.org/)** + **[stb_image](https://github.com/nothings/stb)** — font and image rendering (via dvui).
+- plus zlib, zstd, lz4, xz, bzip2, nettle, libxml2, and D-Bus.
+
+And of course **[F95Checker](https://github.com/WillyJL/F95Checker)** (WillyJL) and **xLibrary** — see [Inspiration](#inspiration).
+
 ## LLM usage:
 
 This has been supervised vibe coded. I as a software engineer told it how I wanted the code structure to be and Claude made it.
