@@ -630,10 +630,10 @@ pub fn guiFrame(frame: *Frame) !bool {
     actions.drainLaunchWatcher(frame);
     actions.drainRefreshTags(frame);
     types.endLatency(frame.io, t_drain, "drain stack");
-    // Refresh aria2-driven download progress. Cheap on localhost
-    // (sub-ms RPC) and only walks non-terminal jobs. Skip the call
-    // entirely when there are no jobs — pure dead work for idle
-    // sessions that never touched a download.
+    // Refresh aria2-driven download progress. `tick()` self-throttles the
+    // per-job status RPC to ~4 Hz (it's a synchronous round-trip on this
+    // thread) and skips terminal jobs, so a queue of finished downloads no
+    // longer blocks rendering. Skip the call entirely when there are no jobs.
     if (frame.dl_mgr.jobs.count() > 0) frame.dl_mgr.tick();
     // Aria2 progress + the detail-page "Installing…" sweep both
     // arrive/animate between input events. Without an explicit

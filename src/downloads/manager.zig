@@ -23,6 +23,11 @@ const dom = @import("domain.zig");
 const Handler = @import("handler.zig").Handler;
 const aria2_rpc = @import("aria2_rpc.zig");
 
+/// How often `tick()` actually polls aria2 for per-job status (bytes, speed,
+/// seed stats). 4 Hz — fast enough that progress looks live, slow enough that
+/// the synchronous per-job RPC never competes with the 60 Hz render loop.
+const POLL_INTERVAL_NS: i128 = 250 * std.time.ns_per_ms;
+
 pub const Manager = struct {
     alloc: std.mem.Allocator,
     io: std.Io,
@@ -46,6 +51,11 @@ pub const Manager = struct {
     /// `tellStatus` and `remove`.
     job_gids: std.AutoHashMap(u64, []u8),
     next_id: u64 = 1,
+    /// Wall-clock ns of the last aria2 status poll. `tick()` is called once
+    /// per UI frame, but `tellStatus` is a synchronous JSON-RPC round-trip
+    /// per job on the UI thread — polling at the frame rate blocks rendering.
+    /// We poll on a fixed cadence instead (see `POLL_INTERVAL_NS`).
+    last_poll_ns: i128 = 0,
     /// Resolved aria2c executable path (`"aria2c"` for PATH lookup).
     aria2_path: []const u8,
     /// RPC port the daemon should bind. 0 ⇒ random ephemeral.
@@ -340,6 +350,16 @@ pub const Manager = struct {
             log.info("aria2 push event {s} gid={s}", .{ e.method, e.gid });
         }
 
+        // Throttle the per-job status poll to a fixed wall-clock cadence.
+        // `tick()` runs once per UI frame (60+ Hz), but each polled job costs
+        // a synchronous `tellStatus` RPC + JSON parse on the UI thread — at
+        // frame rate with several jobs that stalls rendering. 4 Hz keeps
+        // progress / seed numbers live without ever blocking a frame. Event
+        // draining above stays per-frame (cheap, no RPC).
+        const now_ns = std.Io.Clock.Timestamp.now(self.io, .real).raw.toNanoseconds();
+        if (self.last_poll_ns != 0 and now_ns - self.last_poll_ns < POLL_INTERVAL_NS) return;
+        self.last_poll_ns = now_ns;
+
         // Track whether any job changed status this tick, so we can
         // flush the JSON exactly once per transition batch — without
         // this the persisted status lags reality (a torrent moves
@@ -357,8 +377,12 @@ pub const Manager = struct {
             // surfaced in the UI, and a download restored from disk
             // as `.done` can transition back to `.seeding` if aria2's
             // session file resumed it.
+            // Terminal states never change again — don't re-poll them. This
+            // is the big one: a queue of finished `.done` downloads would
+            // otherwise cost one RPC each, every poll, forever. `.seeding`
+            // IS still polled (its upload/peer stats are live).
             switch (j.status) {
-                .failed, .cancelled => continue,
+                .failed, .cancelled, .done => continue,
                 else => {},
             }
             const gid = self.job_gids.get(j.id) orelse continue;
