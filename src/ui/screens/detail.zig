@@ -145,11 +145,7 @@ pub fn detailScreen(frame: *Frame) !bool {
         defer hdr.deinit();
 
         renderRibbon(frame, game); // V3 filmstrip under the hero
-        renderCompactMeta(frame, game); // V3 compact meta bar
-        // Download / Install live in the main GUI (not a tab) — acquiring or
-        // updating a game is always one glance away.
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
-        renderAcquireRow(frame, game);
+        renderCompactMeta(frame, game); // V3 compact meta bar (incl. Download · Install · Mods)
     }
 
     if (game.tags.len > 0) {
@@ -628,6 +624,69 @@ fn addLabelFromInput(frame: *Frame, game: *library.Game) void {
     @memset(buf, 0);
 }
 
+/// "Labels" config row — assigned label chips (removable) + an add box. Part
+/// of the Overview "Your settings · Tracking" group.
+fn renderLabelsRow(frame: *Frame, game: *library.Game) void {
+    const all_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
+    defer if (all_opt) |a| frame.lib.freeLabels(a);
+    const all: []const library.UserLabel = all_opt orelse &.{};
+    const assigned_opt: ?[]i64 = frame.lib.labelsForGame(game.f95_thread_id) catch null;
+    defer if (assigned_opt) |a| frame.lib.alloc.free(a);
+    const assigned: []const i64 = assigned_opt orelse &.{};
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = game.f95_thread_id ^ 0x1AB5,
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
+    });
+    defer row.deinit();
+    dvui.label(@src(), "Labels", .{}, .{
+        .min_size_content = .{ .w = 120, .h = 20 },
+        .gravity_y = 0.5,
+        .color_text = style.labelDim(),
+    });
+
+    var flow = dvui.flexbox(@src(), .{}, .{ .expand = .horizontal });
+    defer flow.deinit();
+
+    for (assigned) |lid| {
+        const lbl = findLabelById(all, lid) orelse continue;
+        const id_extra: u64 = @bitCast(lid);
+        var chip_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .id_extra = id_extra,
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 6, .h = 4 },
+        });
+        defer chip_row.deinit();
+        const col = if (lbl.color) |c| (tokens.parseHex(c) orelse tokens.active.acc) else tokens.active.acc;
+        comp.chip(@src(), .{
+            .label = lbl.name,
+            .fill = col,
+            .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
+            .border = col,
+            .scale = 0.8,
+        }, .{
+            .id_extra = id_extra,
+            .gravity_y = 0.5,
+            .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
+            .corner_radius = .all(3),
+        });
+        if (components.iconOnly(@src(), "remove-label", entypo.cross, .{ .id_extra = id_extra, .gravity_y = 0.5 })) {
+            saveOrToast(frame, "label", frame.lib.removeGameLabel(game.f95_thread_id, lid));
+        }
+    }
+
+    const te = style.textEntry(@src(), .{ .text = .{ .buffer = &frame.state.label_input_buf } }, .{
+        .min_size_content = .{ .w = 150, .h = 26 },
+        .gravity_y = 0.5,
+    });
+    te.deinit();
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    if (components.iconButton(@src(), "Add", entypo.plus, .{ .style = .highlight, .gravity_y = 0.5 })) {
+        addLabelFromInput(frame, game);
+    }
+}
+
 /// Read-only game facts (Overview tab): version · developer · last-updated ·
 /// last-synced + Sync now.
 fn renderDetailFacts(frame: *Frame, game: *library.Game) void {
@@ -639,11 +698,12 @@ fn renderDetailFacts(frame: *Frame, game: *library.Game) void {
 
     var row_id: u32 = 1;
 
-    if (game.latest_version) |v| {
-        factsRow(&row_id, "Version", .{ .text = v });
-    }
     if (game.developer) |d| {
         factsRow(&row_id, "Developer", .{ .text = d });
+    }
+    factsRow(&row_id, "Engine", .{ .text = components.engineShortLabel(game.engine) });
+    if (game.latest_version) |v| {
+        factsRow(&row_id, "Version", .{ .text = v });
     }
     if (game.last_updated_at) |ts| {
         var buf: [32]u8 = undefined;
@@ -693,6 +753,7 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
 
     var row_id: u32 = 1;
 
+    detailSectionHeader("Tracking", false);
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
@@ -748,6 +809,9 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
             }
         }
     }
+    renderLabelsRow(frame, game);
+
+    detailSectionHeader("Launch & updates", false);
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .id_extra = row_id,
@@ -810,71 +874,7 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    // User labels — the user's own organizational tags (distinct from the
-    // scraped F95 tags). Assigned chips (removable) + an add box that creates
-    // a new label or re-uses an existing one by name.
-    {
-        const all_opt: ?[]library.UserLabel = frame.lib.listLabels() catch null;
-        defer if (all_opt) |a| frame.lib.freeLabels(a);
-        const all: []const library.UserLabel = all_opt orelse &.{};
-        const assigned_opt: ?[]i64 = frame.lib.labelsForGame(game.f95_thread_id) catch null;
-        defer if (assigned_opt) |a| frame.lib.alloc.free(a);
-        const assigned: []const i64 = assigned_opt orelse &.{};
-
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .id_extra = row_id,
-            .expand = .horizontal,
-            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
-        });
-        defer row.deinit();
-        row_id += 1;
-        dvui.label(@src(), "Labels", .{}, .{
-            .min_size_content = .{ .w = 120, .h = 20 },
-            .gravity_y = 0.5,
-            .color_text = style.labelDim(),
-        });
-
-        var flow = dvui.flexbox(@src(), .{}, .{ .expand = .horizontal });
-        defer flow.deinit();
-
-        for (assigned) |lid| {
-            const lbl = findLabelById(all, lid) orelse continue;
-            const id_extra: u64 = @bitCast(lid);
-            var chip_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-                .id_extra = id_extra,
-                .gravity_y = 0.5,
-                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 4 },
-            });
-            defer chip_row.deinit();
-            const col = if (lbl.color) |c| (tokens.parseHex(c) orelse tokens.active.acc) else tokens.active.acc;
-            comp.chip(@src(), .{
-                .label = lbl.name,
-                .fill = col,
-                .text = .{ .r = 0xff, .g = 0xff, .b = 0xff, .a = 0xff },
-                .border = col,
-                .scale = 0.8,
-            }, .{
-                .id_extra = id_extra,
-                .gravity_y = 0.5,
-                .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
-                .corner_radius = .all(3),
-            });
-            if (components.iconOnly(@src(), "remove-label", entypo.cross, .{ .id_extra = id_extra, .gravity_y = 0.5 })) {
-                saveOrToast(frame, "label", frame.lib.removeGameLabel(game.f95_thread_id, lid));
-            }
-        }
-
-        const te = style.textEntry(@src(), .{ .text = .{ .buffer = &frame.state.label_input_buf } }, .{
-            .min_size_content = .{ .w = 150, .h = 26 },
-            .gravity_y = 0.5,
-        });
-        te.deinit();
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-        if (components.iconButton(@src(), "Add", entypo.plus, .{ .style = .highlight, .gravity_y = 0.5 })) {
-            addLabelFromInput(frame, game);
-        }
-    }
-
+    // (Labels moved up into the Tracking group — see renderLabelsRow.)
     // (Engine tools moved to the Tools tab — renderEngineTools.)
 
     // Per-game universal-mod opt-outs — list the engine's universal mods with
@@ -1513,25 +1513,45 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 //  Tab bodies — Description / Changelog / Notes / Downloads
 // ============================================================
 
-/// Overview tab — about the GAME: the thread/store blurb + the description.
-/// (Tags render full-width above the tabs; per-game actions + config moved to
-/// the Settings tab so this pane stays lean — see renderSettingsTab.)
-fn renderOverview(frame: *Frame, game: *library.Game) void {
-    if (game.thread_info_md) |info| {
-        renderStructuredText(frame, info, game.f95_thread_id ^ 0xF6);
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
-        _ = dvui.separator(@src(), .{ .expand = .horizontal });
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+/// A teal section heading with a trailing hairline (e.g. "About",
+/// "Your settings"). `accent=false` is a dimmer subsection label.
+fn detailSectionHeader(label: []const u8, accent: bool) void {
+    const t = tokens.active;
+    const mono = dvui.Font.theme(.mono);
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = @intFromPtr(label.ptr),
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 4, .w = 0, .h = 8 },
+    });
+    defer row.deinit();
+    const factor: f32 = if (accent) 0.84 else 0.78;
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = tokens.toDvui(if (accent) t.acc else t.ink3, dvui.Color),
+        .font = mono.withSize(mono.size * factor),
+    });
+    if (accent) {
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
+        _ = dvui.separator(@src(), .{ .expand = .horizontal, .gravity_y = 0.5 });
     }
+}
+
+/// Overview tab — reads top-to-bottom as a story: the description (what the
+/// game IS) → an "About" facts block → the per-game settings, grouped.
+fn renderOverview(frame: *Frame, game: *library.Game) void {
+    // 1. Description — leads.
     renderWrappedText(game.description_md, "No description yet. Sync this game to populate.");
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 16 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    renderDetailFacts(frame, game);
+
+    // 2. About — one consolidated, deduplicated facts block (the old
+    //    thread-info key/value dump is dropped; every field it carried is here
+    //    or already a hero chip).
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 18 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    // Per-game settings live here now (no separate Settings tab).
+    detailSectionHeader("About", true);
+    renderDetailFacts(frame, game);
+
+    // 3. Your settings.
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 18 } });
+    detailSectionHeader("Your settings", true);
     renderGameConfig(frame, game);
 }
 
@@ -1595,6 +1615,11 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
 
     // (Sandbox is a per-game setting — it lives in the Overview settings, not
     // here in the main GUI.)
+
+    // Download / Install — acquisition, right beside Mods in the main GUI.
+    renderDetailDownloadButton(frame, game);
+    renderDetailInstallButton(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
 
     // ⊞ Mods (n) → per-game mods screen. n = enabled universal mods of this
     // engine that this game hasn't opted out of.
@@ -2112,17 +2137,6 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
     // to the top-bar ⋯; Convert + Fix Compat + engine tools to the Tools tab.)
 }
 
-/// Download + Install — acquisition. Lives in the detail main GUI (under the
-/// meta bar), not in a tab, so getting/updating a game is always one glance.
-fn renderAcquireRow(frame: *Frame, game: *library.Game) void {
-    var row = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
-        .expand = .horizontal,
-        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-    });
-    defer row.deinit();
-    renderDetailDownloadButton(frame, game);
-    renderDetailInstallButton(frame, game);
-}
 
 /// Engine tools — operate on the SELECTED install (Tools tab, under the
 /// version picker): Win→Linux convert, host-compat fix, per-engine helpers.
