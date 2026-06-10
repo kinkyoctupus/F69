@@ -123,12 +123,14 @@ tar --exclude=data -C zig-out -czf f69-portable.tar.gz bin
 
 ## Roadmap:
 
-Not a strict plan — more things that I would like to add and improve:
+**Shipped in 0.10.0** (these were the big roadmap items): **Windows support** — the app, the cross-compiled builds, and native game launching all work; the themeable Design-B UI; playtime tracking; the recipe-based mod system + universal mods; the multi-view library (grid / list / Kanban); a rebuilt download engine; and faster game-info retrieval via the in-tree F95Indexer client. See the [release notes](RELEASE_NOTES_0.10.0.md) for the full list.
 
-- **Stable release** — fix all the bugs people report for the first stable release
+Still on the list — not a strict plan, just what I'd like to add next:
+
+- **Stable release** — squash the bugs people report and graduate from alpha
 - **More engine fix-up recipes** — Godot, Ren'Py 6, Unity edge cases (uses fix-up library for missing libGLU.so.1 / libcurl-gnutls)
 - **Mod recipe server** — for mod recipe submissions / sharing and browsing
-- **Cache server** — like xlibrary and f95checker for faster game info retrieval
+- **Self-hosted cache server** — so fast metadata doesn't depend on F95Checker's indexer being up
 - **Browser extension** — F95Checker's pattern of "right-click thread → add to library" is hard to beat
 - **macOS support** — not sure... I don't have a mac, so perhaps someone can make a PR for it if they want it.
 
@@ -159,6 +161,15 @@ Not a strict plan — more things that I would like to add and improve:
 -Dgui=false               # headless build, for CI smoke tests
 -Dcontainer-build=true    # invoke podman/docker for aur/deb/rpm (opt-in, see below)
 ```
+
+**Windows builds** (since 0.10.0) aren't a `zig build` step — they're a cross-compile:
+
+```sh
+bash scripts/build-windows.sh      # cross-compiles f69.exe (mingw prefix via Nix)
+bash scripts/package-windows.sh    # resolves the DLL closure → zig-out/f69-windows.zip
+```
+
+The CI `windows` job runs both on every tag and uploads `f69-windows.zip`.
 
 ## Distribution targets:
 
@@ -192,7 +203,7 @@ To cut a release: `git tag v0.10.0 && git push origin v0.10.0`.
 <details>
 <summary><b>Why a new app instead of contributing to F95Checker?</b></summary>
 
-F95Checker is a Python + ImGui + browser-extension stack. f69 is single-binary native + Linux-only + sandbox-first. Different design point; the codebases share basically zero in implementation while sharing many UX ideas.
+F95Checker is a Python + ImGui + browser-extension stack. f69 is single-binary native, runs on Linux **and Windows** (since 0.10.0), and is sandbox-first on Linux. Different design point; the codebases share basically zero in implementation while sharing many UX ideas.
 
 If you don't need bwrap sandboxing or native rendering, F95Checker is the more mature option.
 
