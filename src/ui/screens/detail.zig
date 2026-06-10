@@ -112,20 +112,10 @@ pub fn detailScreen(frame: *Frame) !bool {
 
         renderBannerHero(frame, game);
         renderRibbon(frame, game); // V3 filmstrip under the hero
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
-        renderActionRow(frame, game);
-        renderMkxpZSettingsRow(frame, game);
-
-        renderDetailStatusLine(frame, game);
-
-        if (state.convert_help_open) renderConvertHelp();
-        if (state.manual_install_open) renderManualInstallPanel(frame, game);
-
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-
-        renderDetailFactsGrid(frame, game);
+        renderCompactMeta(frame, game); // V3 compact meta bar
+        // The full action set + interactive settings (status/rating/sandbox/
+        // pin/labels/tools) now live in the Overview tab (renderOverview) so
+        // the header stays the clean V3 hero + meta bar.
     }
 
     if (game.tags.len > 0) {
@@ -1402,7 +1392,22 @@ fn renderDeleteInstallPopup(frame: *Frame, inst: *const library.Install) void {
 //  Tab bodies — Description / Changelog / Notes / Downloads
 // ============================================================
 
-fn renderOverview(frame: *Frame, game: *const library.Game) void {
+fn renderOverview(frame: *Frame, game: *library.Game) void {
+    const state = frame.state;
+
+    // Actions + per-game settings live here (moved out of the V3 header).
+    renderActionRow(frame, game);
+    renderMkxpZSettingsRow(frame, game);
+    renderDetailStatusLine(frame, game);
+    if (state.convert_help_open) renderConvertHelp();
+    if (state.manual_install_open) renderManualInstallPanel(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    renderDetailFactsGrid(frame, game);
+
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+
     if (game.thread_info_md) |info| {
         renderStructuredText(frame, info, game.f95_thread_id ^ 0xF6);
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
@@ -1410,6 +1415,48 @@ fn renderOverview(frame: *Frame, game: *const library.Game) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     }
     renderWrappedText(game.description_md, "No description yet. Sync this game to populate.");
+}
+
+/// V3 compact meta bar — read-only `installed · dev · played` key/values, with
+/// a Mods button on the right. Sits between the filmstrip and the tabs.
+fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
+    var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 2, .y = 8, .w = 2, .h = 10 },
+        .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+        .color_border = style.borderColor(),
+    });
+    defer bar.deinit();
+
+    const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(game.f95_thread_id) else null;
+    metaKv(@src(), "installed", inst_v orelse "—");
+    if (game.developer) |d| if (d.len > 0) metaKv(@src(), "dev", d);
+    {
+        var pb: [40]u8 = undefined;
+        const ps = if (game.last_played_at) |lp|
+            components.formatUtcDateTime(&pb, lp) catch "—"
+        else
+            "never";
+        metaKv(@src(), "played", ps);
+    }
+
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    if (components.iconButton(@src(), "Mods", entypo.tools, .{ .gravity_y = 0.5 })) {
+        state.screen = .mods_for_game;
+    }
+}
+
+/// One `label value` pair for the compact meta bar. `src` must be unique per call.
+fn metaKv(src: std.builtin.SourceLocation, label: []const u8, value: []const u8) void {
+    const t = tokens.active;
+    var b = dvui.box(src, .{ .dir = .horizontal }, .{ .gravity_y = 0.5, .margin = .{ .x = 0, .y = 0, .w = 20, .h = 0 } });
+    defer b.deinit();
+    dvui.labelNoFmt(@src(), label, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    dvui.labelNoFmt(@src(), value, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink, dvui.Color) });
 }
 
 fn renderChangelogTab(frame: *Frame, game: *const library.Game) void {
