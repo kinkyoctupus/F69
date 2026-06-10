@@ -320,7 +320,7 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
     if (total > 1) {
         if (heroNavArrow(@src(), entypo.chevron_left, 0.0)) state.carousel_index = (idx + total - 1) % total;
         if (heroNavArrow(@src(), entypo.chevron_right, 1.0)) state.carousel_index = (idx + 1) % total;
-        heroDots(idx, total);
+        heroCounter(idx, total, bytes_opt); // Cinemascope: one counter chip, not a dot cluster
     }
 
     // 4. bottom overlay row: cover inset + title/chips (left) … ▶ Play (right).
@@ -376,56 +376,62 @@ fn heroNavArrow(src: std.builtin.SourceLocation, tvg: []const u8, gx: f32) bool 
     });
 }
 
-/// Carousel dots, bottom-centre, sitting above the title row.
-fn heroDots(idx: usize, total: usize) void {
-    const t = tokens.active;
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .gravity_x = 0.5,
-        .gravity_y = 1.0,
-        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 78 },
+/// Cinemascope counter chip, top-right — replaces the dot cluster. Shows
+/// `idx / total · W×H` (resolution from the current image when available).
+fn heroCounter(idx: usize, total: usize, bytes_opt: ?[]const u8) void {
+    var buf: [56]u8 = undefined;
+    const txt = blk: {
+        if (bytes_opt) |b| {
+            const sz = dvui.imageSize(.{ .imageFile = .{ .bytes = b, .name = "hc" } }) catch dvui.Size{ .w = 0, .h = 0 };
+            if (sz.w > 0) break :blk std.fmt.bufPrint(&buf, "{d} / {d} · {d}×{d}", .{ idx + 1, total, @as(u32, @intFromFloat(sz.w)), @as(u32, @intFromFloat(sz.h)) }) catch "";
+        }
+        break :blk std.fmt.bufPrint(&buf, "{d} / {d}", .{ idx + 1, total }) catch "";
+    };
+    var pill = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_x = 1.0,
+        .gravity_y = 0.0,
+        .margin = .{ .x = 0, .y = 12, .w = 14, .h = 0 },
+        .background = true,
+        .color_fill = .{ .r = 0x0a, .g = 0x0f, .b = 0x14, .a = 0xD9 },
+        .border = dvui.Rect.all(1),
+        .color_border = .{ .r = 0x2b, .g = 0x37, .b = 0x42 },
+        .corner_radius = dvui.Rect.all(10),
+        .padding = .{ .x = 10, .y = 3, .w = 10, .h = 3 },
     });
-    defer row.deinit();
-    var i: usize = 0;
-    while (i < total and i < 12) : (i += 1) {
-        var d = dvui.box(@src(), .{}, .{
-            .id_extra = i,
-            .background = true,
-            .color_fill = tokens.toDvui(if (i == idx) t.acc else t.ink3, dvui.Color),
-            .corner_radius = dvui.Rect.all(3),
-            .min_size_content = .{ .w = 6, .h = 6 },
-            .margin = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
-        });
-        d.deinit();
-    }
+    defer pill.deinit();
+    dvui.labelNoFmt(@src(), txt, .{}, .{ .color_text = tokens.toDvui(tokens.active.ink2, dvui.Color), .font = dvui.Font.theme(.mono) });
 }
 
 /// Small cover thumbnail inset for the V3 hero bottom row.
 fn heroCoverInset(bytes_opt: ?[]const u8, thread_id: u64) void {
+    const ring = tokens.toDvui(tokens.active.acc_dim, dvui.Color); // teal hairline (Cinemascope)
     if (bytes_opt) |bytes| {
         _ = dvui.image(@src(), .{
             .source = .{ .imageFile = .{ .bytes = bytes, .name = "hero-cover" } },
             .shrink = .ratio,
         }, .{
             .id_extra = thread_id,
+            .gravity_x = 0.5,
             .gravity_y = 1.0,
             .min_size_content = .{ .w = 92, .h = 124 },
             .max_size_content = .{ .w = 92, .h = 124 },
-            .border = style.border_thin,
-            .corner_radius = dvui.Rect.all(4),
-            .color_border = style.borderColor(),
+            .border = dvui.Rect.all(1),
+            .corner_radius = dvui.Rect.all(5),
+            .color_border = ring,
         });
         return;
     }
     var box = dvui.box(@src(), .{}, .{
         .id_extra = thread_id,
+        .gravity_x = 0.5,
         .gravity_y = 1.0,
         .min_size_content = .{ .w = 92, .h = 124 },
         .max_size_content = .{ .w = 92, .h = 124 },
         .background = true,
         .color_fill = .{ .r = 0x16, .g = 0x0c, .b = 0x12 },
-        .border = style.border_thin,
-        .corner_radius = dvui.Rect.all(4),
-        .color_border = style.borderColor(),
+        .border = dvui.Rect.all(1),
+        .corner_radius = dvui.Rect.all(5),
+        .color_border = ring,
     });
     box.deinit();
 }
@@ -1431,15 +1437,17 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
     defer bar.deinit();
 
     const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(game.f95_thread_id) else null;
-    metaKv(@src(), "installed", inst_v orelse "—");
-    if (game.developer) |d| if (d.len > 0) metaKv(@src(), "dev", d);
+    metaKv(@src(), "INSTALLED", inst_v orelse "—");
+    metaSep(@src());
+    metaKv(@src(), "DEV", if (game.developer) |d| (if (d.len > 0) d else "—") else "—");
+    metaSep(@src());
     {
         var pb: [40]u8 = undefined;
         const ps = if (game.last_played_at) |lp|
             components.formatUtcDateTime(&pb, lp) catch "—"
         else
             "never";
-        metaKv(@src(), "played", ps);
+        metaKv(@src(), "PLAYED", ps);
     }
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
@@ -1449,14 +1457,31 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
     }
 }
 
-/// One `label value` pair for the compact meta bar. `src` must be unique per call.
+/// One `LABEL value` pair (mono) for the compact meta bar. `src` unique per call.
 fn metaKv(src: std.builtin.SourceLocation, label: []const u8, value: []const u8) void {
     const t = tokens.active;
-    var b = dvui.box(src, .{ .dir = .horizontal }, .{ .gravity_y = 0.5, .margin = .{ .x = 0, .y = 0, .w = 20, .h = 0 } });
+    const mono = dvui.Font.theme(.mono);
+    var b = dvui.box(src, .{ .dir = .horizontal }, .{ .gravity_y = 0.5, .padding = .{ .x = 14, .y = 0, .w = 14, .h = 0 } });
     defer b.deinit();
-    dvui.labelNoFmt(@src(), label, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+    dvui.labelNoFmt(@src(), label, .{}, .{
+        .gravity_y = 0.5,
+        .color_text = style.labelDim(),
+        .font = mono.withSize(mono.size * 0.82),
+    });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-    dvui.labelNoFmt(@src(), value, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink, dvui.Color) });
+    dvui.labelNoFmt(@src(), value, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink, dvui.Color), .font = mono });
+}
+
+/// Small teal dot separating meta key/values (Cinemascope).
+fn metaSep(src: std.builtin.SourceLocation) void {
+    var d = dvui.box(src, .{}, .{
+        .background = true,
+        .color_fill = tokens.toDvui(tokens.active.acc_dim, dvui.Color),
+        .corner_radius = dvui.Rect.all(2),
+        .min_size_content = .{ .w = 3, .h = 3 },
+        .gravity_y = 0.5,
+    });
+    d.deinit();
 }
 
 fn renderChangelogTab(frame: *Frame, game: *const library.Game) void {

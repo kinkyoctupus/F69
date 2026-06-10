@@ -1318,6 +1318,7 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                 if (actions.coverBytes(frame, g.f95_thread_id)) |cb| {
                     _ = dvui.image(@src(), .{ .source = .{ .imageFile = .{ .bytes = cb, .name = "list-cover" } }, .shrink = .ratio }, .{
                         .id_extra = g.f95_thread_id,
+                        .gravity_x = 0.5,
                         .gravity_y = 0.5,
                         .min_size_content = .{ .w = 38, .h = 50 },
                         .max_size_content = .{ .w = 38, .h = 50 },
