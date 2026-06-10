@@ -82,6 +82,34 @@ pub fn detailScreen(frame: *Frame) !bool {
         })) |anchor| {
             var fw = dvui.floatingMenu(@src(), .{ .from = anchor }, .{});
             defer fw.deinit();
+            // Files
+            if (dvui.menuItemLabel(@src(), "Open install folder", .{}, .{ .expand = .horizontal }) != null) {
+                actions.doOpenGameFolder(frame, game);
+                ob.close();
+            }
+            if (dvui.menuItemLabel(@src(), "Open saves", .{}, .{ .expand = .horizontal }) != null) {
+                actions.doOpenSaves(frame, game);
+                ob.close();
+            }
+            if (dvui.menuItemLabel(@src(), "Backup saves", .{}, .{ .expand = .horizontal }) != null) {
+                actions.doBackupSaves(frame, game);
+                ob.close();
+            }
+            _ = dvui.separator(@src(), .{ .expand = .horizontal });
+            // Tools
+            if (dvui.menuItemLabel(@src(), "Convert (Win\u{2192}Linux)", .{}, .{ .expand = .horizontal }) != null) {
+                actions.doConvertGame(frame, game);
+                ob.close();
+            }
+            if (dvui.menuItemLabel(@src(), "Fix compatibility", .{}, .{ .expand = .horizontal }) != null) {
+                doCompatFixForActiveInstall(frame, game);
+                ob.close();
+            }
+            if (dvui.menuItemLabel(@src(), "Sync now", .{}, .{ .expand = .horizontal }) != null) {
+                actions.syncGame(frame, game);
+                ob.close();
+            }
+            _ = dvui.separator(@src(), .{ .expand = .horizontal });
             if (dvui.menuItemLabel(@src(), "Delete game\u{2026}", .{}, .{ .expand = .horizontal, .tag = "detail-delete" }) != null) {
                 state.confirm_delete = true;
                 ob.close();
@@ -606,7 +634,9 @@ fn addLabelFromInput(frame: *Frame, game: *library.Game) void {
     @memset(buf, 0);
 }
 
-fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
+/// Read-only game facts (Overview tab): version · developer · last-updated ·
+/// last-synced + Sync now.
+fn renderDetailFacts(frame: *Frame, game: *library.Game) void {
     var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
         .id_extra = game.f95_thread_id ^ 0xF9,
         .expand = .horizontal,
@@ -655,6 +685,19 @@ fn renderDetailFactsGrid(frame: *Frame, game: *library.Game) void {
             actions.syncGame(frame, game);
         }
     }
+}
+
+/// Per-game CONFIG form (Settings tab): status · rating · sandbox · version
+/// pin · labels · engine tools · universal-mod opt-outs · auto-update ·
+/// custom launch. No facts, no file/launch actions — those moved out.
+fn renderGameConfig(frame: *Frame, game: *library.Game) void {
+    var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .id_extra = game.f95_thread_id ^ 0xFA,
+        .expand = .horizontal,
+    });
+    defer grid.deinit();
+
+    var row_id: u32 = 1;
 
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -1515,6 +1558,10 @@ fn renderOverview(frame: *Frame, game: *library.Game) void {
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
     }
     renderWrappedText(game.description_md, "No description yet. Sync this game to populate.");
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 16 } });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    renderDetailFacts(frame, game);
 }
 
 /// Settings / Manage tab — the per-game action set + configuration that used
@@ -1523,13 +1570,16 @@ fn renderOverview(frame: *Frame, game: *library.Game) void {
 /// and the facts grid.
 fn renderSettingsTab(frame: *Frame, game: *library.Game) void {
     const state = frame.state;
+    // Versions & acquisition (install picker + manage + Download).
     renderActionRow(frame, game);
-    renderMkxpZSettingsRow(frame, game);
+    renderMkxpZSettingsRow(frame, game); // mkxp-z window zoom (engine config)
     renderDetailStatusLine(frame, game);
     if (state.convert_help_open) renderConvertHelp();
     if (state.manual_install_open) renderManualInstallPanel(frame, game);
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 10 } });
-    renderDetailFactsGrid(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    renderGameConfig(frame, game);
 }
 
 /// V3 compact meta bar — read-only `installed · dev · played` key/values, with
@@ -2007,50 +2057,14 @@ fn renderClashModal(frame: *Frame, game: *const library.Game) void {
 // ============================================================
 
 fn renderActionRow(frame: *Frame, game: *library.Game) void {
-    const state = frame.state;
-
     var row = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
         .expand = .horizontal,
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 4 },
     });
     defer row.deinit();
 
-    const tk = tokens.active;
-    const launch_fill: dvui.Color = tokens.toDvui(tk.acc, dvui.Color);
-    const launch_hover: dvui.Color = tokens.toDvui(tk.acc.lerp(.{}, 0.20), dvui.Color); // toward white
-    const launch_press: dvui.Color = tokens.toDvui(tk.acc_dim, dvui.Color);
-    const launch_fill_off: dvui.Color = tokens.toDvui(tk.bg3, dvui.Color);
-    const launch_text_off: dvui.Color = tokens.toDvui(tk.ink3, dvui.Color);
-    const launch_text: dvui.Color = tokens.toDvui(tk.ink_on_acc, dvui.Color);
-
-    if (actions.isGameRunning(frame, game.f95_thread_id)) {
-        if (components.iconButton(@src(), "Stop", entypo.cross, .{ .style = .err })) {
-            actions.doStopGame(frame, game);
-        }
-    } else {
-        const enabled = actions.installDotState(frame, game) != .none;
-        const click = components.iconButton(@src(), "Launch", entypo.forward, if (enabled) .{
-            .color_fill = launch_fill,
-            .color_fill_hover = launch_hover,
-            .color_fill_press = launch_press,
-            .color_text = launch_text,
-            .color_border = launch_fill,
-        } else .{
-            .color_fill = launch_fill_off,
-            .color_fill_hover = launch_fill_off,
-            .color_fill_press = launch_fill_off,
-            .color_text = launch_text_off,
-            .color_border = launch_fill_off,
-        });
-        if (click and enabled) {
-            actions.doLaunchGame(frame, game);
-        } else if (click and !enabled) {
-            frame.state.notifyInfo("Nothing to launch yet — download or import an install first.");
-        }
-    }
-
-    // (Update-to-X moved to the hero — see renderHeroUpdate.)
-
+    // Launch / Stop / Update all live in the hero now. This row is the
+    // install version picker + manage menu + Download — "versions & acquire".
     const installs = frame.lib.listInstalls(game.f95_thread_id) catch &[_]library.Install{};
     defer frame.lib.freeInstalls(@constCast(installs));
     if (installs.len == 0) {
@@ -2126,36 +2140,10 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    if (components.iconButton(@src(), "Folder", entypo.folder, .{})) {
-        actions.doOpenGameFolder(frame, game);
-    }
-    if (components.iconButton(@src(), "Saves", entypo.home, .{})) {
-        actions.doOpenSaves(frame, game);
-    }
-    if (components.iconButton(@src(), "Backup", entypo.archive, .{})) {
-        actions.doBackupSaves(frame, game);
-    }
+    // Acquisition stays on this row; file/tool verbs moved to the meta-bar
+    // ⋯ More menu (renderMoreMenu).
     renderDetailDownloadButton(frame, game);
-
     renderDetailInstallButton(frame, game);
-
-    if (components.iconButton(@src(), "Convert", entypo.cycle, .{})) {
-        actions.doConvertGame(frame, game);
-    }
-    if (components.iconOnly(@src(), "Help", entypo.help, .{
-        .style = if (state.convert_help_open) .highlight else .control,
-        .min_size_content = .{ .w = style.button_h, .h = style.button_h },
-    })) {
-        state.convert_help_open = !state.convert_help_open;
-    }
-
-    if (components.iconButton(@src(), "Mods", entypo.tools, .{})) {
-        state.screen = .mods_for_game;
-    }
-
-    if (components.iconButton(@src(), "Fix Compat", entypo.tools, .{})) {
-        doCompatFixForActiveInstall(frame, game);
-    }
 }
 
 /// 0.5×, 0.75×, … 4.0× — 15 entries in 0.25 steps. Default index = 6
