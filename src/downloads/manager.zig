@@ -536,6 +536,33 @@ pub const Manager = struct {
         }
     }
 
+    /// Pause a single in-flight download. Optimistically flips the row to
+    /// `.paused` for instant UI feedback; the next poll confirms it.
+    pub fn pauseJob(self: *Manager, id: u64) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
+        if (self.daemon) |*d| {
+            if (self.job_gids.get(id)) |gid| {
+                d.pause(gid) catch |e|
+                    log.warn("aria2.pause failed for job {d}: {s}", .{ id, @errorName(e) });
+            }
+        }
+        if (self.jobs.getPtr(id)) |j| j.status = .paused;
+    }
+
+    /// Resume a single paused download. The next poll reflects aria2's real
+    /// status (downloading / seeding / queued).
+    pub fn resumeJob(self: *Manager, id: u64) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
+        if (self.daemon) |*d| {
+            if (self.job_gids.get(id)) |gid| {
+                d.unpause(gid) catch |e|
+                    log.warn("aria2.unpause failed for job {d}: {s}", .{ id, @errorName(e) });
+            }
+        }
+    }
+
     /// True iff any job is currently paused. UI uses this to decide
     /// whether to surface a "Resume all" button.
     pub fn anyPaused(self: *const Manager) bool {

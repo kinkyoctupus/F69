@@ -208,6 +208,8 @@ pub fn renderDownloadsBody(frame: *Frame) void {
         .cancel => |id| frame.dl_mgr.cancel(id),
         .remove => |id| frame.dl_mgr.removeJob(id),
         .retry => |id| actions.retryDownload(frame, id),
+        .pause => |id| frame.dl_mgr.pauseJob(id),
+        .unpause => |id| frame.dl_mgr.resumeJob(id),
     }
 }
 
@@ -261,6 +263,10 @@ pub fn renderActivityDrawer(frame: *Frame) void {
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
         if (frame.dl_mgr.anyResumable()) {
             if (style.button(@src(), "Pause all", .{}, .{ .gravity_y = 0.5 })) frame.dl_mgr.pauseAll();
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        }
+        if (frame.dl_mgr.anyPaused()) {
+            if (style.button(@src(), "Resume all", .{}, .{ .gravity_y = 0.5, .style = .highlight })) frame.dl_mgr.resumeAll();
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         }
         if (style.button(@src(), "Clear finished", .{}, .{ .gravity_y = 0.5 })) _ = frame.dl_mgr.clearCompleted();
@@ -330,7 +336,7 @@ fn downloadsSectionHeader(label_text: []const u8, count: u32, key: u8) void {
     });
 }
 
-const RowAction = union(enum) { none, cancel: u64, remove: u64, retry: u64 };
+const RowAction = union(enum) { none, cancel: u64, remove: u64, retry: u64, pause: u64, unpause: u64 };
 
 /// True iff this torrent's upload count has met the configured
 /// seed-ratio target. Used to gate the "Remove" button — without
@@ -445,6 +451,22 @@ fn renderJobRow(job: downloads.Job, title: []const u8, extracting: bool, ratio_t
             if (components.iconButton(@src(), "Retry", entypo.cycle, .{ .id_extra = job.id, .style = .highlight })) {
                 action = .{ .retry = job.id };
             }
+        }
+        // Pause / Resume an in-flight download. Seeding is intentionally NOT
+        // pausable here (that would break the RPDL seed obligation — use the
+        // ratio-gated "Stop seeding" below for that).
+        switch (job.status) {
+            .queued, .fetching_metadata, .downloading, .verifying => {
+                if (components.iconButton(@src(), "Pause", entypo.controller_pause, .{ .id_extra = job.id })) {
+                    action = .{ .pause = job.id };
+                }
+            },
+            .paused => {
+                if (components.iconButton(@src(), "Resume", entypo.controller_play, .{ .id_extra = job.id, .style = .highlight })) {
+                    action = .{ .unpause = job.id };
+                }
+            },
+            else => {},
         }
         // Cancel button for non-terminal donor jobs — still useful when
         // the user wants to stop a download mid-flight without dropping
