@@ -689,53 +689,58 @@ fn renderLabelsRow(frame: *Frame, game: *library.Game) void {
 
 /// Read-only game facts (Overview tab): version · developer · last-updated ·
 /// last-synced + Sync now.
+/// One mono fact in the About byline: `LABEL value`, with a right divider.
+fn bylineItem(label: []const u8, value: []const u8, acc: bool) void {
+    const t = tokens.active;
+    const mono = dvui.Font.theme(.mono);
+    var item = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .id_extra = @intFromPtr(label.ptr),
+        .gravity_y = 0.5,
+        .padding = .{ .x = 14, .y = 0, .w = 14, .h = 0 },
+        .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
+        .color_border = style.borderColor(),
+    });
+    defer item.deinit();
+    dvui.labelNoFmt(@src(), label, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim(), .font = mono.withSize(mono.size * 0.72) });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    dvui.labelNoFmt(@src(), value, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(if (acc) t.acc else t.ink, dvui.Color), .font = mono.withSize(mono.size * 0.85) });
+}
+
+/// "About" — one glanceable byline of facts on a divider rule (Overview
+/// layout A), replacing the old vertical key/value grid.
 fn renderDetailFacts(frame: *Frame, game: *library.Game) void {
-    var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
+    const t = tokens.active;
+    var bar = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
         .id_extra = game.f95_thread_id ^ 0xF9,
         .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 9, .w = 0, .h = 9 },
+        .border = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+        .color_border = style.borderColor(),
     });
-    defer grid.deinit();
-
-    var row_id: u32 = 1;
+    defer bar.deinit();
 
     if (game.developer) |d| {
-        factsRow(&row_id, "Developer", .{ .text = d });
+        if (d.len > 0) bylineItem("DEV", d, false);
     }
-    factsRow(&row_id, "Engine", .{ .text = components.engineShortLabel(game.engine) });
-    if (game.latest_version) |v| {
-        factsRow(&row_id, "Version", .{ .text = v });
-    }
+    bylineItem("ENGINE", components.engineShortLabel(game.engine), true);
+    if (game.latest_version) |v| bylineItem("VERSION", v, false);
     if (game.last_updated_at) |ts| {
         var buf: [32]u8 = undefined;
         const dt = components.formatUtcDateTime(&buf, ts) catch "—";
-        factsRow(&row_id, "Last updated", .{ .text = dt });
+        bylineItem("UPDATED", dt, false);
     }
-
+    // SYNCED + Sync button (no divider after).
     {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .id_extra = row_id,
-            .expand = .horizontal,
-            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
-        });
-        defer row.deinit();
-        row_id += 1;
-        dvui.label(@src(), "Last synced", .{}, .{
-            .min_size_content = .{ .w = 120, .h = 20 },
-            .gravity_y = 0.5,
-            .color_text = style.labelDim(),
-        });
+        var item = dvui.box(@src(), .{ .dir = .horizontal }, .{ .gravity_y = 0.5, .padding = .{ .x = 14, .y = 0, .w = 0, .h = 0 } });
+        defer item.deinit();
+        const mono = dvui.Font.theme(.mono);
+        dvui.labelNoFmt(@src(), "SYNCED", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim(), .font = mono.withSize(mono.size * 0.72) });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
         var dt_buf: [40]u8 = undefined;
-        const dt = if (game.last_scraped_at) |ts|
-            components.formatUtcDateTime(&dt_buf, ts) catch "—"
-        else
-            "never";
-        dvui.labelNoFmt(@src(), dt, .{}, .{ .gravity_y = 0.5 });
+        const dt = if (game.last_scraped_at) |ts| components.formatUtcDateTime(&dt_buf, ts) catch "—" else "never";
+        dvui.labelNoFmt(@src(), dt, .{}, .{ .gravity_y = 0.5, .color_text = tokens.toDvui(t.ink, dvui.Color), .font = mono.withSize(mono.size * 0.85) });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-        if (components.iconButton(@src(), "Sync now", entypo.cycle, .{
-            .style = .control,
-            .gravity_y = 0.5,
-            .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
-        })) {
+        if (components.iconButton(@src(), "Sync now", entypo.cycle, .{ .style = .control, .gravity_y = 0.5, .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 } })) {
             actions.syncGame(frame, game);
         }
     }
@@ -745,14 +750,16 @@ fn renderDetailFacts(frame: *Frame, game: *library.Game) void {
 /// pin · labels · engine tools · universal-mod opt-outs · auto-update ·
 /// custom launch. No facts, no file/launch actions — those moved out.
 fn renderGameConfig(frame: *Frame, game: *library.Game) void {
-    var grid = dvui.box(@src(), .{ .dir = .vertical }, .{
+    var row_id: u32 = 1;
+
+    // Two columns (Overview layout A): Tracking | Launch & updates.
+    var cols = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .id_extra = game.f95_thread_id ^ 0xFA,
         .expand = .horizontal,
     });
-    defer grid.deinit();
+    defer cols.deinit();
 
-    var row_id: u32 = 1;
-
+    var leftcol = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
     detailSectionHeader("Tracking", false);
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -810,7 +817,11 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
         }
     }
     renderLabelsRow(frame, game);
+    leftcol.deinit();
 
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 28, .h = 1 } });
+
+    var rightcol = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
     detailSectionHeader("Launch & updates", false);
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -933,6 +944,7 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
     }
 
     renderCustomLaunchRow(frame, game);
+    rightcol.deinit();
 }
 
 /// Per-install custom launch override editor (applies to the latest install).
@@ -1542,16 +1554,12 @@ fn renderOverview(frame: *Frame, game: *library.Game) void {
     // 1. Description — leads.
     renderWrappedText(game.description_md, "No description yet. Sync this game to populate.");
 
-    // 2. About — one consolidated, deduplicated facts block (the old
-    //    thread-info key/value dump is dropped; every field it carried is here
-    //    or already a hero chip).
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 18 } });
-    detailSectionHeader("About", true);
+    // 2. About — a one-line byline of facts on a divider rule.
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 14 } });
     renderDetailFacts(frame, game);
 
-    // 3. Your settings.
+    // 3. Your settings — two columns (Tracking | Launch & updates).
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 18 } });
-    detailSectionHeader("Your settings", true);
     renderGameConfig(frame, game);
 }
 
