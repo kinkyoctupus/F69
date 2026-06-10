@@ -44,25 +44,25 @@ Native packages pull their dependencies in automatically:
 
 ```sh
 # Arch / CachyOS / Manjaro
-sudo pacman -U f69-*-x86_64.pkg.tar.zst
+sudo pacman -U f69-*-arch-x86_64.pkg.tar.zst
 
 # Fedora / Nobara / Bazzite / RHEL
-sudo dnf install ./f69-*.x86_64.rpm
+sudo dnf install ./f69-*-fedora-x86_64.rpm
 
 # Debian / Ubuntu / PikaOS
-sudo apt install ./f69_*_amd64.deb
+sudo apt install ./f69-*-debian-x86_64.deb
 ```
 
 > Native packages are built against a current Arch / Fedora / Debian base. If one refuses to install on your version (glibc/soname mismatch), use a portable bundle below instead.
 
 ### Linux — portable (any distro)
 
-- **Full bundle** (`f69-portable-linux-x86_64.tar.gz`) — carries its own libraries; runs on any glibc distro. Only needs your GPU's Vulkan driver + `aria2` for downloads.
-- **Slim bundle** (`f69-slim-linux-x86_64.tar.gz`) — smaller; uses your system's libraries (install the deps below first).
+- **Full bundle** (`f69-*-linux-portable-x86_64.tar.gz`) — carries its own libraries; runs on any glibc distro. Only needs your GPU's Vulkan driver + `aria2` for downloads.
+- **Slim bundle** (`f69-*-linux-slim-x86_64.tar.gz`) — smaller; uses your system's libraries (install the deps below first).
 
 ```sh
-tar xf f69-portable-linux-x86_64.tar.gz   # or the slim tarball
-./bin/run.sh                              # slim extracts to ./portable-slim/run.sh
+tar xf f69-*-linux-portable-x86_64.tar.gz   # or the slim tarball
+./bin/run.sh                                # slim extracts to ./portable-slim/run.sh
 ```
 
 ### Libraries the portable/slim bundle needs
@@ -103,7 +103,7 @@ nix run github:Moordp/F69#f69
 
 ### Windows
 
-Download `f69-windows.zip`, extract it anywhere, and run `f69.exe` — the zip carries its DLLs.
+Download `f69-*-windows-x86_64.zip`, extract it anywhere, and run `f69.exe` — the zip carries its DLLs.
 
 ### From source
 
@@ -169,7 +169,7 @@ bash scripts/build-windows.sh      # cross-compiles f69.exe (mingw prefix via Ni
 bash scripts/package-windows.sh    # resolves the DLL closure → zig-out/f69-windows.zip
 ```
 
-The CI `windows` job runs both on every tag and uploads `f69-windows.zip`.
+The CI `windows` job runs both on every tag and uploads `f69-<ver>-windows-x86_64.zip`.
 
 ## Distribution targets:
 
@@ -185,14 +185,14 @@ The deeper constraint: each distro builds its static libraries with different fe
 
 ## CI / releases:
 
-[`.github/workflows/build.yml`](.github/workflows/build.yml) runs on every push to `main`, every PR, and every `v*` tag. The matrix:
+[`.github/workflows/build.yml`](.github/workflows/build.yml) runs `test` on every push to `main` and every PR; the artifact jobs and the release run **only on a `v*` tag** (or a manual dispatch). All artifacts follow `f69-<version>-<target>-x86_64.<ext>`. The matrix:
 
 - `test` — `zig build test` + `zig build test-integration` (headless GUI tests on the dvui testing backend) on Ubuntu
-- `portable` — uploads `f69-portable-linux-x86_64.tar.gz`
-- `portable-slim` — uploads `f69-slim-linux-x86_64.tar.gz`
-- `arch` — runs `makepkg` inside `archlinux:latest`, uploads `.pkg.tar.zst`
-- `debian` / `fedora` — native `dpkg-buildpackage` / `rpmbuild` in their target containers, upload `.deb` / `.rpm`
-- `windows` — cross-compiles `f69-windows.zip` (exe + resolved DLL closure)
+- `portable` — uploads `f69-<ver>-linux-portable-x86_64.tar.gz`
+- `portable-slim` — uploads `f69-<ver>-linux-slim-x86_64.tar.gz`
+- `arch` — runs `makepkg` inside `archlinux:latest`, uploads `f69-<ver>-arch-x86_64.pkg.tar.zst`
+- `debian` / `fedora` — native `dpkg-buildpackage` / `rpmbuild` in their target containers, upload `f69-<ver>-debian-x86_64.deb` / `f69-<ver>-fedora-x86_64.rpm`
+- `windows` — cross-compiles `f69-<ver>-windows-x86_64.zip` (exe + resolved DLL closure)
 - `nix` — *continue-on-error* (impure-fetch story documented in `flake.nix`)
 - `release` — on `v*` tag, collects every successful artifact and posts a GitHub Release
 
@@ -250,7 +250,7 @@ If you've run `-Dcontainer-build=true`, podman/docker may have written root-owne
 <details>
 <summary><b>What about Windows / macOS?</b></summary>
 
-**Windows** is supported as of 0.10.0 — the CI cross-compiles `f69-windows.zip` (exe + DLL closure) and games launch natively. The Linux-only bits (bwrap sandbox, FHS compat layer) simply don't apply there; on Windows games run unsandboxed.
+**Windows** is supported as of 0.10.0 — the CI cross-compiles `f69-<ver>-windows-x86_64.zip` (exe + DLL closure) and games launch natively. The Linux-only bits (bwrap sandbox, FHS compat layer) simply don't apply there; on Windows games run unsandboxed.
 
 **macOS** isn't done — I don't have a Mac. Zig's cross-compile and the SDL3 / dvui / sqlite / libavif stack all build on Mac, so a PR would be welcome.
 

@@ -75,8 +75,9 @@ jobs:
         run: zig build portable
       - name: Package as tarball
         run: |
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
           mkdir -p artifacts
-          tar --exclude=data -C zig-out -czf "artifacts/f69-portable-linux-x86_64.tar.gz" bin
+          tar --exclude=data -C zig-out -czf "artifacts/f69-${VER}-linux-portable-x86_64.tar.gz" bin
       - uses: actions/upload-artifact@v4
         with:
           name: f69-portable
@@ -106,8 +107,9 @@ jobs:
         run: zig build portable-slim
       - name: Package as tarball
         run: |
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
           mkdir -p artifacts
-          tar -C zig-out -czf "artifacts/f69-slim-linux-x86_64.tar.gz" portable-slim
+          tar -C zig-out -czf "artifacts/f69-${VER}-linux-slim-x86_64.tar.gz" portable-slim
       - uses: actions/upload-artifact@v4
         with:
           name: f69-slim
@@ -156,9 +158,10 @@ jobs:
             sed -i "s|^sha256sums=.*|sha256sums=(\"SKIP\")|" PKGBUILD
             makepkg --noconfirm -f --skipchecksums
           '
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
           mkdir -p artifacts
           # main package only — skip the auto-generated -debug split package.
-          for f in *.pkg.tar.zst; do case "$f" in *-debug-*) ;; *) mv "$f" artifacts/;; esac; done
+          for f in *.pkg.tar.zst; do case "$f" in *-debug-*) ;; *) mv "$f" "artifacts/f69-${VER}-arch-x86_64.pkg.tar.zst";; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-arch
@@ -203,9 +206,10 @@ jobs:
         run: |
           cp -r zig-out/debian ./debian
           dpkg-buildpackage -us -uc -b -d
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
           mkdir -p artifacts
           # main package only — skip the auto-generated -dbgsym debug package.
-          for f in ../*.deb; do case "$f" in *dbgsym*) ;; *) mv "$f" artifacts/;; esac; done
+          for f in ../*.deb; do case "$f" in *dbgsym*) ;; *) mv "$f" "artifacts/f69-${VER}-debian-x86_64.deb";; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-debian
@@ -248,7 +252,7 @@ jobs:
           rpmbuild -bb "$HOME/rpmbuild/SPECS/f69.spec"
           mkdir -p artifacts
           # main package only — skip the -debuginfo / -debugsource RPMs.
-          for f in "$HOME"/rpmbuild/RPMS/x86_64/*.rpm; do case "$f" in *debuginfo*|*debugsource*) ;; *) mv "$f" artifacts/;; esac; done
+          for f in "$HOME"/rpmbuild/RPMS/x86_64/*.rpm; do case "$f" in *debuginfo*|*debugsource*) ;; *) mv "$f" "artifacts/f69-${VER}-fedora-x86_64.rpm";; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-fedora
@@ -280,11 +284,14 @@ jobs:
       - name: Cross-compile f69.exe (x86_64-windows-gnu)
         run: bash scripts/build-windows.sh
       - name: Package Windows zip (exe + DLL closure)
-        run: bash scripts/package-windows.sh
+        run: |
+          bash scripts/package-windows.sh
+          VER=$(awk -F'"' '/\.version = / { print $2; exit }' build.zig.zon)
+          mv zig-out/f69-windows.zip "zig-out/f69-${VER}-windows-x86_64.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: f69-windows
-          path: zig-out/f69-windows.zip
+          path: zig-out/f69-*-windows-x86_64.zip
 
   # ----- Nix flake build -----
   nix:
