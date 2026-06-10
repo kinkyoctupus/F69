@@ -51,7 +51,10 @@ pub const Library = struct {
     install_generation: u64 = 0,
 
     pub fn open(alloc: std.mem.Allocator, db_path: []const u8) errs.Error!Library {
-        var conn = dbu.Conn.open(db_path, alloc, .{ .create = true }) catch return errs.Error.DatabaseError;
+        var conn = dbu.Conn.open(db_path, alloc, .{ .create = true }) catch |e| {
+            log.err("failed to open database at '{s}': {s}", .{ db_path, @errorName(e) });
+            return errs.Error.DatabaseError;
+        };
         errdefer conn.close();
         // SQLite defaults FK enforcement to OFF — turn it on so the
         // schema's `REFERENCES … ON DELETE CASCADE` clauses actually
@@ -81,21 +84,31 @@ pub const Library = struct {
         self.* = undefined;
     }
 
+    /// Log the SQLite error message (sqlite3_errmsg) for the last failed
+    /// operation, then return the generic DatabaseError. Used at
+    /// `catch return self.dbFail()` sites so a DB failure says *what* broke
+    /// (missing column, constraint violation, malformed image, I/O error, …)
+    /// instead of a bare "DatabaseError".
+    fn dbFail(self: *Library) errs.Error {
+        log.err("database query/exec failed: {s}", .{self.conn.lastError()});
+        return errs.Error.DatabaseError;
+    }
+
     // ---- transactions ----
     //
     // SQLite default journal mode is rollback; nesting via savepoints
     // isn't exposed here. Caller must not nest beginTx calls.
 
     pub fn beginTx(self: *Library) errs.Error!void {
-        self.conn.exec("BEGIN") catch return errs.Error.DatabaseError;
+        self.conn.exec("BEGIN") catch return self.dbFail();
     }
 
     pub fn commitTx(self: *Library) errs.Error!void {
-        self.conn.exec("COMMIT") catch return errs.Error.DatabaseError;
+        self.conn.exec("COMMIT") catch return self.dbFail();
     }
 
     pub fn rollbackTx(self: *Library) errs.Error!void {
-        self.conn.exec("ROLLBACK") catch return errs.Error.DatabaseError;
+        self.conn.exec("ROLLBACK") catch return self.dbFail();
     }
 
     // -- games --
@@ -161,7 +174,7 @@ pub const Library = struct {
             g.last_played_version,
             g.pinned_version,
             g.status_changed_at,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
         return self.conn.inner.changes() > 0;
     }
 
@@ -222,7 +235,7 @@ pub const Library = struct {
             g.last_played_version,
             g.pinned_version,
             g.status_changed_at,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
     }
 
     /// Single-column write — used by the Mods page dropdown so we
@@ -235,7 +248,7 @@ pub const Library = struct {
         self.conn.inner.exec(
             "UPDATE games SET pinned_version = ? WHERE f95_thread_id = ?",
             .{ version, @as(i64, @intCast(thread_id)) },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 
     // ----- user labels -----
@@ -246,7 +259,7 @@ pub const Library = struct {
         self.conn.inner.exec(
             "INSERT OR IGNORE INTO user_labels (name, color) VALUES (?, ?)",
             .{ name, color },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         var row = (self.conn.inner.row("SELECT id FROM user_labels WHERE name = ?", .{name}) catch
             return errs.Error.DatabaseError) orelse return errs.Error.DatabaseError;
         defer row.deinit();
@@ -284,7 +297,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             "SELECT id, name, color FROM user_labels ORDER BY name COLLATE NOCASE",
             .{},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| {
             const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
@@ -311,14 +324,14 @@ pub const Library = struct {
         self.conn.inner.exec(
             "INSERT OR IGNORE INTO game_labels (game_thread_id, label_id) VALUES (?, ?)",
             .{ @as(i64, @intCast(game_thread_id)), label_id },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 
     pub fn removeGameLabel(self: *Library, game_thread_id: u64, label_id: i64) errs.Error!void {
         self.conn.inner.exec(
             "DELETE FROM game_labels WHERE game_thread_id = ? AND label_id = ?",
             .{ @as(i64, @intCast(game_thread_id)), label_id },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 
     /// Label ids assigned to a game. Caller frees the slice via `alloc.free`.
@@ -328,7 +341,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             "SELECT label_id FROM game_labels WHERE game_thread_id = ?",
             .{@as(i64, @intCast(game_thread_id))},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| out.append(self.alloc, r.int(0)) catch return errs.Error.OutOfMemory;
         return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
@@ -342,7 +355,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             "SELECT game_thread_id FROM game_labels WHERE label_id = ?",
             .{label_id},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| out.append(self.alloc, @intCast(r.int(0))) catch return errs.Error.OutOfMemory;
         return out.toOwnedSlice(self.alloc) catch errs.Error.OutOfMemory;
@@ -354,7 +367,7 @@ pub const Library = struct {
         self.conn.inner.exec(
             "INSERT INTO universal_mods (name, engine, modfile_path, created_at) VALUES (?, ?, ?, ?)",
             .{ name, @tagName(engine), modfile_path, now },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         return self.conn.inner.lastInsertedRowId();
     }
 
@@ -385,7 +398,7 @@ pub const Library = struct {
             self.conn.inner.rows(
                 "SELECT id, name, engine, modfile_path, created_at FROM universal_mods ORDER BY name COLLATE NOCASE",
                 .{},
-            ) catch return errs.Error.DatabaseError;
+            ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| {
             const name = self.alloc.dupe(u8, r.text(1)) catch return errs.Error.OutOfMemory;
@@ -415,12 +428,12 @@ pub const Library = struct {
             self.conn.inner.exec(
                 "INSERT OR IGNORE INTO game_universal_mod_disabled (game_thread_id, universal_mod_id) VALUES (?, ?)",
                 .{ @as(i64, @intCast(game_thread_id)), mod_id },
-            ) catch return errs.Error.DatabaseError;
+            ) catch return self.dbFail();
         } else {
             self.conn.inner.exec(
                 "DELETE FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
                 .{ @as(i64, @intCast(game_thread_id)), mod_id },
-            ) catch return errs.Error.DatabaseError;
+            ) catch return self.dbFail();
         }
     }
 
@@ -428,7 +441,7 @@ pub const Library = struct {
         const row = self.conn.inner.row(
             "SELECT 1 FROM game_universal_mod_disabled WHERE game_thread_id = ? AND universal_mod_id = ?",
             .{ @as(i64, @intCast(game_thread_id)), mod_id },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         if (row) |r| {
             var rr = r;
             rr.deinit();
@@ -441,7 +454,7 @@ pub const Library = struct {
         self.conn.inner.exec(
             "UPDATE games SET mod_backup_mode = ? WHERE f95_thread_id = ?",
             .{ @tagName(mode), @as(i64, @intCast(thread_id)) },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 
     pub fn getGame(self: *Library, thread_id: u64) errs.Error!?dom.Game {
@@ -455,7 +468,7 @@ pub const Library = struct {
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
             \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games WHERE f95_thread_id = ?
-        , .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
+        , .{@as(i64, @intCast(thread_id))}) catch return self.dbFail();
         defer rows.deinit();
         if (rows.next()) |r| {
             return try hydrateGame(self.alloc, r);
@@ -479,7 +492,7 @@ pub const Library = struct {
             \\       censored, auto_update, mod_backup_mode, last_indexer_change,
             \\       last_indexer_parser_version, last_played_version, pinned_version, status_changed_at
             \\FROM games ORDER BY name COLLATE NOCASE
-        , .{}) catch return errs.Error.DatabaseError;
+        , .{}) catch return self.dbFail();
         defer rows.deinit();
 
         while (rows.next()) |r| {
@@ -521,7 +534,7 @@ pub const Library = struct {
     }
 
     pub fn deleteGame(self: *Library, thread_id: u64) errs.Error!void {
-        self.conn.inner.exec("DELETE FROM games WHERE f95_thread_id = ?", .{@as(i64, @intCast(thread_id))}) catch return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM games WHERE f95_thread_id = ?", .{@as(i64, @intCast(thread_id))}) catch return self.dbFail();
     }
 
     /// Apply scrape result to an in-memory `Game` whose strings are
@@ -684,7 +697,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             \\SELECT COALESCE(AVG(rating), 3.5), COUNT(rating)
             \\FROM games WHERE rating IS NOT NULL
-        , .{}) catch return errs.Error.DatabaseError;
+        , .{}) catch return self.dbFail();
         defer rows.deinit();
         if (rows.next()) |r| {
             return .{
@@ -727,7 +740,7 @@ pub const Library = struct {
             i.name orelse null,
             source_text,
             sha_slice,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
         self.install_generation +%= 1;
     }
 
@@ -757,7 +770,7 @@ pub const Library = struct {
             \\       executable, launch_args, recipe_id, installed_at,
             \\       name, source, archive_sha256
             \\FROM installs WHERE game_thread_id = ?
-        , .{@as(i64, @intCast(game_thread_id))}) catch return errs.Error.DatabaseError;
+        , .{@as(i64, @intCast(game_thread_id))}) catch return self.dbFail();
         defer rows.deinit();
 
         while (rows.next()) |r| {
@@ -803,7 +816,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             "SELECT game_thread_id, version FROM installs",
             .{},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| {
             const tid: u64 = @intCast(r.int(0));
@@ -844,7 +857,7 @@ pub const Library = struct {
         var rows = self.conn.inner.rows(
             "SELECT DISTINCT game_thread_id FROM installs",
             .{},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| {
             const tid: i64 = r.int(0);
@@ -890,7 +903,7 @@ pub const Library = struct {
     }
 
     pub fn deleteInstall(self: *Library, install_id: []const u8) errs.Error!void {
-        self.conn.inner.exec("DELETE FROM installs WHERE id = ?", .{install_id}) catch return errs.Error.DatabaseError;
+        self.conn.inner.exec("DELETE FROM installs WHERE id = ?", .{install_id}) catch return self.dbFail();
         self.install_generation +%= 1;
     }
 
@@ -901,7 +914,7 @@ pub const Library = struct {
         self.conn.inner.exec("UPDATE installs SET name = ? WHERE id = ?", .{
             new_name,
             install_id,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
         self.install_generation +%= 1;
     }
 
@@ -911,7 +924,7 @@ pub const Library = struct {
         self.conn.inner.exec("UPDATE installs SET executable = ? WHERE id = ?", .{
             exe,
             install_id,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
         self.install_generation +%= 1;
     }
 
@@ -920,7 +933,7 @@ pub const Library = struct {
         self.conn.inner.exec("UPDATE installs SET launch_args = ? WHERE id = ?", .{
             args,
             install_id,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
         self.install_generation +%= 1;
     }
 
@@ -964,14 +977,14 @@ pub const Library = struct {
             recipe_sha256,
             applied_at,
             backups_json,
-        }) catch return errs.Error.DatabaseError;
+        }) catch return self.dbFail();
     }
 
     pub fn deleteAppliedCompat(self: *Library, install_id: []const u8, recipe_id: []const u8) errs.Error!void {
         self.conn.inner.exec(
             "DELETE FROM applied_compat_fixes WHERE install_id = ? AND recipe_id = ?",
             .{ install_id, recipe_id },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 
     pub fn listAppliedCompat(self: *Library, install_id: []const u8) errs.Error![]AppliedCompatRow {
@@ -985,7 +998,7 @@ pub const Library = struct {
             \\FROM applied_compat_fixes
             \\WHERE install_id = ?
             \\ORDER BY applied_at
-        , .{install_id}) catch return errs.Error.DatabaseError;
+        , .{install_id}) catch return self.dbFail();
         defer rows.deinit();
         while (rows.next()) |r| {
             const rid = self.alloc.dupe(u8, r.text(0)) catch return errs.Error.OutOfMemory;
@@ -1037,7 +1050,7 @@ pub const Library = struct {
                 args.version,
                 args.started_at,
             },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         return self.conn.inner.lastInsertedRowId();
     }
 
@@ -1053,7 +1066,7 @@ pub const Library = struct {
             \\ORDER BY started_at DESC
             ,
             .{@as(i64, @intCast(game_thread_id))},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
 
         var out: std.ArrayList(dom.PlaySession) = .empty;
@@ -1115,7 +1128,7 @@ pub const Library = struct {
             \\SELECT game_thread_id, started_at FROM play_sessions WHERE id = ?
             ,
             .{args.session_id},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         const r = rows.next() orelse return;
         const game_thread_id: u64 = @intCast(r.int(0));
@@ -1136,7 +1149,7 @@ pub const Library = struct {
                 @as(i64, @intFromBool(counts_as_played)),
                 args.session_id,
             },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
 
         if (counts_as_played) {
             self.conn.inner.exec(
@@ -1150,7 +1163,7 @@ pub const Library = struct {
                     args.ended_at,
                     @as(i64, @intCast(game_thread_id)),
                 },
-            ) catch return errs.Error.DatabaseError;
+            ) catch return self.dbFail();
         }
     }
 
@@ -1170,7 +1183,7 @@ pub const Library = struct {
             \\SELECT last_played_version FROM games WHERE f95_thread_id = ?
             ,
             .{@as(i64, @intCast(game_thread_id))},
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
         defer rows.deinit();
         const row = rows.next() orelse return;
         const existing: ?[]const u8 = row.nullableText(0);
@@ -1182,7 +1195,7 @@ pub const Library = struct {
             \\UPDATE games SET last_played_version = ? WHERE f95_thread_id = ?
             ,
             .{ version, @as(i64, @intCast(game_thread_id)) },
-        ) catch return errs.Error.DatabaseError;
+        ) catch return self.dbFail();
     }
 };
 

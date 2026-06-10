@@ -8,6 +8,8 @@
 const std = @import("std");
 const zqlite = @import("zqlite");
 
+const log = std.log.scoped(.db);
+
 pub const Error = error{
     OpenFailed,
     ExecFailed,
@@ -38,13 +40,22 @@ pub const Conn = struct {
             if (flags.create) bits |= zqlite.OpenFlags.Create;
         }
 
-        const c = zqlite.open(cpath, bits) catch return Error.OpenFailed;
+        const c = zqlite.open(cpath, bits) catch |e| {
+            log.err("sqlite open failed for '{s}': {s} (create={}, readonly={})", .{ path, @errorName(e), flags.create, flags.readonly });
+            return Error.OpenFailed;
+        };
         return .{ .inner = c };
     }
 
     pub fn close(self: *Conn) void {
         self.inner.close();
         self.* = undefined;
+    }
+
+    /// Last SQLite error message for this connection (sqlite3_errmsg), as a
+    /// slice. Valid right after a failed operation.
+    pub fn lastError(self: *Conn) []const u8 {
+        return std.mem.span(self.inner.lastError());
     }
 
     pub fn exec(self: *Conn, sql: []const u8) Error!void {
@@ -54,7 +65,10 @@ pub const Conn = struct {
         @memcpy(buf[0..sql.len], sql);
         buf[sql.len] = 0;
         const z: [*:0]const u8 = @ptrCast(&buf);
-        self.inner.execNoArgs(z) catch return Error.ExecFailed;
+        self.inner.execNoArgs(z) catch {
+            log.err("sqlite exec failed: {s} — SQL: {s}", .{ self.lastError(), sql });
+            return Error.ExecFailed;
+        };
     }
 
     /// Multi-statement migration script. Splits on ';' boundaries (naive —
@@ -66,14 +80,20 @@ pub const Conn = struct {
             if (stmt.len == 0) continue;
             const z = alloc.dupeZ(u8, stmt) catch return Error.OutOfMemory;
             defer alloc.free(z);
-            self.inner.execNoArgs(z) catch return Error.ExecFailed;
+            self.inner.execNoArgs(z) catch {
+                log.err("sqlite migration statement failed: {s} — stmt: {s}", .{ self.lastError(), stmt });
+                return Error.ExecFailed;
+            };
         }
     }
 
     pub fn pragmaInt(self: *Conn, alloc: std.mem.Allocator, name: []const u8) Error!i64 {
         const sql = std.fmt.allocPrint(alloc, "PRAGMA {s}", .{name}) catch return Error.OutOfMemory;
         defer alloc.free(sql);
-        var maybe_row = self.inner.row(sql, .{}) catch return Error.ExecFailed;
+        var maybe_row = self.inner.row(sql, .{}) catch {
+            log.err("sqlite pragma read failed: {s} — {s}", .{ self.lastError(), sql });
+            return Error.ExecFailed;
+        };
         if (maybe_row) |*r| {
             defer r.deinit();
             return r.int(0);
@@ -86,7 +106,10 @@ pub const Conn = struct {
         defer alloc.free(sql);
         const z = alloc.dupeZ(u8, sql) catch return Error.OutOfMemory;
         defer alloc.free(z);
-        self.inner.execNoArgs(z) catch return Error.ExecFailed;
+        self.inner.execNoArgs(z) catch {
+            log.err("sqlite pragma set failed: {s} — {s}", .{ self.lastError(), sql });
+            return Error.ExecFailed;
+        };
     }
 };
 
