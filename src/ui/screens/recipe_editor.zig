@@ -13,6 +13,7 @@ const state_mod = @import("../state.zig");
 const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const components = @import("../components.zig");
+const tokens = @import("ui_tokens");
 
 const Frame = types.Frame;
 // Recipe content (captions, sublines, help copy) reads ink2 here, not the
@@ -28,11 +29,17 @@ const LEFT_PANE_W: f32 = 560;
 /// Visual styling for the block card containers (step 1) — bordered
 /// box with a darker fill than the page background so the cards stand
 /// out as discrete units rather than a wall of text.
-// Design-B graphite cards (was an off-theme dark maroon that clashed with the
-// rest of the app and tanked text contrast). bg1 / line / bg2.
-const CARD_FILL: dvui.Color = .{ .r = 0x0f, .g = 0x14, .b = 0x1b };
-const CARD_BORDER: dvui.Color = .{ .r = 0x20, .g = 0x2b, .b = 0x36 };
-const CARD_FILL_HIGHLIGHT: dvui.Color = .{ .r = 0x15, .g = 0x1c, .b = 0x25 };
+// Theme-driven cards (were a hardcoded dark maroon that clashed with the app
+// and tanked text contrast). These follow the theme set in Settings.
+fn cardFill() dvui.Color {
+    return tokens.toDvui(tokens.active.bg1, dvui.Color);
+}
+fn cardBorder() dvui.Color {
+    return tokens.toDvui(tokens.active.line, dvui.Color);
+}
+fn cardFillHi() dvui.Color {
+    return tokens.toDvui(tokens.active.bg2, dvui.Color);
+}
 
 // ============================================================
 //  Recipe wizard modal
@@ -230,9 +237,9 @@ fn renderMetaStepFresh(w: *state_mod.WizardState) void {
         .expand = .horizontal,
         .padding = .{ .x = 14, .y = 12, .w = 14, .h = 12 },
         .background = true,
-        .color_fill = CARD_FILL,
+        .color_fill = cardFill(),
         .border = style.border_thin,
-        .color_border = CARD_BORDER,
+        .color_border = cardBorder(),
         .corner_radius = style.corner_radius,
     });
     defer card.deinit();
@@ -681,7 +688,7 @@ fn renderSimulationDetail(frame: *Frame, w: *state_mod.WizardState, sim: *const 
         .border = style.border_thin,
         .corner_radius = style.corner_radius,
         .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
-        .color_fill = .{ .r = 0x14, .g = 0x0A, .b = 0x10 },
+        .color_fill = tokens.toDvui(tokens.active.bg0, dvui.Color),
         .color_border = style.borderColor(),
         .min_size_content = .{ .w = 1, .h = 240 },
     });
@@ -1179,9 +1186,9 @@ fn renderWizardBlockRow(
         .padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 },
         .id_extra = idx,
         .background = true,
-        .color_fill = if (is_highlight) CARD_FILL_HIGHLIGHT else CARD_FILL,
+        .color_fill = if (is_highlight) cardFillHi() else cardFill(),
         .border = style.border_thin,
-        .color_border = CARD_BORDER,
+        .color_border = cardBorder(),
         .corner_radius = style.corner_radius,
     });
     defer card.deinit();

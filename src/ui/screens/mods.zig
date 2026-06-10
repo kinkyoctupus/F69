@@ -25,6 +25,7 @@ const actions = @import("../actions.zig");
 const style = @import("../style.zig");
 const mod_job_queue = @import("../mod_job_queue.zig");
 const components = @import("../components.zig");
+const tokens = @import("ui_tokens");
 const installer_mod = @import("installer");
 
 const Frame = types.Frame;
@@ -383,10 +384,13 @@ fn renderListRow(
         .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
         .background = true,
         .corner_radius = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
+        // Theme-driven (follows the accent set in Settings → Appearance):
+        // selected = accent wash, unselected = neutral card. Was a hardcoded
+        // maroon that didn't track the theme and killed text contrast.
         .color_fill = if (selected)
-            dvui.Color{ .r = 0x44, .g = 0x28, .b = 0x36 }
+            tokens.toDvui(tokens.active.acc_wash, dvui.Color)
         else
-            dvui.Color{ .r = 0x1A, .g = 0x10, .b = 0x14 },
+            tokens.toDvui(tokens.active.bg2, dvui.Color),
     });
     defer row.deinit();
 
@@ -418,7 +422,9 @@ fn renderListRow(
             .modfile => |m| modfiles[m.modfile_idx].filename,
             .orphan_recipe => |r| cache.mods[r.recipe_idx].recipe.name,
         };
-        dvui.labelNoFmt(@src(), name, .{}, .{ .style = .highlight });
+        // Bright theme ink — NOT `.style = .highlight`, which sets the
+        // dark on-accent text colour (only legible on an accent fill).
+        dvui.labelNoFmt(@src(), name, .{}, .{ .color_text = tokens.toDvui(tokens.active.ink, dvui.Color) });
 
         var version_buf: [128]u8 = undefined;
         const sub: []const u8 = switch (item) {

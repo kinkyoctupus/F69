@@ -3003,11 +3003,13 @@ fn renderTagChips(tags: []const []const u8) void {
             .corner_radius = style.corner_radius,
             .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
             .margin = .{ .x = 0, .y = 0, .w = 2, .h = 2 },
-            .color_fill = .{ .r = 0x3A, .g = 0x1A, .b = 0x28 },
+            // Theme-driven accent wash + accent border — retints with the
+            // theme set in Settings (was a hardcoded maroon).
+            .color_fill = tokens.toDvui(tokens.active.acc_wash, dvui.Color),
             .color_border = tokens.toDvui(tokens.active.acc, dvui.Color),
         });
         defer chip.deinit();
-        dvui.labelNoFmt(@src(), tag, .{}, .{ .font = small });
+        dvui.labelNoFmt(@src(), tag, .{}, .{ .font = small, .color_text = tokens.toDvui(tokens.active.ink2, dvui.Color) });
     }
 }
 
