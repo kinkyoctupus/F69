@@ -157,7 +157,8 @@ jobs:
             makepkg --noconfirm -f --skipchecksums
           '
           mkdir -p artifacts
-          mv *.pkg.tar.zst artifacts/
+          # main package only — skip the auto-generated -debug split package.
+          for f in *.pkg.tar.zst; do case "$f" in *-debug-*) ;; *) mv "$f" artifacts/;; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-arch
@@ -203,7 +204,8 @@ jobs:
           cp -r zig-out/debian ./debian
           dpkg-buildpackage -us -uc -b -d
           mkdir -p artifacts
-          mv ../*.deb artifacts/
+          # main package only — skip the auto-generated -dbgsym debug package.
+          for f in ../*.deb; do case "$f" in *dbgsym*) ;; *) mv "$f" artifacts/;; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-debian
@@ -245,7 +247,8 @@ jobs:
           cp zig-out/rpm/f69.spec "$HOME/rpmbuild/SPECS/"
           rpmbuild -bb "$HOME/rpmbuild/SPECS/f69.spec"
           mkdir -p artifacts
-          mv "$HOME"/rpmbuild/RPMS/x86_64/*.rpm artifacts/
+          # main package only — skip the -debuginfo / -debugsource RPMs.
+          for f in "$HOME"/rpmbuild/RPMS/x86_64/*.rpm; do case "$f" in *debuginfo*|*debugsource*) ;; *) mv "$f" artifacts/;; esac; done
       - uses: actions/upload-artifact@v4
         with:
           name: f69-fedora
