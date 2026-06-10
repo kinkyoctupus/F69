@@ -23,10 +23,10 @@ const dom = @import("domain.zig");
 const Handler = @import("handler.zig").Handler;
 const aria2_rpc = @import("aria2_rpc.zig");
 
-/// How often `tick()` actually polls aria2 for per-job status (bytes, speed,
-/// seed stats). 4 Hz — fast enough that progress looks live, slow enough that
-/// the synchronous per-job RPC never competes with the 60 Hz render loop.
-const POLL_INTERVAL_NS: i128 = 250 * std.time.ns_per_ms;
+/// How often the background poller refreshes per-job status (bytes, speed,
+/// seed stats). 4 Hz — fast enough that progress looks live, and it runs off
+/// the UI thread so the cadence never touches rendering.
+const POLL_INTERVAL_MS: u64 = 250;
 
 pub const Manager = struct {
     alloc: std.mem.Allocator,
@@ -51,11 +51,21 @@ pub const Manager = struct {
     /// `tellStatus` and `remove`.
     job_gids: std.AutoHashMap(u64, []u8),
     next_id: u64 = 1,
-    /// Wall-clock ns of the last aria2 status poll. `tick()` is called once
-    /// per UI frame, but `tellStatus` is a synchronous JSON-RPC round-trip
-    /// per job on the UI thread — polling at the frame rate blocks rendering.
-    /// We poll on a fixed cadence instead (see `POLL_INTERVAL_NS`).
-    last_poll_ns: i128 = 0,
+    /// Serialises every aria2 daemon RPC and every jobs/gids/urls map
+    /// STRUCTURAL change between the UI thread and the background poller
+    /// thread (below). The hot render path reads `jobs` WITHOUT this lock —
+    /// the map is only ever structurally mutated on the UI thread, and the
+    /// poller writes only scalar progress fields — so rendering never blocks
+    /// on a synchronous aria2 round-trip. Single lock ⇒ no lock-ordering /
+    /// deadlock hazard.
+    mtx: std.Io.Mutex = .init,
+    poller_thread: ?std.Thread = null,
+    poller_run: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// UI wake-up. The poller calls this after each poll cycle to schedule a
+    /// re-render, so download progress animates without the UI thread ever
+    /// touching aria2. Wired once at startup (`setWake` → `dvui.refresh`).
+    wake_fn: ?*const fn (?*anyopaque) void = null,
+    wake_ctx: ?*anyopaque = null,
     /// Resolved aria2c executable path (`"aria2c"` for PATH lookup).
     aria2_path: []const u8,
     /// RPC port the daemon should bind. 0 ⇒ random ephemeral.
@@ -161,6 +171,9 @@ pub const Manager = struct {
     }
 
     pub fn deinit(self: *Manager) void {
+        // Stop the poller FIRST — it touches the daemon, the jobs map, and
+        // the UI wake-up window, all about to be torn down.
+        self.stopPoller();
         if (self.daemon) |*d| d.deinit();
         for (self.handlers.items) |h| h.deinit(self.alloc);
         self.handlers.deinit(self.alloc);
@@ -246,6 +259,8 @@ pub const Manager = struct {
         /// HTTP downloads where the daemon-wide defaults suffice.
         http_opts: aria2_rpc.Daemon.UriOptions,
     ) errs.Error!u64 {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         const daemon = try self.ensureDaemon();
         const gid = try daemon.addUri(url, http_opts);
         errdefer self.alloc.free(gid);
@@ -266,6 +281,8 @@ pub const Manager = struct {
         expected_sha256: ?[32]u8,
         version: ?[]const u8,
     ) errs.Error!u64 {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         const daemon = try self.ensureDaemon();
         const gid = try daemon.addTorrent(torrent_bytes, .{
             .dir = self.downloads_torrents_root,
@@ -334,136 +351,173 @@ pub const Manager = struct {
     /// UI frame (or whatever cadence makes the progress bars feel
     /// alive).
     pub fn tick(self: *Manager) void {
-        const daemon = if (self.daemon) |*d| d else return;
+        // All aria2 I/O now runs on the background poller thread — the UI
+        // thread does nothing here but lazily start it. tellStatus is a
+        // synchronous RPC; running it (at any cadence) on the render thread
+        // stutters the whole app, so it is fully decoupled.
+        self.startPoller();
+    }
 
-        // Drain any WebSocket push events (no-op under HTTP). The per-job
-        // poll below is the source of truth for state; consuming the queue
-        // here keeps it bounded and surfaces completion/error events in the
-        // log the instant aria2 reports them.
-        var events: std.ArrayList(aria2_rpc.Event) = .empty;
-        defer {
-            for (events.items) |e| e.deinit(self.alloc);
-            events.deinit(self.alloc);
+    /// Wire the UI wake-up. The poller calls `fn(ctx)` after each poll cycle
+    /// so the UI re-renders fresh progress. Call once at startup.
+    pub fn setWake(self: *Manager, ctx: ?*anyopaque, f: *const fn (?*anyopaque) void) void {
+        self.wake_ctx = ctx;
+        self.wake_fn = f;
+    }
+
+    /// Lazily spawn the background poller once the daemon exists and the UI
+    /// has wired its wake-up. Idempotent.
+    fn startPoller(self: *Manager) void {
+        if (self.poller_thread != null or self.daemon == null or self.wake_fn == null) return;
+        self.poller_run.store(true, .release);
+        self.poller_thread = std.Thread.spawn(.{}, pollerLoop, .{self}) catch |e| {
+            self.poller_run.store(false, .release);
+            log.warn("download poller thread spawn failed: {s}", .{@errorName(e)});
+            return;
+        };
+        log.info("download status poller started", .{});
+    }
+
+    /// Stop the poller (signal + join). Idempotent; safe to call before the
+    /// daemon/jobs are torn down. Must run before any state the poller touches
+    /// (daemon, jobs, the wake-up window) is destroyed.
+    pub fn stopPoller(self: *Manager) void {
+        if (self.poller_thread) |th| {
+            self.poller_run.store(false, .release);
+            th.join();
+            self.poller_thread = null;
         }
-        daemon.drainEvents(self.alloc, &events);
-        for (events.items) |e| {
-            log.info("aria2 push event {s} gid={s}", .{ e.method, e.gid });
-        }
+    }
 
-        // Throttle the per-job status poll to a fixed wall-clock cadence.
-        // `tick()` runs once per UI frame (60+ Hz), but each polled job costs
-        // a synchronous `tellStatus` RPC + JSON parse on the UI thread — at
-        // frame rate with several jobs that stalls rendering. 4 Hz keeps
-        // progress / seed numbers live without ever blocking a frame. Event
-        // draining above stays per-frame (cheap, no RPC).
-        const now_ns = std.Io.Clock.Timestamp.now(self.io, .real).raw.toNanoseconds();
-        if (self.last_poll_ns != 0 and now_ns - self.last_poll_ns < POLL_INTERVAL_NS) return;
-        self.last_poll_ns = now_ns;
+    const PollTarget = struct { id: u64, gid: [48]u8 = undefined, len: u8 = 0 };
 
-        // Track whether any job changed status this tick, so we can
-        // flush the JSON exactly once per transition batch — without
-        // this the persisted status lags reality (a torrent moves
-        // .downloading → .seeding → .done in memory but disk still
-        // says .downloading), and a restart reads the stale value.
-        var any_transition = false;
-        var it = self.jobs.iterator();
-        while (it.next()) |entry| {
-            const j = entry.value_ptr;
-            // Skip jobs the user explicitly cancelled — aria2 no longer
-            // tracks them. Failed jobs also get skipped: aria2 may have
-            // dropped them and re-polling adds noise. Everything else
-            // (including `.done`) is polled so a torrent that aria2
-            // is still actively seeding gets its peers/upload speed
-            // surfaced in the UI, and a download restored from disk
-            // as `.done` can transition back to `.seeding` if aria2's
-            // session file resumed it.
-            // Terminal states never change again — don't re-poll them. This
-            // is the big one: a queue of finished `.done` downloads would
-            // otherwise cost one RPC each, every poll, forever. `.seeding`
-            // IS still polled (its upload/peer stats are live).
-            switch (j.status) {
-                .failed, .cancelled, .done => continue,
-                else => {},
-            }
-            const gid = self.job_gids.get(j.id) orelse continue;
-            var s = daemon.tellStatus(gid) catch |e| {
-                if (e == errs.Error.NotFound) {
-                    // aria2 no longer knows this gid (cleared after completion,
-                    // or a session-restored job whose gid changed). Drop the
-                    // gid mapping so we stop polling — and re-logging — it.
-                    if (self.job_gids.fetchRemove(j.id)) |kv| self.alloc.free(kv.value);
-                    // Keep finished work as done; treat a vanished in-flight
-                    // job as gone.
-                    j.status = switch (j.status) {
-                        .done, .seeding => .done,
-                        else => .cancelled,
-                    };
-                    any_transition = true;
+    /// Background loop: every POLL_INTERVAL, snapshot the non-terminal jobs,
+    /// poll aria2 for each (the synchronous RPC happens HERE, never on the UI
+    /// thread), write fresh stats back, then wake the UI. The lock is held
+    /// only for the snapshot + each per-job RPC/write-back + the event drain;
+    /// the UI render path reads `jobs` without it.
+    fn pollerLoop(self: *Manager) void {
+        var targets: std.ArrayList(PollTarget) = .empty;
+        defer targets.deinit(self.alloc);
+        while (self.poller_run.load(.acquire)) {
+            self.io.sleep(std.Io.Duration.fromMilliseconds(POLL_INTERVAL_MS), .real) catch {};
+            if (!self.poller_run.load(.acquire)) break;
+
+            // --- snapshot non-terminal (id, gid) ---
+            targets.clearRetainingCapacity();
+            self.mtx.lockUncancelable(self.io);
+            {
+                var snap = self.jobs.iterator();
+                while (snap.next()) |entry| {
+                    const j = entry.value_ptr;
+                    switch (j.status) {
+                        // Terminal states never change again — skip them so a
+                        // queue of finished downloads costs nothing.
+                        .failed, .cancelled, .done => continue,
+                        else => {},
+                    }
+                    const g = self.job_gids.get(j.id) orelse continue;
+                    if (g.len > 48) continue;
+                    var t = PollTarget{ .id = j.id, .len = @intCast(g.len) };
+                    @memcpy(t.gid[0..g.len], g);
+                    targets.append(self.alloc, t) catch {};
                 }
-                continue;
-            };
-            defer s.deinit(self.alloc);
+            }
+            self.mtx.unlock(self.io);
 
-            const prev_status = j.status;
-            j.bytes_total = s.total_length;
-            j.bytes_done = s.completed_length;
-            j.download_speed = s.download_speed;
-            j.upload_speed = s.upload_speed;
-            j.bytes_uploaded = s.upload_length;
-            j.num_seeders = s.num_seeders;
-            j.connections = s.connections;
-            j.is_torrent = s.is_torrent;
-            if (std.mem.eql(u8, s.status, "complete")) {
-                j.status = .done;
-            } else if (std.mem.eql(u8, s.status, "error")) {
-                j.status = .failed;
-                if (j.error_msg == null) {
-                    if (s.error_message) |em| {
-                        j.error_msg = self.alloc.dupe(u8, em) catch null;
+            var any_transition = false;
+            for (targets.items) |t| {
+                const gid = t.gid[0..t.len];
+                self.mtx.lockUncancelable(self.io);
+                const d = if (self.daemon) |*dd| dd else {
+                    self.mtx.unlock(self.io);
+                    break;
+                };
+                var s = d.tellStatus(gid) catch |e| {
+                    if (e == errs.Error.NotFound) {
+                        // aria2 forgot this gid (cleared after completion, or a
+                        // session-restored job whose gid changed). Drop the
+                        // mapping + settle the status.
+                        if (self.job_gids.fetchRemove(t.id)) |kv| self.alloc.free(kv.value);
+                        if (self.jobs.getPtr(t.id)) |j| {
+                            j.status = switch (j.status) {
+                                .done, .seeding => .done,
+                                else => .cancelled,
+                            };
+                            any_transition = true;
+                        }
+                    }
+                    self.mtx.unlock(self.io);
+                    continue;
+                };
+                defer s.deinit(self.alloc);
+                if (self.jobs.getPtr(t.id)) |j| {
+                    const prev_status = j.status;
+                    j.bytes_total = s.total_length;
+                    j.bytes_done = s.completed_length;
+                    j.download_speed = s.download_speed;
+                    j.upload_speed = s.upload_speed;
+                    j.bytes_uploaded = s.upload_length;
+                    j.num_seeders = s.num_seeders;
+                    j.connections = s.connections;
+                    j.is_torrent = s.is_torrent;
+                    if (std.mem.eql(u8, s.status, "complete")) {
+                        j.status = .done;
+                    } else if (std.mem.eql(u8, s.status, "error")) {
+                        j.status = .failed;
+                        if (j.error_msg == null) {
+                            if (s.error_message) |em| j.error_msg = self.alloc.dupe(u8, em) catch null;
+                        }
+                    } else if (std.mem.eql(u8, s.status, "removed")) {
+                        j.status = .cancelled;
+                    } else if (std.mem.eql(u8, s.status, "paused")) {
+                        j.status = .paused;
+                    } else if (std.mem.eql(u8, s.status, "active")) {
+                        // BT stays "active" through leeching AND seeding;
+                        // `seeder` (we have every piece) distinguishes them.
+                        j.status = if (s.is_torrent and s.seeder) .seeding else .downloading;
+                    }
+                    if (j.status != prev_status) {
+                        any_transition = true;
+                        log.info("job {d} {s} -> {s}: bytes={d}/{?d} dl={d}B/s up={d}B/s peers={d}/{d}", .{
+                            j.id,             @tagName(prev_status), @tagName(j.status),
+                            j.bytes_done,     j.bytes_total,         s.download_speed,
+                            s.upload_speed,   s.num_seeders,         s.connections,
+                        });
                     }
                 }
-            } else if (std.mem.eql(u8, s.status, "removed")) {
-                j.status = .cancelled;
-            } else if (std.mem.eql(u8, s.status, "paused")) {
-                j.status = .paused;
-            } else if (std.mem.eql(u8, s.status, "active")) {
-                // For BT downloads aria2 keeps "active" through both
-                // leeching AND seeding. Distinguish by `seeder` (we
-                // have every piece) — that's how the UI knows whether
-                // to render the download-progress bar or the
-                // seed-ratio bar.
-                j.status = if (s.is_torrent and s.seeder) .seeding else .downloading;
+                self.mtx.unlock(self.io);
             }
-            // Log status transitions only — avoid spamming the log
-            // with per-tick progress noise (the UI shows that).
-            if (j.status != prev_status) {
-                any_transition = true;
-                log.info(
-                    "job {d} {s} -> {s}: aria2={s} bytes={d}/{?d} dl={d}B/s up={d}B/s ul_total={d} peers={d}/{d} err={?s}",
-                    .{
-                        j.id, @tagName(prev_status), @tagName(j.status),
-                        s.status, j.bytes_done, j.bytes_total,
-                        s.download_speed, s.upload_speed, s.upload_length,
-                        s.num_seeders, s.connections, s.error_message,
-                    },
-                );
-            }
-        }
-        if (any_transition) {
-            self.persistJobs() catch |e| {
-                log.warn("manager_jobs.json save failed after tick transition: {s}", .{@errorName(e)});
-            };
-        }
 
-        // Seeding-vs-leeching slot contention is now handled by aria2 itself
-        // via --bt-detach-seed-only (set at spawn) — seeders don't occupy a
-        // download slot, so the old manual leech-precedence hack is gone.
+            // --- drain WS push events (no-op under HTTP) ---
+            var events: std.ArrayList(aria2_rpc.Event) = .empty;
+            self.mtx.lockUncancelable(self.io);
+            if (self.daemon) |*d| d.drainEvents(self.alloc, &events);
+            self.mtx.unlock(self.io);
+            for (events.items) |e| {
+                log.info("aria2 push event {s} gid={s}", .{ e.method, e.gid });
+                e.deinit(self.alloc);
+            }
+            events.deinit(self.alloc);
+
+            if (any_transition) {
+                self.mtx.lockUncancelable(self.io);
+                self.persistJobs() catch |e|
+                    log.warn("manager_jobs.json save failed after poll: {s}", .{@errorName(e)});
+                self.mtx.unlock(self.io);
+            }
+
+            // Wake the UI loop so the new numbers paint (~4 Hz).
+            if (self.wake_fn) |f| f(self.wake_ctx);
+        }
     }
 
     /// Pause every active download/seed. No-op when the daemon
     /// hasn't been spawned. tick() picks up aria2's `status="paused"`
     /// on the next poll and updates each Job's status accordingly.
     pub fn pauseAll(self: *Manager) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         if (self.daemon) |*d| {
             d.pauseAll() catch |e| {
                 log.warn("aria2.pauseAll failed: {s}", .{@errorName(e)});
@@ -473,6 +527,8 @@ pub const Manager = struct {
 
     /// Resume every paused download/seed.
     pub fn resumeAll(self: *Manager) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         if (self.daemon) |*d| {
             d.unpauseAll() catch |e| {
                 log.warn("aria2.unpauseAll failed: {s}", .{@errorName(e)});
@@ -509,6 +565,8 @@ pub const Manager = struct {
     /// with whatever aria2 returns (typically "removed" → mapped back
     /// to `.cancelled`).
     pub fn cancel(self: *Manager, id: u64) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         if (self.daemon) |*d| {
             if (self.job_gids.get(id)) |gid| {
                 d.remove(gid) catch |e| {
@@ -525,6 +583,8 @@ pub const Manager = struct {
     /// Best-effort — a dead daemon just updates the cached value (it'll take
     /// effect at next spawn via the persisted file).
     pub fn setSeedRatioLive(self: *Manager, ratio: f32) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         self.aria2_seed_ratio = ratio;
         const daemon = if (self.daemon) |*d| d else return;
         var buf: [16]u8 = undefined;
@@ -543,6 +603,8 @@ pub const Manager = struct {
     /// Apply a daemon-wide seed-time cap (minutes; 0 = no cap) live + to
     /// in-flight torrents. Same best-effort semantics as `setSeedRatioLive`.
     pub fn setSeedTimeLive(self: *Manager, minutes: u32) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         self.aria2_seed_time_min = minutes;
         const daemon = if (self.daemon) |*d| d else return;
         var buf: [16]u8 = undefined;
@@ -564,6 +626,8 @@ pub const Manager = struct {
     /// keeps running the orphaned GID — and resurrects it from the
     /// session file on next launch. Then frees the job's owned strings.
     pub fn removeJob(self: *Manager, id: u64) void {
+        self.mtx.lockUncancelable(self.io);
+        defer self.mtx.unlock(self.io);
         if (self.daemon) |*d| {
             if (self.job_gids.get(id)) |gid| {
                 // Step 1: stop active GIDs. `forceRemove` is idempotent

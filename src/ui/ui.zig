@@ -275,6 +275,12 @@ pub fn runMainLoop(
         if (state.rpdl_token) |t| lib.alloc.free(t);
     }
 
+    // Wire the download poller's UI wake-up: when the background aria2 poller
+    // refreshes job progress it schedules a re-render via dvui.refresh. `&win`
+    // is stable for the loop's lifetime; the poller is stopped (stopPoller)
+    // before the window is torn down.
+    dl_mgr.setWake(&win, wakeDownloadUi);
+
     var interrupted = false;
     main_loop: while (true) {
         if (state.reload_requested) {
@@ -320,6 +326,9 @@ pub fn runMainLoop(
         const should_quit = try backend.addAllEvents(&win);
         if (should_quit) {
             std.log.info("quit signal received, shutting down", .{});
+            // Stop the download poller before any teardown — it touches the
+            // window (wake-up), the daemon, and the jobs map.
+            dl_mgr.stopPoller();
             // End this frame cleanly first.
             _ = try win.end(.{});
 
@@ -463,6 +472,15 @@ fn dumpTags(win: *dvui.Window) void {
         const line = std.fmt.bufPrint(&buf, "{s}\t{d:.1}\t{d:.1}\t{d:.1}\t{d:.1}\t{d}\n", .{ e.key_ptr.*, r.x, r.y, r.w, r.h, @intFromBool(td.visible) }) catch continue;
         _ = std.c.fwrite(line.ptr, 1, line.len, f);
     }
+}
+
+// Wake-up thunk handed to the download Manager's background poller: it runs
+// on the poller thread and schedules a UI re-render so fresh download progress
+// paints. `ctx` is the `*dvui.Window`. dvui.refresh is the documented
+// cross-thread wake mechanism (same as the per-worker refresh calls).
+fn wakeDownloadUi(ctx: ?*anyopaque) void {
+    const w: *dvui.Window = @ptrCast(@alignCast(ctx));
+    dvui.refresh(w, @src(), null);
 }
 
 // --- frame-pacing telemetry (F69_PERF=1) -----------------------------------
