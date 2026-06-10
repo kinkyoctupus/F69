@@ -133,7 +133,17 @@ pub fn detailScreen(frame: *Frame) !bool {
         }
     }
 
-    var page_scroll = dvui.scrollArea(@src(), .{ .scroll_info = &state.detail_scroll }, .{ .expand = .both });
+    // A `.auto` vertical scroll reports its FULL content height as its own
+    // min-size (ScrollContainerWidget.deinit). The detail page's tall content
+    // (hero + ribbon + meta + tab body) would then over-claim the root box's
+    // vertical space and squeeze the bottom activity dock to zero height.
+    // `expand = .both` already fills the available viewport, so we cap the
+    // propagated min-height low — the cap only governs layout claims, not the
+    // rendered size. Keeps the dock's 30px reserved on every window size.
+    var page_scroll = dvui.scrollArea(@src(), .{ .scroll_info = &state.detail_scroll }, .{
+        .expand = .both,
+        .max_size_content = dvui.Options.MaxSize.height(120),
+    });
 
     // Full-bleed banner spans the whole detail column (no side padding).
     renderBannerHero(frame, game);
