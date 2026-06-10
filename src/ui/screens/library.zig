@@ -1314,6 +1314,32 @@ fn renderListTable(frame: *Frame, games: []const library.Game, filtered: []const
                 });
                 defer nrow.deinit();
 
+                // Design-B list rows lead with a small cover thumbnail.
+                if (actions.coverBytes(frame, g.f95_thread_id)) |cb| {
+                    _ = dvui.image(@src(), .{ .source = .{ .imageFile = .{ .bytes = cb, .name = "list-cover" } }, .shrink = .ratio }, .{
+                        .id_extra = g.f95_thread_id,
+                        .gravity_y = 0.5,
+                        .min_size_content = .{ .w = 38, .h = 50 },
+                        .max_size_content = .{ .w = 38, .h = 50 },
+                        .margin = .{ .x = 0, .y = 2, .w = 9, .h = 2 },
+                        .corner_radius = .all(3),
+                    });
+                } else {
+                    var ph = dvui.box(@src(), .{}, .{
+                        .id_extra = g.f95_thread_id,
+                        .gravity_y = 0.5,
+                        .min_size_content = .{ .w = 38, .h = 50 },
+                        .max_size_content = .{ .w = 38, .h = 50 },
+                        .margin = .{ .x = 0, .y = 2, .w = 9, .h = 2 },
+                        .background = true,
+                        .color_fill = style.cardFill(),
+                        .corner_radius = .all(3),
+                        .border = style.border_thin,
+                        .color_border = style.borderColor(),
+                    });
+                    ph.deinit();
+                }
+
                 const sc = components.completionStatusColor(g.completion_status);
                 comp.dot(@src(), .{ .r = sc.r, .g = sc.g, .b = sc.b, .a = sc.a }, .{
                     .id_extra = g.f95_thread_id,
