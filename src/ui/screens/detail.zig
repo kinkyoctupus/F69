@@ -1155,6 +1155,9 @@ fn renderConvertHelp() void {
 //  Image popup + install management popups
 // ============================================================
 
+/// V4 lightbox (detail-variants.html) — opened by clicking the V3 banner.
+/// Full-window carousel: "<name> — screenshot" + "N / total · W×H" counter + ✕
+/// in the header, the big image with ‹ › arrows, and a centred filmstrip below.
 fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
     if (!state.image_popup_open) return;
@@ -1163,8 +1166,8 @@ fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
         return;
     }
 
-    const idx = state.carousel_index;
-
+    const total: usize = 1 + game.screenshots.len;
+    const idx = @min(state.carousel_index, total - 1);
     const bytes_opt: ?[]const u8 = if (idx == 0)
         actions.coverFullBytes(frame, game.f95_thread_id)
     else
@@ -1174,39 +1177,71 @@ fn renderImagePopup(frame: *Frame, game: *const library.Game) void {
         .modal = true,
         .open_flag = &state.image_popup_open,
     }, .{
-        .min_size_content = .{ .w = 600, .h = 400 },
+        .min_size_content = .{ .w = 980, .h = 660 },
+        .max_size_content = .{ .w = 1680, .h = 1040 },
+        .background = true,
+        .color_fill = .{ .r = 0x06, .g = 0x0a, .b = 0x0e, .a = 0xF2 },
     });
     defer fw.deinit();
 
-    var hdr_buf: [48]u8 = undefined;
-    const title = if (idx == 0)
-        @as([]const u8, "Cover")
-    else
-        std.fmt.bufPrint(&hdr_buf, "Screenshot {d}", .{idx}) catch "Screenshot";
-    _ = dvui.windowHeader(title, "", &state.image_popup_open);
-
-    if (bytes_opt) |b| {
-        _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{
-                .bytes = b,
-                .name = "popup",
-                // Multi-slot slide cache (one slot per idx) keeps each
-                // slide's bytes at a stable ptr while the user is on
-                // this game, so default `.ptr` invalidation is safe
-                // and avoids hashing several MB per frame.
-            } },
-            .shrink = .ratio,
-        }, .{
-            .expand = .both,
-            .min_size_content = .{ .w = 800, .h = 600 },
-        });
-        return;
+    // header: subject (left) · counter+resolution (right) · ✕
+    {
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .{ .x = 14, .y = 10, .w = 10, .h = 8 } });
+        defer hdr.deinit();
+        var nb: [160]u8 = undefined;
+        const subj = std.fmt.bufPrint(&nb, "{s} — {s}", .{ game.name, if (idx == 0) "cover" else "screenshot" }) catch game.name;
+        dvui.labelNoFmt(@src(), subj, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim(), .font = dvui.Font.theme(.mono) });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        var cb: [64]u8 = undefined;
+        const ctr = blk: {
+            if (bytes_opt) |b| {
+                const sz = dvui.imageSize(.{ .imageFile = .{ .bytes = b, .name = "lb-sz" } }) catch dvui.Size{ .w = 0, .h = 0 };
+                if (sz.w > 0) break :blk std.fmt.bufPrint(&cb, "{d} / {d} · {d}×{d}", .{ idx + 1, total, @as(u32, @intFromFloat(sz.w)), @as(u32, @intFromFloat(sz.h)) }) catch "";
+            }
+            break :blk std.fmt.bufPrint(&cb, "{d} / {d}", .{ idx + 1, total }) catch "";
+        };
+        dvui.labelNoFmt(@src(), ctr, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim(), .font = dvui.Font.theme(.mono) });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
+        if (components.iconOnly(@src(), "lb-close", entypo.cross, .{ .gravity_y = 0.5 })) state.image_popup_open = false;
     }
-    dvui.label(@src(), "(image not available)", .{}, .{
-        .gravity_x = 0.5,
-        .gravity_y = 0.5,
-        .expand = .both,
-    });
+
+    // body: ‹ | image | ›
+    {
+        var body = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both, .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 } });
+        defer body.deinit();
+        var prev = false;
+        if (total > 1) prev = components.iconOnly(@src(), "lb-prev", entypo.chevron_left, .{ .gravity_y = 0.5, .gravity_x = 0.0 });
+        if (bytes_opt) |b| {
+            _ = dvui.image(@src(), .{ .source = .{ .imageFile = .{ .bytes = b, .name = "lb-img" } }, .shrink = .ratio }, .{
+                .id_extra = idx,
+                .expand = .both,
+                .gravity_x = 0.5,
+                .gravity_y = 0.5,
+                .corner_radius = dvui.Rect.all(tokens.r_lg),
+                .border = style.border_thin,
+                .color_border = style.borderColor(),
+            });
+        } else {
+            var ph = dvui.box(@src(), .{}, .{ .expand = .both });
+            defer ph.deinit();
+            dvui.label(@src(), "(image not available)", .{}, .{ .gravity_x = 0.5, .gravity_y = 0.5 });
+        }
+        var next = false;
+        if (total > 1) next = components.iconOnly(@src(), "lb-next", entypo.chevron_right, .{ .gravity_y = 0.5, .gravity_x = 1.0 });
+        if (prev) state.carousel_index = (idx + total - 1) % total;
+        if (next) state.carousel_index = (idx + 1) % total;
+    }
+
+    // bottom filmstrip (centred)
+    if (total > 1) {
+        var strip = dvui.flexbox(@src(), .{ .justify_content = .center }, .{ .expand = .horizontal, .padding = .{ .x = 8, .y = 8, .w = 8, .h = 10 } });
+        defer strip.deinit();
+        var i: usize = 0;
+        while (i < total) : (i += 1) {
+            const tb = actions.thumbBytes(frame, game.f95_thread_id, i);
+            if (renderRibbonThumb(tb, i, i == idx, game.f95_thread_id)) state.carousel_index = i;
+        }
+    }
 }
 
 fn renderInstallManagePopups(frame: *Frame, game: *const library.Game) void {
