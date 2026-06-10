@@ -816,6 +816,44 @@ test "layer2: detail screen renders + tab click switches tab (F0 interaction)" {
     tlog("L2-detail: OK", .{});
 }
 
+test "layer2: universal mods screen renders + add slide-over opens" {
+    tlog("START: L2-mods", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-mods");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    _ = try h.lib.createUniversalMod("Skip Splash", .renpy, "/mods/skip.zip", 100);
+    _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 9, .name = "G", .engine = .renpy });
+    try h.reloadGames();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .universal_mods;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try dvui.testing.expectVisible("mod-add");
+    try std.testing.expect(!h.state.universal_mod_add_open);
+
+    // Open the add slide-over.
+    try dvui.testing.moveTo("mod-add");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(h.state.universal_mod_add_open);
+    try dvui.testing.expectVisible("mod-add-confirm");
+    tlog("L2-mods: OK", .{});
+}
+
 test "layer2: activity dock toggles the downloads drawer" {
     tlog("START: L2-dock", .{});
     const gpa = std.testing.allocator;

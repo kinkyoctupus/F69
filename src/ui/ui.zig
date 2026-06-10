@@ -165,10 +165,13 @@ pub fn runMainLoop(
             state.screen = .settings;
         } else if (std.mem.eql(u8, sc, "downloads")) {
             state.screen = .downloads;
+        } else if (std.mem.eql(u8, sc, "mods")) {
+            state.screen = .universal_mods;
         }
         if (std.c.getenv("F69_OPEN_THREAD")) |tid_z| {
             state.selected_thread = std.fmt.parseInt(u64, std.mem.span(tid_z), 10) catch null;
         }
+        if (std.c.getenv("F69_DOCK_OPEN") != null) state.dock_expanded = true;
     }
     state.setBrowserPath(info.initial_browser_path);
     state.ui_scale = info.initial_ui_scale;

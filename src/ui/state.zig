@@ -634,6 +634,8 @@ pub const State = struct {
     /// Activity dock (bottom bar) expanded into the full Downloads &
     /// Seeding drawer. Toggled by clicking the dock.
     dock_expanded: bool = false,
+    /// Universal-Mods screen: the "+ Add universal mod" slide-over is open.
+    universal_mod_add_open: bool = false,
     /// Lightbox-style rect for the bottom activity drawer; rewritten each
     /// frame to (window − rail − dock) so it tracks resizes.
     activity_drawer_rect: dvui.Rect = .{},
