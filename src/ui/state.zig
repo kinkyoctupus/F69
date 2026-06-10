@@ -631,6 +631,12 @@ pub const State = struct {
     /// window. dvui's `windowHeader` X-button writes false here when
     /// the user closes it.
     image_popup_open: bool = false,
+    /// Activity dock (bottom bar) expanded into the full Downloads &
+    /// Seeding drawer. Toggled by clicking the dock.
+    dock_expanded: bool = false,
+    /// Lightbox-style rect for the bottom activity drawer; rewritten each
+    /// frame to (window − rail − dock) so it tracks resizes.
+    activity_drawer_rect: dvui.Rect = .{},
     /// Lightbox window rect, rewritten each frame to (window − margin) so the
     /// modal tracks the OS window size. Held in state because dvui's
     /// floatingWindow wants a stable `*Rect` across frames.

@@ -816,6 +816,46 @@ test "layer2: detail screen renders + tab click switches tab (F0 interaction)" {
     tlog("L2-detail: OK", .{});
 }
 
+test "layer2: activity dock toggles the downloads drawer" {
+    tlog("START: L2-dock", .{});
+    const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = try TestEnv.init(gpa, "layer2-dock");
+    defer env.deinit();
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    defer t.deinit();
+    ui.registerBundledFonts(t.window);
+    var h = try ui.Harness.init(gpa, io, t.window, env.root);
+    defer h.deinit();
+
+    var fr = h.frame();
+    g_frame = &fr;
+    defer g_frame = null;
+    h.state.screen = .library;
+
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(!h.state.dock_expanded);
+
+    // Click the dock → the Downloads drawer opens.
+    try dvui.testing.moveTo("activity-dock");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(h.state.dock_expanded);
+    try dvui.testing.expectVisible("drawer-close");
+    tlog("L2-dock: drawer open", .{});
+
+    // Collapse via the drawer's chevron.
+    try dvui.testing.moveTo("drawer-close");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame);
+    try std.testing.expect(!h.state.dock_expanded);
+    tlog("L2-dock: OK", .{});
+}
+
 test "layer2: settings toggle click flips bound state (F10 interaction)" {
     tlog("START: L2-settings", .{});
     const gpa = std.testing.allocator;

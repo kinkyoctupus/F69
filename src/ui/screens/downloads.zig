@@ -146,9 +146,17 @@ pub fn downloadsScreen(frame: *Frame) !bool {
     });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
 
+    renderDownloadsBody(frame);
+    return true;
+}
+
+/// The job-list body: three grouped sections (Downloading / Seeding /
+/// Completed) + per-row actions, or an empty state. Shared by the
+/// Downloads screen and the bottom Activity drawer (`renderActivityDrawer`).
+pub fn renderDownloadsBody(frame: *Frame) void {
     if (frame.dl_mgr.jobCount() == 0) {
-        components.emptyState(entypo.download, "No downloads yet", "Paste a URL above, or start one from a game's Download button.");
-        return true;
+        components.emptyState(entypo.download, "No downloads yet", "Start one from a game's Download button, or paste a URL via + Add.");
+        return;
     }
 
     var list = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
@@ -201,8 +209,68 @@ pub fn downloadsScreen(frame: *Frame) !bool {
         .remove => |id| frame.dl_mgr.removeJob(id),
         .retry => |id| actions.retryDownload(frame, id),
     }
+}
 
-    return true;
+/// The Activity dock expanded: a bottom-anchored drawer over the current
+/// screen with the full Downloads & Seeding body. Tracks the window each
+/// frame (so it follows resizes); not movable or resizable. Opened by
+/// clicking the dock (`renderStatusBar`).
+pub fn renderActivityDrawer(frame: *Frame) void {
+    const state = frame.state;
+    if (!state.dock_expanded) return;
+    const t = tokens.active;
+
+    const dock_h: f32 = 30;
+    const rail_w: f32 = 54;
+    const wr = dvui.windowRect();
+    const h: f32 = @min(340, wr.h * 0.6);
+    state.activity_drawer_rect = .{
+        .x = rail_w,
+        .y = @max(0, wr.h - dock_h - h),
+        .w = @max(220, wr.w - rail_w),
+        .h = h,
+    };
+    var fw = dvui.floatingWindow(@src(), .{
+        .open_flag = &state.dock_expanded,
+        .rect = &state.activity_drawer_rect,
+        .resize = .none,
+    }, .{
+        .background = true,
+        .color_fill = tokens.toDvui(t.bg1, dvui.Color),
+        .border = .{ .x = 0, .y = 2, .w = 0, .h = 0 },
+        .color_border = tokens.toDvui(t.acc_dim, dvui.Color),
+    });
+    defer fw.deinit();
+    fw.dragAreaSet(.{}); // pinned — no drag/resize
+
+    // header: Activity · spacer · Pause all · Clear finished · collapse
+    {
+        var hdr = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .{ .x = 14, .y = 7, .w = 10, .h = 7 },
+            .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+            .color_border = style.borderColor(),
+        });
+        defer hdr.deinit();
+        const title = dvui.Font.theme(.title);
+        dvui.labelNoFmt(@src(), "Activity", .{}, .{
+            .gravity_y = 0.5,
+            .color_text = tokens.toDvui(t.ink, dvui.Color),
+            .font = title.withSize(title.size * 0.92),
+        });
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+        if (frame.dl_mgr.anyResumable()) {
+            if (style.button(@src(), "Pause all", .{}, .{ .gravity_y = 0.5 })) frame.dl_mgr.pauseAll();
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        }
+        if (style.button(@src(), "Clear finished", .{}, .{ .gravity_y = 0.5 })) _ = frame.dl_mgr.clearCompleted();
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+        if (components.iconOnly(@src(), "drawer-close", entypo.chevron_down, .{ .gravity_y = 0.5, .tag = "drawer-close" })) state.dock_expanded = false;
+    }
+
+    var body = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .padding = .{ .x = 6, .y = 4, .w = 6, .h = 6 } });
+    defer body.deinit();
+    renderDownloadsBody(frame);
 }
 
 const LiveTotals = struct {

@@ -1258,12 +1258,13 @@ pub fn renderStatusBar(frame: *Frame) void {
 
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
-        .min_size_content = .{ .w = 0, .h = 24 },
+        .min_size_content = .{ .w = 0, .h = 30 },
         .background = true,
         .color_fill = td(t.bg1),
-        .color_border = td(t.line),
+        .color_border = if (state.dock_expanded) td(t.acc_dim) else td(t.line),
         .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
-        .padding = .{ .x = 12, .y = 0, .w = 12, .h = 0 },
+        .padding = .{ .x = 12, .y = 0, .w = 10, .h = 0 },
+        .tag = "activity-dock",
     });
     defer bar.deinit();
 
@@ -1330,6 +1331,16 @@ pub fn renderStatusBar(frame: *Frame) void {
             .padding = .{ .x = 9, .y = 0, .w = 0, .h = 0 },
         });
     }
+
+    // Expand/collapse affordance — a click anywhere on the dock toggles the
+    // Downloads & Seeding drawer (renderActivityDrawer).
+    dvui.icon(@src(), "dock-chev", if (state.dock_expanded) entypo.chevron_down else entypo.chevron_up, .{}, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 14, .h = 14 },
+        .color_text = td(t.ink3),
+        .padding = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+    });
+    if (dvui.clicked(bar.data(), .{})) state.dock_expanded = !state.dock_expanded;
 }
 
 pub fn renderSyncBanner(frame: *Frame) void {

@@ -40,6 +40,8 @@ pub const importUrlsScreen = import_screen.importUrlsScreen;
 pub const importFolderScreen = import_screen.importFolderScreen;
 pub const importF95CheckerReviewScreen = import_screen.importF95CheckerReviewScreen;
 pub const downloadsScreen = downloads_screen.downloadsScreen;
+pub const renderDownloadsBody = downloads_screen.renderDownloadsBody;
+pub const renderActivityDrawer = downloads_screen.renderActivityDrawer;
 pub const diagnosticsScreen = diagnostics_screen.diagnosticsScreen;
 pub const universalModsScreen = universal_mods_screen.universalModsScreen;
 

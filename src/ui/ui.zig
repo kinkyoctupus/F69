@@ -645,6 +645,8 @@ pub fn guiFrame(frame: *Frame) !bool {
     // activity (download / install / sync) or "Ready". A normal layout child
     // (not floating), so it reserves its 24px at the very bottom of the window.
     screens.renderStatusBar(frame);
+    // The dock expanded → the Downloads & Seeding drawer over the content.
+    screens.renderActivityDrawer(frame);
 
     // End-of-batch sync recap popup. Sits on top of whichever screen
     // is active so the user always sees the "what changed" list,
