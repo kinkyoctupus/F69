@@ -951,6 +951,23 @@ pub const Library = struct {
         self.install_generation +%= 1;
     }
 
+    /// Relocate the games library: rewrite every install_path that sits under
+    /// `old_root` so it sits under `new_root` instead. Boundary-aware — only a
+    /// path equal to `old_root` or starting with `old_root || '/'` is rewritten
+    /// (so a sibling like `/x/library-old/…` is left alone). Moves no files;
+    /// repoints the DB links only. Returns the number of rows rewritten.
+    pub fn relocateInstalls(self: *Library, old_root: []const u8, new_root: []const u8) errs.Error!usize {
+        self.conn.inner.exec(
+            \\UPDATE installs
+            \\SET install_path = ?1 || substr(install_path, length(?2) + 1)
+            \\WHERE install_path = ?2
+            \\   OR substr(install_path, 1, length(?2) + 1) = ?2 || '/'
+        , .{ new_root, old_root }) catch return self.dbFail();
+        const n: usize = @intCast(@max(self.conn.inner.changes(), 0));
+        self.install_generation +%= 1;
+        return n;
+    }
+
     /// Per-install custom launch arguments (raw string; tokenized at launch).
     pub fn setInstallLaunchArgs(self: *Library, install_id: []const u8, args: ?[]const u8) errs.Error!void {
         self.conn.inner.exec("UPDATE installs SET launch_args = ? WHERE id = ?", .{
@@ -1853,6 +1870,27 @@ test "library: setInstallExecutable + setInstallLaunchArgs persist on the row" {
     defer lib.freeInstall(got);
     try std.testing.expectEqualStrings("wine game.exe", got.executable.?);
     try std.testing.expectEqualStrings("--fullscreen --no-intro", got.launch_args.?);
+}
+
+test "library: relocateInstalls rewrites the path prefix, boundary-aware" {
+    var lib = try Library.open(std.testing.allocator, ":memory:");
+    defer lib.close();
+    try lib.upsertGame(&.{ .f95_thread_id = 7, .name = "G" });
+    // Two installs under the old root, plus a decoy whose path merely shares
+    // a string prefix but is NOT under the old root (must NOT be rewritten).
+    try lib.upsertInstall(&.{ .id = "11111111-1111-1111-1111-111111111111".*, .game_thread_id = 7, .version = "1.0", .install_path = "/media/ntfs/library/7/1.0", .recipe_id = "r", .installed_at = 1 });
+    try lib.upsertInstall(&.{ .id = "22222222-2222-2222-2222-222222222222".*, .game_thread_id = 7, .version = "2.0", .install_path = "/media/ntfs/library/7/2.0", .recipe_id = "r", .installed_at = 2 });
+    try lib.upsertInstall(&.{ .id = "33333333-3333-3333-3333-333333333333".*, .game_thread_id = 7, .version = "3.0", .install_path = "/media/ntfs/library-old/9/3.0", .recipe_id = "r", .installed_at = 3 });
+
+    const n = try lib.relocateInstalls("/media/ntfs/library", "/home/u/games");
+    try std.testing.expectEqual(@as(usize, 2), n);
+
+    const installs = try lib.listInstalls(7);
+    defer lib.freeInstalls(installs);
+    // installs[0] = newest (3.0, the decoy) — untouched.
+    try std.testing.expectEqualStrings("/media/ntfs/library-old/9/3.0", installs[0].install_path);
+    try std.testing.expectEqualStrings("/home/u/games/7/2.0", installs[1].install_path);
+    try std.testing.expectEqualStrings("/home/u/games/7/1.0", installs[2].install_path);
 }
 
 test "library: deleteInstall removes one row" {

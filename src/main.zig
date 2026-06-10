@@ -115,8 +115,16 @@ pub fn main(init: std.process.Init) !void {
     try std.Io.Dir.cwd().createDirPath(init.io, covers_dir);
     sweepTmpCovers(init.io, covers_dir) catch {};
 
-    // Per-game installs at `<data_root>/library/<thread_id>/<version>/`.
-    const library_root = try std.fmt.allocPrint(gpa, "{s}/library", .{data_root});
+    // Per-game installs at `<data_root>/library/<thread_id>/<version>/`,
+    // UNLESS the user relocated the games library to a different disk. The
+    // override path lives in `<data_root>/library_dir` (one line, absolute);
+    // Settings → Storage writes it and remaps the existing DB links. This lets
+    // the app + DB live on a fast disk while the bulk game data stays put
+    // (e.g. on a large NTFS volume). Missing/empty → the bundled default.
+    const library_dir_setting = try std.fmt.allocPrint(gpa, "{s}/library_dir", .{data_root});
+    defer gpa.free(library_dir_setting);
+    const library_root = (util_setting.readSingleLine(init.io, gpa, library_dir_setting) catch null) orelse
+        try std.fmt.allocPrint(gpa, "{s}/library", .{data_root});
     defer gpa.free(library_root);
     try std.Io.Dir.cwd().createDirPath(init.io, library_root);
 
@@ -210,7 +218,12 @@ pub fn main(init: std.process.Init) !void {
     // Kept under `<data_root>/downloads/` so the user can wipe both
     // categories with one rm -rf and never collides with installed
     // games under `<data_root>/library/`.
-    const downloads_root = try std.fmt.allocPrint(gpa, "{s}/downloads", .{data_root});
+    // Overridable too (`<data_root>/downloads_dir`) — keeps in-flight /
+    // seeding torrents on their original volume when the app+DB relocate.
+    const downloads_dir_setting = try std.fmt.allocPrint(gpa, "{s}/downloads_dir", .{data_root});
+    defer gpa.free(downloads_dir_setting);
+    const downloads_root = (util_setting.readSingleLine(init.io, gpa, downloads_dir_setting) catch null) orelse
+        try std.fmt.allocPrint(gpa, "{s}/downloads", .{data_root});
     defer gpa.free(downloads_root);
     const downloads_direct_root = try std.fmt.allocPrint(gpa, "{s}/direct", .{downloads_root});
     defer gpa.free(downloads_direct_root);

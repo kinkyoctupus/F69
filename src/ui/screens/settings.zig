@@ -409,6 +409,49 @@ fn clearSandboxieOverride(frame: *Frame) void {
     frame.state.notifyInfo("Sandboxie override cleared — auto-detect resumes on next launch.");
 }
 
+/// Relocate the games library: folder-pick a new root, remap every install
+/// link from the current `library_root` prefix to the picked one, and persist
+/// the override at `<data_root>/library_dir` (read at next launch). Moves no
+/// files. Used to keep the bulk game data on one volume while the app + DB
+/// live elsewhere — and to repoint after the user moves the games themselves.
+fn relocateGamesFolder(frame: *Frame) void {
+    const alloc = frame.lib.alloc;
+    const old_root = frame.info.library_root;
+
+    const picked = (file_picker.openFolder(alloc, old_root) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "Folder picker failed: {s}", .{@errorName(e)}) catch "Folder picker failed");
+        return;
+    }) orelse return; // cancelled
+    defer alloc.free(picked);
+
+    // Normalise: drop a trailing slash so the prefix boundary matches cleanly.
+    const new_root = std.mem.trimEnd(u8, picked, "/");
+    if (new_root.len == 0) return;
+    if (std.mem.eql(u8, new_root, old_root)) {
+        frame.state.notifyInfo("That's already the current games folder.");
+        return;
+    }
+
+    const n = frame.lib.relocateInstalls(old_root, new_root) catch |e| {
+        var buf: [160]u8 = undefined;
+        frame.state.notifyErr(std.fmt.bufPrint(&buf, "Relocate failed: {s}", .{@errorName(e)}) catch "Relocate failed");
+        return;
+    };
+
+    // Persist the override so the next launch resolves library_root here.
+    const file = std.fmt.allocPrint(alloc, "{s}/library_dir", .{frame.info.data_root}) catch return;
+    defer alloc.free(file);
+    atomic_io.writeFileAtomic(frame.io, file, new_root) catch |e| {
+        var buf: [200]u8 = undefined;
+        frame.state.notifyWarn(std.fmt.bufPrint(&buf, "Links remapped, but couldn't save the override: {s}", .{@errorName(e)}) catch "Remapped, but couldn't save override");
+        return;
+    };
+
+    var buf: [256]u8 = undefined;
+    frame.state.notifyOk(std.fmt.bufPrint(&buf, "Relocated {d} install{s} → {s}. Restart to apply.", .{ n, if (n == 1) "" else "s", new_root }) catch "Relocated. Restart to apply.");
+}
+
 /// "Auto-convert new installs" checkbox. When on, post-install
 /// kicks off Convert immediately after the archive extracts (for
 /// games with a recipe `convert_linux` block). Off by default
@@ -595,6 +638,18 @@ fn renderSettingsLibrary(frame: *Frame) void {
     settingsRow(&row_id, "Database", frame.info.db_path);
     settingsRow(&row_id, "Covers cache", frame.info.covers_dir);
     settingsRow(&row_id, "Library root", frame.info.library_root);
+
+    // Relocate: point f69 at a different games folder and remap every install
+    // link in one shot. Moves NO files — the user is expected to have already
+    // moved the game folders (or to be keeping them in place after moving the
+    // app + DB elsewhere). Reversible: relocate back to undo.
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 4 } });
+    if (dvui.button(@src(), "Relocate games folder\u{2026}", .{}, .{})) {
+        relocateGamesFolder(frame);
+    }
+    dvui.labelNoFmt(@src(), "Repoints all install links to a new folder. Does not move files — move the game folders yourself first (or leave them in place). Takes effect on restart.", .{}, .{
+        .color_text = style.labelDim(),
+    });
 
     settingsSectionDivider(3);
 
