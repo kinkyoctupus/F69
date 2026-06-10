@@ -103,6 +103,8 @@ pub fn detailScreen(frame: *Frame) !bool {
 
     var page_scroll = dvui.scrollArea(@src(), .{ .scroll_info = &state.detail_scroll }, .{ .expand = .both });
 
+    // Full-bleed banner spans the whole detail column (no side padding).
+    renderBannerHero(frame, game);
     {
         var hdr = dvui.box(@src(), .{ .dir = .vertical }, .{
             .expand = .horizontal,
@@ -110,7 +112,6 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer hdr.deinit();
 
-        renderBannerHero(frame, game);
         renderRibbon(frame, game); // V3 filmstrip under the hero
         renderCompactMeta(frame, game); // V3 compact meta bar
         // The full action set + interactive settings (status/rating/sandbox/
@@ -281,12 +282,13 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
         .min_size_content = .{ .w = 0, .h = HERO_H },
         .max_size_content = .height(HERO_H),
         .background = true,
-        .color_fill = tokens.toDvui(t.bg2, dvui.Color),
-        .corner_radius = dvui.Rect.all(tokens.r_lg),
+        // near-black so the letterbox bars read as black, not graphite.
+        .color_fill = .{ .r = 0x04, .g = 0x06, .b = 0x09 },
     });
     defer hero.deinit();
 
-    // 1. gallery image — the current shot (cover for idx 0), aspect-fit centered.
+    // 1. gallery image — fit by RATIO (letterbox) + centred. The hero's black
+    //    fill shows as bars when the shot is narrower than the full-width band.
     const bytes_opt: ?[]const u8 = if (idx == 0)
         actions.coverFullBytes(frame, game.f95_thread_id)
     else
@@ -297,23 +299,31 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
             .shrink = .ratio,
         }, .{
             .id_extra = idx,
-            .expand = .both,
-            .gravity_x = 0.5,
+            .expand = .ratio, // keep aspect, fit within → letterbox
+            .gravity_x = 0.5, // centre horizontally
             .gravity_y = 0.5,
-            .corner_radius = dvui.Rect.all(tokens.r_lg),
         });
     }
 
-    // 2. bottom scrim for legibility.
+    // 2. subtle bottom gradient (two low-alpha bands) — just enough for the
+    //    title to read; leaves most of the shot unobstructed.
     {
-        var scrim = dvui.box(@src(), .{}, .{
+        var s1 = dvui.box(@src(), .{}, .{
             .gravity_y = 1.0,
             .expand = .horizontal,
-            .min_size_content = .{ .w = 0, .h = 120 },
+            .min_size_content = .{ .w = 0, .h = 128 },
             .background = true,
-            .color_fill = .{ .r = 0x07, .g = 0x0b, .b = 0x0f, .a = 0xCC },
+            .color_fill = .{ .r = 0x05, .g = 0x08, .b = 0x0b, .a = 0x3C },
         });
-        scrim.deinit();
+        s1.deinit();
+        var s2 = dvui.box(@src(), .{}, .{
+            .gravity_y = 1.0,
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 0, .h = 70 },
+            .background = true,
+            .color_fill = .{ .r = 0x05, .g = 0x08, .b = 0x0b, .a = 0x66 },
+        });
+        s2.deinit();
     }
 
     // 3. nav arrows overlaid on the edges + dots (only with >1 image).
