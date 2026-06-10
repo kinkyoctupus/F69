@@ -407,13 +407,24 @@ pub fn runMainLoop(
         // on a recurring interval. Gated on workers being idle so we
         // don't race a bookmark import.
         actions.maybeAutoUpdateCheck(&frame);
+        const pf_build0 = perfNowNs(io);
         if (!try guiFrame(&frame)) break :main_loop;
+        const pf_build1 = perfNowNs(io);
 
         const end_micros = try win.end(.{});
+        const pf_gpu1 = perfNowNs(io);
         dumpTags(&win);
         try backend.setCursor(win.cursorRequested());
         try backend.textInputRect(win.textInputRequested());
+        const pf_present0 = perfNowNs(io);
         try backend.renderPresent();
+        const pf_present1 = perfNowNs(io);
+        perfFrame(
+            io,
+            @intCast(@divTrunc(pf_build1 - pf_build0, 1000)),
+            @intCast(@divTrunc(pf_gpu1 - pf_build1, 1000)),
+            @intCast(@divTrunc(pf_present1 - pf_present0, 1000)),
+        );
 
         const wait_event_micros = win.waitTime(end_micros);
         interrupted = try backend.waitEventTimeout(wait_event_micros);
@@ -451,6 +462,54 @@ fn dumpTags(win: *dvui.Window) void {
         var buf: [320]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "{s}\t{d:.1}\t{d:.1}\t{d:.1}\t{d:.1}\t{d}\n", .{ e.key_ptr.*, r.x, r.y, r.w, r.h, @intFromBool(td.visible) }) catch continue;
         _ = std.c.fwrite(line.ptr, 1, line.len, f);
+    }
+}
+
+// --- frame-pacing telemetry (F69_PERF=1) -----------------------------------
+// Summarised once per second to stderr:
+//   perf: fps=<n> build_max=<us> gpu_max=<us> present_max=<us>
+// build   = widget-tree construction (guiFrame)
+// gpu     = win.end() — dvui's draw-command flush + texture upload to the GPU
+// present = swapchain present; INCLUDES the vsync wait, so ~16000us at a
+//           steady 60 fps is normal and not a problem.
+// Reading it: low fps + low build/gpu + present pinned near the vsync interval
+// = we're simply not generating frames fast enough (pacing / event-wakeup),
+// not GPU-bound. High gpu = real per-frame GPU cost. Off (one getenv) unless
+// the var is set; the four clock reads per frame are negligible.
+const perf_log = std.log.scoped(.perf);
+var g_perf_checked: bool = false;
+var g_perf_on: bool = false;
+var g_perf_n: u32 = 0;
+var g_perf_build_us: u64 = 0;
+var g_perf_gpu_us: u64 = 0;
+var g_perf_present_us: u64 = 0;
+var g_perf_window_ns: i128 = 0;
+
+fn perfNowNs(io: std.Io) i128 {
+    return std.Io.Clock.Timestamp.now(io, .real).raw.toNanoseconds();
+}
+
+fn perfFrame(io: std.Io, build_us: u64, gpu_us: u64, present_us: u64) void {
+    if (!g_perf_checked) {
+        g_perf_checked = true;
+        g_perf_on = std.c.getenv("F69_PERF") != null;
+    }
+    if (!g_perf_on) return;
+    const now = perfNowNs(io);
+    if (g_perf_window_ns == 0) g_perf_window_ns = now;
+    g_perf_n += 1;
+    if (build_us > g_perf_build_us) g_perf_build_us = build_us;
+    if (gpu_us > g_perf_gpu_us) g_perf_gpu_us = gpu_us;
+    if (present_us > g_perf_present_us) g_perf_present_us = present_us;
+    if (now - g_perf_window_ns >= 1_000_000_000) {
+        perf_log.info("fps={d} build_max={d}us gpu_max={d}us present_max={d}us", .{
+            g_perf_n, g_perf_build_us, g_perf_gpu_us, g_perf_present_us,
+        });
+        g_perf_n = 0;
+        g_perf_build_us = 0;
+        g_perf_gpu_us = 0;
+        g_perf_present_us = 0;
+        g_perf_window_ns = now;
     }
 }
 
