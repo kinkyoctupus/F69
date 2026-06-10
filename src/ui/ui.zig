@@ -172,6 +172,7 @@ pub fn runMainLoop(
             state.selected_thread = std.fmt.parseInt(u64, std.mem.span(tid_z), 10) catch null;
         }
         if (std.c.getenv("F69_DOCK_OPEN") != null) state.dock_expanded = true;
+        if (state.selected_thread) |tid| state.detail_state_for_thread = tid; // don't reset the boot tab
         if (std.c.getenv("F69_OPEN_TAB")) |tab_z| {
             const tb = std.mem.span(tab_z);
             if (std.mem.eql(u8, tb, "tools")) state.detail_tab = .tools;
