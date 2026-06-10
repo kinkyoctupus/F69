@@ -63,17 +63,29 @@ pub fn detailScreen(frame: *Frame) !bool {
         });
         defer top.deinit();
 
-        if (components.iconOnly(@src(), "back", entypo.chevron_left, .{ .tag = "detail-back" })) {
+        // ← Library ghost back button (design-B detail head).
+        if (components.iconButton(@src(), "Library", entypo.chevron_left, .{ .gravity_y = 0.5, .tag = "detail-back" })) {
             state.screen = .library;
             state.selected_thread = null;
             state.clearTransientToasts();
         }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 8, .h = 1 } });
-        dvui.labelNoFmt(@src(), "Library", .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        if (components.iconButton(@src(), "Delete", entypo.trash, .{ .style = .err, .tag = "detail-delete" })) {
-            state.confirm_delete = true;
+        // ⋯ overflow — Delete (and future per-game actions) tucked away.
+        var ob = dvui.menu(@src(), .horizontal, .{});
+        defer ob.deinit();
+        if (dvui.menuItemIcon(@src(), "detail-overflow", entypo.dots_three_horizontal, .{ .submenu = true }, .{
+            .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+            .min_size_content = style.icon_size,
+            .gravity_y = 0.5,
+            .tag = "detail-overflow",
+        })) |anchor| {
+            var fw = dvui.floatingMenu(@src(), .{ .from = anchor }, .{});
+            defer fw.deinit();
+            if (dvui.menuItemLabel(@src(), "Delete game\u{2026}", .{}, .{ .expand = .horizontal, .tag = "detail-delete" }) != null) {
+                state.confirm_delete = true;
+                ob.close();
+            }
         }
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
@@ -264,7 +276,7 @@ fn renderIdentityPillRow(frame: *Frame, game: *const library.Game) void {
 fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
     const state = frame.state;
     const t = tokens.active;
-    const HERO_H: f32 = 288;
+    const HERO_H: f32 = 346; // +20% taller banner
 
     // Per-game gallery reset + thumbnail prewarm (mirrors the old carousel).
     if (state.carousel_for_thread != game.f95_thread_id) {
@@ -346,11 +358,7 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
         {
             var acts = dvui.box(@src(), .{ .dir = .horizontal }, .{ .gravity_y = 1.0 });
             defer acts.deinit();
-            if (actions.installDotState(frame, game) != .none) {
-                if (components.iconButton(@src(), "Play", entypo.controller_play, .{ .style = .highlight, .gravity_y = 0.5 })) {
-                    actions.doLaunchGame(frame, game);
-                }
-            }
+            renderHeroPlay(frame, game);
         }
     }
 
@@ -358,6 +366,71 @@ fn renderBannerHero(frame: *Frame, game: *const library.Game) void {
     // V4 lightbox.
     if (dvui.clicked(hero.data(), .{})) {
         state.image_popup_open = true;
+    }
+}
+
+/// Hero Play control. A split button: the primary half launches the active
+/// install (the Overview-picked one, else the newest); a ▾ caret lists every
+/// installed version to pick + launch. Shows Stop while the game runs.
+fn renderHeroPlay(frame: *Frame, game: *const library.Game) void {
+    const state = frame.state;
+
+    if (actions.isGameRunning(frame, game.f95_thread_id)) {
+        if (components.iconButton(@src(), "Stop", entypo.cross, .{ .style = .err, .gravity_y = 0.5, .tag = "hero-stop" })) {
+            actions.doStopGame(frame, game);
+        }
+        return;
+    }
+    if (actions.installDotState(frame, game) == .none) return; // nothing to launch yet
+
+    const installs = frame.lib.listInstalls(game.f95_thread_id) catch &[_]library.Install{};
+    defer frame.lib.freeInstalls(@constCast(installs));
+    if (installs.len == 0) return;
+
+    // active = the Overview picker's choice, else newest (installs[0]).
+    var active: usize = 0;
+    if (state.detail_picker_install_id) |sel| {
+        for (installs, 0..) |inst, i| {
+            if (std.mem.eql(u8, inst.id[0..], sel[0..])) {
+                active = i;
+                break;
+            }
+        }
+    }
+
+    var bar = dvui.menu(@src(), .horizontal, .{ .id_extra = game.f95_thread_id });
+    defer bar.deinit();
+
+    var lbl_buf: [56]u8 = undefined;
+    const lbl = std.fmt.bufPrint(&lbl_buf, "Play  {s}", .{installs[active].version}) catch "Play";
+    if (components.iconButton(@src(), lbl, entypo.controller_play, .{ .style = .highlight, .gravity_y = 0.5, .tag = "hero-play" })) {
+        state.detail_picker_install_id = installs[active].id;
+        actions.doLaunchGame(frame, game);
+    }
+
+    if (installs.len > 1) {
+        if (dvui.menuItemIcon(@src(), "hero-play-menu", entypo.chevron_down, .{ .submenu = true }, .{
+            .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+            .min_size_content = style.icon_size,
+            .gravity_y = 0.5,
+            .background = true,
+            .style = .highlight,
+            .corner_radius = style.corner_radius,
+            .tag = "hero-play-caret",
+        })) |anchor| {
+            var fw = dvui.floatingMenu(@src(), .{ .from = anchor }, .{});
+            defer fw.deinit();
+            for (installs, 0..) |inst, i| {
+                var ib: [96]u8 = undefined;
+                const suffix = if (i == 0) "  (newest)" else "";
+                const it_lbl = std.fmt.bufPrint(&ib, "{s}{s}{s}", .{ sourceTag(inst.source), inst.version, suffix }) catch inst.version;
+                if (dvui.menuItemLabel(@src(), it_lbl, .{}, .{ .expand = .horizontal, .id_extra = i }) != null) {
+                    state.detail_picker_install_id = inst.id;
+                    actions.doLaunchGame(frame, game);
+                    bar.close();
+                }
+            }
+        }
     }
 }
 
@@ -1444,8 +1517,19 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
     });
     defer bar.deinit();
 
-    const inst_v: ?[]const u8 = if (frame.install_versions) |m| m.get(game.f95_thread_id) else null;
-    metaKv(@src(), "INSTALLED", inst_v orelse "—");
+    // INSTALLED — newest version, plus a "+N more" tail when several are
+    // installed (the hero Play ▾ and the Overview list manage them).
+    var inst_buf: [64]u8 = undefined;
+    const inst_label: []const u8 = label: {
+        const installs = frame.lib.listInstalls(game.f95_thread_id) catch {
+            break :label if (frame.install_versions) |m| (m.get(game.f95_thread_id) orelse "—") else "—";
+        };
+        defer frame.lib.freeInstalls(@constCast(installs));
+        if (installs.len == 0) break :label "—";
+        if (installs.len == 1) break :label std.fmt.bufPrint(&inst_buf, "{s}", .{installs[0].version}) catch "—";
+        break :label std.fmt.bufPrint(&inst_buf, "{s} \u{00b7} +{d} more", .{ installs[0].version, installs.len - 1 }) catch "—";
+    };
+    metaKv(@src(), "INSTALLED", inst_label);
     metaSep(@src());
     metaKv(@src(), "DEV", if (game.developer) |d| (if (d.len > 0) d else "—") else "—");
     metaSep(@src());

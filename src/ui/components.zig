@@ -1118,6 +1118,18 @@ pub fn renderIconRail(frame: *Frame) void {
     });
     defer rail.deinit();
 
+    // Brand wordmark at the rail top (design-B `.rail .logo`): teal, display
+    // font, so every screen carries the same f69 mark.
+    {
+        const title = dvui.Font.theme(.title);
+        dvui.labelNoFmt(@src(), "f69", .{}, .{
+            .gravity_x = 0.5,
+            .color_text = td(tokens.active.acc),
+            .font = title.withSize(title.size * 1.05),
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 10 },
+        });
+    }
+
     railItem(state, 0, "Library", entypo.home, .library);
     railItem(state, 1, "Mods", entypo.tools, .universal_mods);
     railItem(state, 2, "Downloads", entypo.download, .downloads);

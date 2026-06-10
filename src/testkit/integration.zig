@@ -878,7 +878,11 @@ test "layer2: delete-confirm bar appears on click + cancels (F0 conditional)" {
     try std.testing.expect(!h.state.confirm_delete);
     tlog("L2-confirm: rendered, confirm_delete={}", .{h.state.confirm_delete});
 
-    // Click Delete → the confirm bar (with its Cancel button) appears.
+    // Open the ⋯ overflow menu, then click Delete → the confirm bar appears.
+    try dvui.testing.moveTo("detail-overflow");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(renderFrame); // open the floating menu
+    _ = try dvui.testing.step(renderFrame);
     try dvui.testing.moveTo("detail-delete");
     try dvui.testing.click(.left);
     _ = try dvui.testing.step(renderFrame); // process click → confirm_delete = true
