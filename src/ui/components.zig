@@ -1135,8 +1135,37 @@ pub fn renderIconRail(frame: *Frame) void {
     railItem(state, 2, "Downloads", entypo.download, .downloads);
     railItem(state, 3, "Import", entypo.plus, .import_folder);
     _ = dvui.spacer(@src(), .{ .expand = .vertical });
+    railAccount(state);
     railItem(state, 4, "Settings", entypo.cog, .settings);
     railItem(state, 5, "Diagnostics", entypo.help, .diagnostics);
+}
+
+/// Account/profile rail item. Unlike `railItem` it doesn't navigate to a
+/// screen — it toggles the global Accounts popup (`renderLoginPopup`).
+/// Teal icon when signed in; acc-wash highlight while the popup is open.
+fn railAccount(state: *state_mod.State) void {
+    const t = tokens.active;
+    const signed_in = state.login_status == .logged_in or state.rpdl_status == .logged_in;
+    const open = state.login_popup_open;
+    var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .tag = "rail-account",
+        .min_size_content = .{ .w = 38, .h = 38 },
+        .gravity_x = 0.5,
+        .background = open,
+        .color_fill = td(t.acc_wash),
+        .border = if (open) .{ .x = 2, .y = 0, .w = 0, .h = 0 } else dvui.Rect.all(0),
+        .color_border = td(t.acc),
+        .corner_radius = dvui.Rect.all(tokens.r),
+        .margin = .{ .x = 8, .y = 3, .w = 8, .h = 3 },
+    });
+    defer cell.deinit();
+    dvui.icon(@src(), "account", entypo.user, .{}, .{
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 19, .h = 19 },
+        .color_text = td(if (signed_in) t.acc else t.ink3),
+    });
+    if (dvui.clicked(cell.data(), .{})) state.login_popup_open = !state.login_popup_open;
 }
 
 fn railItem(state: *state_mod.State, key: u32, name: []const u8, icon: []const u8, screen: state_mod.Screen) void {
