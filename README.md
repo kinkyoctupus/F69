@@ -34,27 +34,80 @@ f69 stands on the shoulders of two great projects:
 - **F95Checker DB export** — write your f69 library back to a F95Checker-shaped `db.sqlite3` (backup-rename never overwrites).
 - **Per-version playtime journal** — every launch records a play session against the installed version; a per-game **Journal tab** shows your session history broken down by version, and the library row flags an unplayed update when you install a newer release than you've played past the threshold.
 
-## Download:
+## Install:
 
-Tagged releases publish prebuilt artifacts on the [Releases page](https://github.com/Moordp/F69/releases/latest): portable + slim Linux x86_64 tarballs, a Windows x86_64 zip (`f69-windows.zip`, exe + DLLs), and (where the CI matrix succeeds) `.pkg.tar.zst` / `.deb` / `.rpm`.
+Grab the matching file from the **[latest release](https://github.com/Moordp/F69/releases/latest)**.
 
-Or build from source:
+### Linux — native package (recommended)
+
+Native packages pull their dependencies in automatically:
 
 ```sh
-git clone git@github.com:Moordp/F69.git f69
-cd f69
-direnv allow                    # NixOS users; or `nix develop` on other Nix
-zig build portable
-./zig-out/bin/run.sh
+# Arch / CachyOS / Manjaro
+sudo pacman -U f69-*-x86_64.pkg.tar.zst
+
+# Fedora / Nobara / Bazzite / RHEL
+sudo dnf install ./f69-*.x86_64.rpm
+
+# Debian / Ubuntu / PikaOS
+sudo apt install ./f69_*_amd64.deb
 ```
 
-That gives you a self-contained `zig-out/bin/` folder (~78 MB, binary + bundled libs + launcher). Move it anywhere — the data travels with it.
+> Native packages are built against a current Arch / Fedora / Debian base. If one refuses to install on your version (glibc/soname mismatch), use a portable bundle below instead.
 
-NixOS users can skip the bundle:
+### Linux — portable (any distro)
+
+- **Full bundle** (`f69-portable-linux-x86_64.tar.gz`) — carries its own libraries; runs on any glibc distro. Only needs your GPU's Vulkan driver + `aria2` for downloads.
+- **Slim bundle** (`f69-slim-linux-x86_64.tar.gz`) — smaller; uses your system's libraries (install the deps below first).
+
+```sh
+tar xf f69-portable-linux-x86_64.tar.gz   # or the slim tarball
+./bin/run.sh                              # slim extracts to ./portable-slim/run.sh
+```
+
+### Libraries the portable/slim bundle needs
+
+On a normal **desktop / gaming distro** you almost certainly have everything already — the only thing usually missing is **aria2** (for in-app downloads):
+
+```sh
+sudo pacman -S aria2          # Arch
+sudo apt install aria2        # Debian / Ubuntu
+sudo dnf install aria2        # Fedora
+```
+
+On a **minimal / server** install, also add the graphical runtime libs:
+
+```sh
+# Arch
+sudo pacman -S vulkan-icd-loader wayland libxkbcommon libdecor \
+    libx11 libxext libxcursor libxi libxrandr dbus libarchive aria2
+
+# Debian / Ubuntu
+sudo apt install libvulkan1 libwayland-client0 libxkbcommon0 libdecor-0-0 \
+    libx11-6 libxext6 libxcursor1 libxi6 libxrandr2 libdbus-1-3 libarchive13 aria2
+
+# Fedora / RHEL / openSUSE
+sudo dnf install vulkan-loader libwayland-client libxkbcommon libdecor \
+    libX11 libXext libXcursor libXi libXrandr dbus-libs libarchive aria2
+```
+
+You also need a working **Vulkan driver** for your GPU (Mesa for AMD/Intel, the proprietary driver for NVIDIA) — f69 never bundles GPU drivers. The same list lives in `DEPS.md` inside the slim tarball.
+
+> Slim-bundle smoke-tested out-of-the-box on **CachyOS** (Arch), **PikaOS 4** (Debian), **Bazzite** (Fedora atomic), and **Nobara 43** — all launched and rendered with only `aria2` added.
+
+### NixOS
 
 ```sh
 nix run github:Moordp/F69#f69
 ```
+
+### Windows
+
+Download `f69-windows.zip`, extract it anywhere, and run `f69.exe` — the zip carries its DLLs.
+
+### From source
+
+See [Building from source](#building-from-source) below — `zig build portable` gives you a self-contained `zig-out/bin/` folder.
 
 ## Running:
 
