@@ -1130,10 +1130,11 @@ pub fn renderIconRail(frame: *Frame) void {
         });
     }
 
+    // Only true DESTINATIONS live on the rail. Downloads → the bottom
+    // Activity Dock; Import → the top-bar "+ Add ▾". (See dock-and-rail
+    // redesign.)
     railItem(state, 0, "Library", entypo.home, .library);
     railItem(state, 1, "Mods", entypo.tools, .universal_mods);
-    railItem(state, 2, "Downloads", entypo.download, .downloads);
-    railItem(state, 3, "Import", entypo.plus, .import_folder);
     _ = dvui.spacer(@src(), .{ .expand = .vertical });
     railAccount(state);
     railItem(state, 4, "Settings", entypo.cog, .settings);
