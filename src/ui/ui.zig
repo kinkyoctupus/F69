@@ -125,11 +125,10 @@ pub fn runMainLoop(
     var games = try lib.listGames();
     defer lib.freeGames(games);
 
-    // Warm the OS page cache for the first window-worth of covers so
-    // the first frame of the library screen doesn't stall on cold
-    // file reads. Cap matches `state.cover_cache.len` so we don't
-    // bother warming covers we'd evict before drawing.
-    actions.spawnCoverPrewarm(gpa, io, info.covers_dir, games, state_mod.COVER_CACHE_CAP);
+    // Warm the OS page cache for the first screen-worth of cover thumbs
+    // so the first library frame doesn't wait on cold reads. The rest
+    // load on demand off the UI thread (`spawnCoverLoadIfRoom`).
+    actions.spawnCoverPrewarm(gpa, io, info.covers_dir, games, state_mod.COVER_PREWARM);
 
     // Mod install/uninstall queue + worker. Long-lived: spans the
     // app's lifetime so jobs survive screen navigation and the worker
@@ -244,6 +243,7 @@ pub fn runMainLoop(
         // Wizard state is inline on State (no heap).
         actions.freeModfileCacheState(&state, lib.alloc);
         actions.freeClashModalState(&state, lib.alloc);
+        actions.freeCoverLoads(&state, lib.alloc);
         actions.freeCoverCache(&state, lib.alloc);
         actions.freeLibFilterCache(&state, lib.alloc);
         actions.freeSnapshotCache(&state, lib.alloc);
@@ -278,7 +278,7 @@ pub fn runMainLoop(
             state.sort_applied_dir = null;
             // Reload after import/delete — re-warm in case the new
             // games already have covers on disk from a previous sync.
-            actions.spawnCoverPrewarm(gpa, io, info.covers_dir, games, state_mod.COVER_CACHE_CAP);
+            actions.spawnCoverPrewarm(gpa, io, info.covers_dir, games, state_mod.COVER_PREWARM);
         }
 
         // Live UI scale: state.ui_scale is the source of truth; push
@@ -353,6 +353,7 @@ pub fn runMainLoop(
                 actions.drainUpdateCheck(&shutdown_frame);
                 actions.drainDonorProbe(&shutdown_frame);
                 actions.drainSlideLoads(&shutdown_frame);
+                actions.drainCoverLoads(&shutdown_frame);
                 actions.drainLaunchWatcher(&shutdown_frame);
                 actions.drainPostInstall(&shutdown_frame);
                 actions.drainManualInstall(&shutdown_frame);
@@ -558,6 +559,7 @@ pub fn guiFrame(frame: *Frame) !bool {
     actions.drainDonorDownload(frame);
     actions.drainDonorProbe(frame);
     actions.drainSlideLoads(frame);
+    actions.drainCoverLoads(frame);
     actions.drainLaunchWatcher(frame);
     actions.drainRefreshTags(frame);
     types.endLatency(frame.io, t_drain, "drain stack");

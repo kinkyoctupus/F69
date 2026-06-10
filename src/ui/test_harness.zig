@@ -230,6 +230,7 @@ pub const Harness = struct {
         const lib_alloc = self.lib.alloc;
         actions.freeModfileCacheState(&self.state, lib_alloc);
         actions.freeClashModalState(&self.state, lib_alloc);
+        actions.freeCoverLoads(&self.state, lib_alloc);
         actions.freeCoverCache(&self.state, lib_alloc);
         actions.freeLibFilterCache(&self.state, lib_alloc);
         actions.freeSnapshotCache(&self.state, lib_alloc);

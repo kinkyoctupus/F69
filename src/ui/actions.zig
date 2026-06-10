@@ -82,6 +82,7 @@ pub const setImageCpuLimit = sync.setImageCpuLimit;
 pub const freeLibFilterCache = sync.freeLibFilterCache;
 pub const freeSnapshotCache = sync.freeSnapshotCache;
 pub const drainSlideLoads = sync.drainSlideLoads;
+pub const drainCoverLoads = sync.drainCoverLoads;
 pub const startSyncAll = sync.startSyncAll;
 pub const startSyncAllUnsynced = sync.startSyncAllUnsynced;
 pub const cancelSync = sync.cancelSync;
@@ -98,6 +99,7 @@ pub fn dbgResetCoverMisses() void {
 }
 pub const coverFullBytes = sync.coverFullBytes;
 pub const freeCoverCache = sync.freeCoverCache;
+pub const freeCoverLoads = sync.freeCoverLoads;
 pub const spawnCoverPrewarm = sync.spawnCoverPrewarm;
 pub const spawnThumbPrewarm = sync.spawnThumbPrewarm;
 

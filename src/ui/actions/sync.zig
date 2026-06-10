@@ -2138,26 +2138,108 @@ pub fn coverBytes(frame: *Frame, thread_id: u64) ?[]const u8 {
         }
     }
 
-    // Miss — read the thumb file straight from disk. No lazy
-    // fallback: image work all happens at sync time. Pre-thumb
-    // games render the placeholder until they're re-synced (or a
-    // future "Fix images" button regenerates them).
+    // Miss — kick off an ASYNC load (worker thread) and render the
+    // placeholder this frame. Never read on the UI thread here: a slow
+    // FUSE/NTFS thumb read would stall the whole scroll. `drainCoverLoads`
+    // lands the bytes in the cache a frame or two later, and the worker's
+    // `markDone` refreshes so the cover pops in without further input.
     dbg_cover_misses += 1; // DIAG: attribute library-scroll cost
-    var thumb_buf: [256]u8 = undefined;
-    const thumb_path = std.fmt.bufPrint(&thumb_buf, "{s}/{d}.t", .{ frame.info.covers_dir, thread_id }) catch return null;
-    const bytes = std.Io.Dir.cwd().readFileAlloc(
-        frame.io,
-        thumb_path,
-        frame.lib.alloc,
-        .limited(2 * 1024 * 1024),
-    ) catch return null;
+    spawnCoverLoadIfRoom(frame, thread_id);
+    return null;
+}
 
-    // Insert into the round-robin slot, evicting whatever's there.
+/// Worker: read one cover thumbnail off the UI thread.
+fn coverLoadWorker(job: *owned_types.CoverLoadJob) void {
+    const p = &job.payload;
+    if (job.cancelRequested()) {
+        p.err_name = "cancelled";
+        job.markFailed();
+        return;
+    }
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        p.io,
+        p.path[0..p.path_len],
+        p.bytes_alloc,
+        .limited(2 * 1024 * 1024),
+    ) catch |e| {
+        p.err_name = @errorName(e);
+        job.markFailed();
+        return;
+    };
+    p.bytes = bytes;
+    job.markDone();
+}
+
+/// Start an async load for `thread_id`'s cover thumb if a worker slot is
+/// free and one isn't already loading that game. No-op (placeholder this
+/// frame) when the small pool is full — the next frame retries.
+fn spawnCoverLoadIfRoom(frame: *Frame, thread_id: u64) void {
+    const state = frame.state;
+    var free_slot: ?usize = null;
+    for (&state.cover_load_jobs, 0..) |*slot, i| {
+        if (slot.*) |j| {
+            if (j.payload.thread_id == thread_id) return; // already in flight
+        } else if (free_slot == null) {
+            free_slot = i;
+        }
+    }
+    const si = free_slot orelse return; // pool full — retry next frame
+    var thumb_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&thumb_buf, "{s}/{d}.t", .{ frame.info.covers_dir, thread_id }) catch return;
+    if (path.len > 256) return;
+    var payload: owned_types.CoverLoadPayload = .{
+        .io = frame.io,
+        .bytes_alloc = frame.lib.alloc,
+        .thread_id = thread_id,
+        .path_len = path.len,
+    };
+    @memcpy(payload.path[0..path.len], path);
+    _ = job_mod.spawnJob(
+        owned_types.CoverLoadPayload,
+        coverLoadWorker,
+        frame.lib.alloc,
+        frame.win,
+        payload,
+        &state.cover_load_jobs[si],
+    ) catch return;
+}
+
+/// Insert freshly-loaded cover bytes into the round-robin cache (evicting
+/// the oldest). Dedups against a concurrent insert for the same game.
+fn coverCacheInsert(state: *State, alloc: std.mem.Allocator, thread_id: u64, bytes: []u8) void {
+    for (&state.cover_cache) |slot| {
+        if (slot) |s| if (s.thread_id == thread_id) {
+            alloc.free(bytes); // already cached — drop the duplicate
+            return;
+        };
+    }
     const idx = state.cover_cache_next;
-    state.cover_cache_next = (idx + 1) % cap;
-    if (state.cover_cache[idx]) |old| frame.lib.alloc.free(old.bytes);
+    state.cover_cache_next = (idx + 1) % state.cover_cache.len;
+    if (state.cover_cache[idx]) |old| alloc.free(old.bytes);
     state.cover_cache[idx] = .{ .thread_id = thread_id, .bytes = bytes };
-    return bytes;
+}
+
+/// Reap finished async cover loaders into the cache. Cheap when the pool
+/// is idle (all slots null). Call once per frame.
+pub fn drainCoverLoads(frame: *Frame) void {
+    const state = frame.state;
+    for (&state.cover_load_jobs) |*slot| {
+        const job = slot.* orelse continue;
+        switch (job.phaseGet()) {
+            .pending => continue,
+            .done => {
+                if (job.payload.bytes) |b| {
+                    coverCacheInsert(state, frame.lib.alloc, job.payload.thread_id, b);
+                    job.payload.bytes = null;
+                }
+            },
+            .failed => {
+                if (job.payload.bytes) |b| frame.lib.alloc.free(b);
+            },
+        }
+        slot.* = null;
+        job.alloc.destroy(job);
+    }
 }
 
 /// Read full-size cover bytes for the detail-page carousel slide 0.
@@ -2190,6 +2272,32 @@ pub fn freeCoverCache(state: *State, alloc: std.mem.Allocator) void {
             alloc.free(slot.bytes);
             slot_ptr.* = null;
         }
+    }
+}
+
+/// Tear down the async cover-loader pool: cancel every in-flight worker
+/// and reap it. Workers are detached, so we spin until each reaches a
+/// terminal phase (they bail fast once cancelled), freeing the job +
+/// any bytes. Call on app quit and harness deinit.
+pub fn freeCoverLoads(state: *State, alloc: std.mem.Allocator) void {
+    for (&state.cover_load_jobs) |*slot| {
+        if (slot.*) |j| j.requestCancel();
+    }
+    var guard: usize = 0;
+    while (guard < 1_000_000) : (guard += 1) {
+        var pending = false;
+        for (&state.cover_load_jobs) |*slot| {
+            const job = slot.* orelse continue;
+            if (job.phaseGet() == .pending) {
+                pending = true;
+                continue;
+            }
+            if (job.payload.bytes) |b| alloc.free(b);
+            slot.* = null;
+            job.alloc.destroy(job);
+        }
+        if (!pending) break;
+        std.Thread.yield() catch {};
     }
 }
 
@@ -2291,9 +2399,11 @@ fn prewarmWorker(job: *PrewarmJob) void {
     }
     var buf: [256]u8 = undefined;
     for (job.thread_ids) |tid| {
-        const path = coverPath(&buf, job.covers_dir, tid) catch continue;
+        // Warm the `.t` THUMB — that's what `coverBytes` actually reads
+        // (warming the full cover, as this did before, was wasted I/O).
+        const path = std.fmt.bufPrint(&buf, "{s}/{d}.t", .{ job.covers_dir, tid }) catch continue;
         // Read + immediately free. The file content lives in the OS
-        // page cache after this; the UI thread's later `readFileAlloc`
+        // page cache after this; the worker's later `readFileAlloc`
         // serves from there.
         const bytes = std.Io.Dir.cwd().readFileAlloc(
             job.io,

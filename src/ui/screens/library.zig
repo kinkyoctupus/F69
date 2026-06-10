@@ -24,6 +24,22 @@ const Frame = types.Frame;
 //  library screen
 // ============================================================
 
+/// One cell of the segmented view-toggle group (design-B .viewtoggle):
+/// flush cells, active = acc-wash bg + acc text, inactive = dim icon.
+fn segToggleOpts(on: bool, id: u64, tag: []const u8) dvui.Options {
+    const t = tokens.active;
+    return .{
+        .id_extra = id,
+        .tag = tag,
+        .gravity_y = 0.5,
+        .margin = dvui.Rect.all(0),
+        .corner_radius = dvui.Rect.all(0),
+        .background = on,
+        .color_fill = tokens.toDvui(t.acc_wash, dvui.Color),
+        .color_text = tokens.toDvui(if (on) t.acc else t.ink3, dvui.Color),
+    };
+}
+
 pub fn libraryScreen(frame: *Frame) !bool {
     const state = frame.state;
     const games = frame.games;
@@ -65,43 +81,75 @@ pub fn libraryScreen(frame: *Frame) !bool {
         });
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 10, .h = 1 } });
         {
-            var cnt_buf: [48]u8 = undefined;
-            const cnt = std.fmt.bufPrint(&cnt_buf, "{d} games", .{games.len}) catch "";
-            dvui.labelNoFmt(@src(), cnt, .{}, .{ .gravity_y = 0.5, .color_text = style.labelDim() });
+            // "N games · M updates" (design-B: muted mono). The updates tail
+            // only shows when something can actually be updated.
+            var upd: usize = 0;
+            if (frame.install_versions) |m| {
+                for (games) |*g| {
+                    if (hasUpdateAvailable(g, m.get(g.f95_thread_id))) upd += 1;
+                }
+            }
+            var cnt_buf: [64]u8 = undefined;
+            const cnt = if (upd > 0)
+                std.fmt.bufPrint(&cnt_buf, "{d} games \u{00b7} {d} updates", .{ games.len, upd }) catch ""
+            else
+                std.fmt.bufPrint(&cnt_buf, "{d} games", .{games.len}) catch "";
+            const mono = dvui.Font.theme(.mono);
+            dvui.labelNoFmt(@src(), cnt, .{}, .{
+                .gravity_y = 0.5,
+                .color_text = style.labelDim(),
+                .font = mono.withSize(mono.size * 0.85),
+            });
         }
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        // view toggle (grid / list / kanban)
-        const grid_opts: dvui.Options = if (state.view == .grid)
-            .{ .id_extra = 1, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 1, .gravity_y = 0.5 };
-        const list_opts: dvui.Options = if (state.view == .list)
-            .{ .id_extra = 2, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 2, .gravity_y = 0.5 };
-        const kanban_opts: dvui.Options = if (state.view == .kanban)
-            .{ .id_extra = 3, .style = .highlight, .gravity_y = 0.5 }
-        else
-            .{ .id_extra = 3, .gravity_y = 0.5 };
-        if (components.iconOnly(@src(), "grid", entypo.grid, grid_opts.override(.{ .tag = "view-grid" }))) state.view = .grid;
-        if (components.iconOnly(@src(), "list", entypo.list, list_opts.override(.{ .tag = "view-list" }))) state.view = .list;
-        if (components.iconOnly(@src(), "kanban", entypo.browser, kanban_opts.override(.{ .tag = "view-kanban" }))) state.view = .kanban;
+        // view toggle (grid / list / kanban) — segmented control in one
+        // bordered group (design-B .viewtoggle); active = acc-wash bg + acc
+        // text, not a solid block.
+        {
+            var seg = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .gravity_y = 0.5,
+                .border = style.border_thin,
+                .color_border = style.borderColor(),
+                .corner_radius = style.corner_radius,
+            });
+            defer seg.deinit();
+            if (components.iconOnly(@src(), "grid", entypo.grid, segToggleOpts(state.view == .grid, 1, "view-grid"))) state.view = .grid;
+            if (components.iconOnly(@src(), "list", entypo.list, segToggleOpts(state.view == .list, 2, "view-list"))) state.view = .list;
+            if (components.iconOnly(@src(), "kanban", entypo.browser, segToggleOpts(state.view == .kanban, 3, "view-kanban"))) state.view = .kanban;
+        }
 
         _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
 
-        // search
-        dvui.icon(@src(), "search", entypo.magnifying_glass, .{}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 14, .h = 14 },
-        });
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+        // search — magnifier + entry inside one bordered box (design-B .search),
+        // with a "Search…" placeholder.
         {
-            const te = style.textEntry(@src(), .{ .text = .{ .buffer = &state.search_buf } }, .{
-                .min_size_content = .{ .w = 220, .h = style.button_h },
+            var sb = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .gravity_y = 0.5,
+                .background = true,
+                .color_fill = tokens.toDvui(tokens.active.bg0, dvui.Color),
+                .border = style.border_thin,
+                .color_border = style.borderColor(),
+                .corner_radius = style.corner_radius,
+                .padding = .{ .x = 9, .y = 0, .w = 6, .h = 0 },
+            });
+            defer sb.deinit();
+            dvui.icon(@src(), "search", entypo.magnifying_glass, .{}, .{
+                .gravity_y = 0.5,
+                .min_size_content = .{ .w = 14, .h = 14 },
+                .color_text = style.labelDim(),
+            });
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+            const te = style.textEntry(@src(), .{
+                .text = .{ .buffer = &state.search_buf },
+                .placeholder = "Search\u{2026}",
+            }, .{
+                .min_size_content = .{ .w = 200, .h = style.button_h },
                 .gravity_y = 0.5,
                 .tag = "lib-search",
+                .background = false,
+                .border = dvui.Rect.all(0),
             });
             te.deinit();
         }
@@ -178,7 +226,7 @@ fn renderSyncSplitButton(frame: *Frame) void {
     defer bar.deinit();
 
     // ----- primary half: "Check for updates" (default = updates walker) -----
-    const primary_label: []const u8 = if (checking) "Checking\u{2026}" else "Check for updates";
+    const primary_label: []const u8 = if (checking) "Syncing\u{2026}" else "Sync";
     const primary_opts: dvui.Options = if (busy)
         .{ .style = .control, .color_text = .{ .r = 0x80, .g = 0x80, .b = 0x80 } }
     else

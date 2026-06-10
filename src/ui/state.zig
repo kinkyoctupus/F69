@@ -383,9 +383,18 @@ pub const MAX_TOASTS: usize = 5;
 /// the action when the user closes it.
 pub const ManageAction = enum { none, rename, delete };
 
-/// Capacity of the cover-bytes round-robin cache. ~64 covers × ~300 KB
-/// avg = ~20 MB peak. Eviction is FIFO via `cover_cache_next`.
-pub const COVER_CACHE_CAP: usize = 64;
+/// Capacity of the cover-thumbnail round-robin cache. Holds `.t` thumbs
+/// (~21 KB avg), so 512 entries ≈ 10 MB — cheap, and big enough to keep
+/// many screens of scroll-back resident so scrolling doesn't re-read.
+/// Eviction is FIFO via `cover_cache_next`.
+pub const COVER_CACHE_CAP: usize = 512;
+/// Covers warmed (page cache) at startup. Async on-demand loading
+/// (`spawnCoverLoadIfRoom`) handles the rest, so this only needs to
+/// cover the first screen or two.
+pub const COVER_PREWARM: usize = 96;
+/// Concurrent async cover-thumbnail loaders. A small pool: enough to
+/// fill a fresh viewport over a few frames without flooding the FS.
+pub const COVER_LOAD_WORKERS: usize = 6;
 /// Capacity of the per-game thumbnail-strip cache. Cover (idx 0) +
 /// up to ~127 screenshots. Some games (Max's Life: 23, popular RPGs:
 /// 27+) ship enough preview images that the old 21-slot cap silently
@@ -994,6 +1003,11 @@ pub const State = struct {
     /// eviction. Sync invalidates the entry for the synced thread.
     cover_cache: [COVER_CACHE_CAP]?CoverCacheEntry = [_]?CoverCacheEntry{null} ** COVER_CACHE_CAP,
     cover_cache_next: usize = 0,
+    /// Pool of in-flight async cover-thumbnail loaders. `coverBytes`
+    /// kicks one off on a cache miss and returns the placeholder;
+    /// `drainCoverLoads` lands the bytes in `cover_cache` a frame later.
+    /// Keeps slow FUSE/NTFS reads off the UI thread.
+    cover_load_jobs: [COVER_LOAD_WORKERS]?*owned.CoverLoadJob = [_]?*owned.CoverLoadJob{null} ** COVER_LOAD_WORKERS,
     /// Edit buffer for the Notes tab — re-loaded from the DB whenever
     /// `notes_for_thread` changes. UI flushes back to DB on Save click.
     notes_buf: [4096]u8 = [_]u8{0} ** 4096,

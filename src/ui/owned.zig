@@ -341,6 +341,21 @@ pub const SlideLoadPayload = struct {
 };
 pub const SlideLoadJob = Job(SlideLoadPayload);
 
+/// Payload for an async library cover-thumbnail load. Mirrors
+/// `SlideLoadPayload` but keyed purely on `thread_id` (the library
+/// grid/list cover cache is a thread_id → bytes map). Read off the UI
+/// thread so a slow FUSE/NTFS cover read never stalls a scroll frame.
+pub const CoverLoadPayload = struct {
+    path: [256]u8 = undefined,
+    path_len: usize = 0,
+    io: std.Io,
+    bytes_alloc: std.mem.Allocator,
+    bytes: ?[]u8 = null,
+    err_name: ?[]const u8 = null,
+    thread_id: u64 = 0,
+};
+pub const CoverLoadJob = Job(CoverLoadPayload);
+
 /// Payload for the post-launch early-failure watcher. After a host
 /// launch returns successfully, this job polls `waitpid(pid, WNOHANG)`
 /// for a short window. If the child exits with a non-zero code inside
