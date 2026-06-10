@@ -782,7 +782,9 @@ test "layer2: detail screen renders + tab click switches tab (F0 interaction)" {
     const io = threaded.io();
     var env = try TestEnv.init(gpa, "layer2-detail");
     defer env.deinit();
-    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
+    // Tall window so the V3 hero (288px) + facts + tabs all fit on-screen for
+    // the tab-click interaction (moveTo requires the tab to be visible).
+    var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 1200 } });
     defer t.deinit();
     ui.registerBundledFonts(t.window);
     var h = try ui.Harness.init(gpa, io, t.window, env.root);
