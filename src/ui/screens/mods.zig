@@ -28,7 +28,9 @@ const components = @import("../components.zig");
 const installer_mod = @import("installer");
 
 const Frame = types.Frame;
-const helpTextColor = components.helpTextColor;
+// Readable secondary text (ink2) — the recipe version/status sublines and
+// filter captions were ink3 (~3:1) and washed out. See style.labelText.
+const helpTextColor = style.labelText;
 
 /// Width of the left list pane. Right pane takes the remainder.
 const LEFT_PANE_W: f32 = 360;

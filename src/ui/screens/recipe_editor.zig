@@ -15,7 +15,10 @@ const style = @import("../style.zig");
 const components = @import("../components.zig");
 
 const Frame = types.Frame;
-const helpTextColor = components.helpTextColor;
+// Recipe content (captions, sublines, help copy) reads ink2 here, not the
+// app-wide ink3 hint colour — on the dark recipe cards ink3 was ~3:1 and
+// unreadable. `style.labelText` is ink2 (~7:1).
+const helpTextColor = style.labelText;
 
 /// Width of the wizard's left (controls) pane. Right pane takes the
 /// remainder. Hard-clamped via `max_size_content.w` so the scrollArea
@@ -25,9 +28,11 @@ const LEFT_PANE_W: f32 = 560;
 /// Visual styling for the block card containers (step 1) — bordered
 /// box with a darker fill than the page background so the cards stand
 /// out as discrete units rather than a wall of text.
-const CARD_FILL: dvui.Color = .{ .r = 0x1F, .g = 0x12, .b = 0x18 };
-const CARD_BORDER: dvui.Color = .{ .r = 0x5C, .g = 0x2A, .b = 0x3D };
-const CARD_FILL_HIGHLIGHT: dvui.Color = .{ .r = 0x2A, .g = 0x16, .b = 0x20 };
+// Design-B graphite cards (was an off-theme dark maroon that clashed with the
+// rest of the app and tanked text contrast). bg1 / line / bg2.
+const CARD_FILL: dvui.Color = .{ .r = 0x0f, .g = 0x14, .b = 0x1b };
+const CARD_BORDER: dvui.Color = .{ .r = 0x20, .g = 0x2b, .b = 0x36 };
+const CARD_FILL_HIGHLIGHT: dvui.Color = .{ .r = 0x15, .g = 0x1c, .b = 0x25 };
 
 // ============================================================
 //  Recipe wizard modal
@@ -117,35 +122,39 @@ pub fn recipeEditorScreen(frame: *Frame) !bool {
     // ~50 px header + ~60 px footer + 4 px of separators + a margin.
     const body_max_h: f32 = @max(200.0, win_h - 140.0);
     {
-        var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        // Stacked layout: step controls on top, the live preview BELOW at
+        // full width. The preview (archive tree + impact diff) was cramped in
+        // a narrow right column — long archive paths truncated. Full width
+        // gives it room horizontally; it keeps the larger share of the height
+        // and scrolls.
+        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
             .expand = .both,
             .max_size_content = .{ .w = std.math.floatMax(f32), .h = body_max_h },
         });
         defer body.deinit();
 
-        // Left: step controls.
+        // Top: step controls (full width, bounded height + scroll so the
+        // preview below always gets the larger share).
         {
-            var left = dvui.box(@src(), .{ .dir = .vertical }, .{
-                .min_size_content = .{ .w = LEFT_PANE_W, .h = 1 },
-                .max_size_content = .{ .w = LEFT_PANE_W, .h = std.math.floatMax(f32) },
-                .expand = .vertical,
+            var top = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .expand = .horizontal,
+                .max_size_content = .{ .w = std.math.floatMax(f32), .h = @max(170.0, body_max_h * 0.42) },
                 .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
             });
-            defer left.deinit();
-            var left_scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
-            defer left_scroll.deinit();
+            defer top.deinit();
+            var top_scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+            defer top_scroll.deinit();
             renderWizardStep(frame, game, w_ptr);
         }
-        _ = dvui.separator(@src(), .{ .expand = .vertical });
+        _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
-        // Right: live preview pane. Archive tree on top so the user
-        // sees the source structure, then impact diff below.
+        // Below: live preview — full width + the remaining height, scrollable.
         {
-            var right = dvui.box(@src(), .{ .dir = .vertical }, .{
+            var bottom = dvui.box(@src(), .{ .dir = .vertical }, .{
                 .expand = .both,
                 .padding = .{ .x = 16, .y = 12, .w = 16, .h = 12 },
             });
-            defer right.deinit();
+            defer bottom.deinit();
             renderWizardPreviewPane(frame, game, w_ptr);
         }
     }

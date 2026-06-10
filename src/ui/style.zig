@@ -69,6 +69,13 @@ pub fn labelDim() dvui.Color {
     return tokens.toDvui(tokens.active.ink3, dvui.Color);
 }
 
+/// Readable secondary text — field captions, list sublines, help copy that
+/// must stay legible on a dark card. Brighter than `labelDim` (ink3, ~3:1 on
+/// graphite); ink2 is ~7:1.
+pub fn labelText() dvui.Color {
+    return tokens.toDvui(tokens.active.ink2, dvui.Color);
+}
+
 /// Letterbox / cover-empty fill behind aspect-preserved images.
 pub const letterbox_fill: dvui.Color = .{ .r = 0x00, .g = 0x00, .b = 0x00 };
 
