@@ -155,6 +155,22 @@ pub fn runMainLoop(
 
     var state: State = .{};
     state.login_status = if (f95_svc.client.hasCookie()) .logged_in else .logged_out;
+    // Dev/test convenience: boot straight onto a screen (+thread) for the
+    // local headless screenshot harness (scripts/localshot.sh). No-op unless
+    // F69_OPEN_SCREEN is set.
+    if (std.c.getenv("F69_OPEN_SCREEN")) |sc_z| {
+        const sc = std.mem.span(sc_z);
+        if (std.mem.eql(u8, sc, "detail")) {
+            state.screen = .detail;
+        } else if (std.mem.eql(u8, sc, "settings")) {
+            state.screen = .settings;
+        } else if (std.mem.eql(u8, sc, "downloads")) {
+            state.screen = .downloads;
+        }
+        if (std.c.getenv("F69_OPEN_THREAD")) |tid_z| {
+            state.selected_thread = std.fmt.parseInt(u64, std.mem.span(tid_z), 10) catch null;
+        }
+    }
     state.setBrowserPath(info.initial_browser_path);
     state.ui_scale = info.initial_ui_scale;
     state.ui_scale_persisted = info.initial_ui_scale;

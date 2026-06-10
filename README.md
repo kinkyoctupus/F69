@@ -1,10 +1,10 @@
 # f69
 
-A native (for now linux only) F95 game manager. You can also add custom games.
+A native F95 game manager for Linux and Windows. You can also add custom games.
 
 <p align="center"><img src=".github/images/f69-library.png" alt="f69 library view — 1489 games in a sidebar-filtered grid"></p>
 
-Status: alpha (0.9.x).
+Status: alpha (0.10.x).
 
 ## Inspiration:
 
@@ -18,18 +18,25 @@ f69 stands on the shoulders of two great projects:
 ## Features:
 
 - **F95Zone scraping** — sync thread metadata (rating, votes, version, dev status, last-updated, cover image), pull your bookmark list, watch for updates. Backed by an in-tree F95Indexer client (toggleable, default on) for faster bulk metadata.
-- **Multi-protocol downloads** — For automatic download and install you can use rpdl and donor ddls. Or you can manually download something through the downloads links.
+- **Multi-protocol downloads** — For automatic download and install you can use rpdl and donor ddls. Or you can manually download something through the downloads links. Seeding controls (seed ratio, seed-time cap) can be changed live without a restart, and a per-host rate limiter keeps f69 polite to servers.
 - **Recipe-based mod installs** — Through mod recipes, modding has never been easier. There are several default recipes for renpy and rpgm games. And for more involved mods you can make a custom recipe that you can save and reuse later, or share.(would be great if modders added this themselves)
+- **Built-in mod tools** — one-click actions on a game's detail page: **RPG Maker MV/MZ** asset decryption, **Ren'Py** `.rpa` archive extraction, and Ren'Py developer-console enable. No external scripts.
+- **Universal mods** — set a mod up once and apply it across every compatible game, with a per-game opt-out when you don't want it on a particular title. If a mod set can't be applied, f69 tells you *why*.
 - **Sandboxed game launches** via `bwrap` — Optional sandbox. Safer, and keeps your saves in a single place.
+- **Custom launch commands** — override how any install starts (point it at a specific runtime, add flags) right from the detail page.
 - **Engine fix-ups** — Not all games are released with linux support, but it's possible to add it most of the time, I've included several fix-ups that add native linux support to Ren'Py and RPGM games that don't include it. RPG Maker XP/VX/VX Ace games run natively via a vendored mkxp-z runtime — no Wine, no win32.
+- **Library views, your way** — browse as a grid, a sortable/resizable **list table** (whole-row click, star ratings, status dots), or a **Kanban board** grouped by how far you've gotten. Tag games with your own **labels** and filter on them, and spot **NEW** / **UPDATE** badges at a glance (with filters to show only those).
+- **Themes** — light and dark modes, ready-made presets (Midnight, Paper, …) and custom accent colors, picked from a live preview in Settings → Appearance. Your choice persists across runs.
+- **Always-on activity bar** — a left icon rail for navigation and a bottom status bar showing live downloads, installs, and syncs.
+- **Update notifications** — desktop notification when a sync finds new releases, plus **version pinning** to hold a game on a version and suppress auto-update.
 - **Portable data layout** — for the portable bundle, DB, library, covers, recipes and downloads all live in `<dir-of-binary>/data/` — drop the folder on a USB stick and the state travels with it. For system installs (`/usr/bin/f69` from a `.deb` / `.rpm` / AUR / Nix package), data falls back to `$XDG_DATA_HOME/f69` (default `~/.local/share/f69/`).
 - **F95Checker / xLibrary importer** — fold an existing library into f69 without re-downloading. F95Checker imports go through a review screen showing every game from the upstream DB (opened read-only) with a Move / Copy / **Link in place** picker — link is the default and never mutates source files.
 - **F95Checker DB export** — write your f69 library back to a F95Checker-shaped `db.sqlite3` (backup-rename never overwrites).
-- **Per-version playtime journal** — every launch records a play session against the installed version; the library row flags an unplayed update when you install a newer release than you've played past the threshold.
+- **Per-version playtime journal** — every launch records a play session against the installed version; a per-game **Journal tab** shows your session history broken down by version, and the library row flags an unplayed update when you install a newer release than you've played past the threshold.
 
 ## Download:
 
-Tagged releases publish prebuilt artifacts on the [Releases page](https://github.com/Moordp/F69/releases/latest): portable + slim Linux x86_64 tarballs and (where the CI matrix succeeds) `.pkg.tar.zst` / `.deb` / `.rpm`.
+Tagged releases publish prebuilt artifacts on the [Releases page](https://github.com/Moordp/F69/releases/latest): portable + slim Linux x86_64 tarballs, a Windows x86_64 zip (`f69-windows.zip`, exe + DLLs), and (where the CI matrix succeeds) `.pkg.tar.zst` / `.deb` / `.rpm`.
 
 Or build from source:
 
@@ -66,13 +73,11 @@ tar --exclude=data -C zig-out -czf f69-portable.tar.gz bin
 Not a strict plan — more things that I would like to add and improve:
 
 - **Stable release** — fix all the bugs people report for the first stable release
-- **Debian + Fedora container builds** — working end-to-end (cross-distro static-libarchive symbol mismatch needs a Debian-host packager to resolve)
 - **More engine fix-up recipes** — Godot, Ren'Py 6, Unity edge cases (uses fix-up library for missing libGLU.so.1 / libcurl-gnutls)
 - **Mod recipe server** — for mod recipe submissions / sharing and browsing
-- **More recipe options** — I want to try to include unren and rpgmaker decryptor so those can be added as options in the recipe
 - **Cache server** — like xlibrary and f95checker for faster game info retrieval
 - **Browser extension** — F95Checker's pattern of "right-click thread → add to library" is hard to beat
-- **Windows / macOS support** — Windows is likely, macOs... not sure... I don't have a mac, so perhaps someone can make a PR for it if they want it.
+- **macOS support** — not sure... I don't have a mac, so perhaps someone can make a PR for it if they want it.
 
 
 ## Building from source:
@@ -118,14 +123,16 @@ The deeper constraint: each distro builds its static libraries with different fe
 
 [`.github/workflows/build.yml`](.github/workflows/build.yml) runs on every push to `main`, every PR, and every `v*` tag. The matrix:
 
-- `test` — `zig build test` on Ubuntu
+- `test` — `zig build test` + `zig build test-integration` (headless GUI tests on the dvui testing backend) on Ubuntu
 - `portable` — uploads `f69-portable-linux-x86_64.tar.gz`
 - `portable-slim` — uploads `f69-slim-linux-x86_64.tar.gz`
 - `arch` — runs `makepkg` inside `archlinux:latest`, uploads `.pkg.tar.zst`
-- `debian` / `fedora` / `nix` — *continue-on-error*, marked experimental
+- `debian` / `fedora` — native `dpkg-buildpackage` / `rpmbuild` in their target containers, upload `.deb` / `.rpm`
+- `windows` — cross-compiles `f69-windows.zip` (exe + resolved DLL closure)
+- `nix` — *continue-on-error* (impure-fetch story documented in `flake.nix`)
 - `release` — on `v*` tag, collects every successful artifact and posts a GitHub Release
 
-To cut a release: `git tag v0.9.1 && git push origin v0.9.1`.
+To cut a release: `git tag v0.10.0 && git push origin v0.10.0`.
 
 ## FAQ:
 
@@ -179,7 +186,9 @@ If you've run `-Dcontainer-build=true`, podman/docker may have written root-owne
 <details>
 <summary><b>What about Windows / macOS?</b></summary>
 
-Not on the roadmap. The whole compat / sandbox layer is Linux-FHS / bwrap shaped, and the install volume is overwhelmingly Linux-NixOS-and-friends. A future port wouldn't be impossible (Zig's cross-compile handles it; SDL3 / dvui / sqlite / libavif all build on Win + Mac) but it'd be a substantial rewrite of `sandbox/`, `compat/`, and the recipe runner.
+**Windows** is supported as of 0.10.0 — the CI cross-compiles `f69-windows.zip` (exe + DLL closure) and games launch natively. The Linux-only bits (bwrap sandbox, FHS compat layer) simply don't apply there; on Windows games run unsandboxed.
+
+**macOS** isn't done — I don't have a Mac. Zig's cross-compile and the SDL3 / dvui / sqlite / libavif stack all build on Mac, so a PR would be welcome.
 
 </details>
 

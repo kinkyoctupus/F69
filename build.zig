@@ -2057,7 +2057,9 @@ const RUN_SH_FULL =
     \\# `<exe_dir>/foo` lookup inside lib/. F69_EXE_DIR overrides that
     \\# (used to find the bundled aria2c); F69_DATA_DIR handles data/.
     \\export F69_EXE_DIR="$DIR"
-    \\export F69_DATA_DIR="$DIR/data"
+    \\# Honour a caller-set F69_DATA_DIR (point the portable at a custom
+    \\# library / a throwaway test dir); default to the bundle's own data/.
+    \\export F69_DATA_DIR="${F69_DATA_DIR:-$DIR/data}"
     \\
     \\# Prepend our bundled lib/ but PRESERVE the host's LD_LIBRARY_PATH
     \\# so SDL3 can dlopen vendor GPU libs (libGL_*, libGLX_nvidia, …).
@@ -2129,7 +2131,9 @@ const RUN_SH_SLIM =
     \\esac
     \\DIR=$(CDPATH= cd -- "$DIR" && pwd)
     \\export F69_EXE_DIR="$DIR"
-    \\export F69_DATA_DIR="$DIR/data"
+    \\# Honour a caller-set F69_DATA_DIR (point the portable at a custom
+    \\# library / a throwaway test dir); default to the bundle's own data/.
+    \\export F69_DATA_DIR="${F69_DATA_DIR:-$DIR/data}"
     \\
     \\GPU_PATHS=/run/opengl-driver/lib:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib
     \\if [ -n "${LD_LIBRARY_PATH:-}" ]; then

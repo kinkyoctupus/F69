@@ -1,5 +1,6 @@
 let
-  pkgs = import <nixpkgs> { };
+  # Pinned to flake.lock — no <nixpkgs> channel needed (works on bare CI).
+  pkgs = import (import ./pinned.nix) { config.allowUnsupportedSystem = true; };
   cross = pkgs.pkgsCross.mingwW64;
   dav1d = cross.dav1d.overrideAttrs (o: {
     mesonFlags = (o.mesonFlags or [ ]) ++ [ "-Ddefault_library=static" "-Denable_tools=false" "-Denable_tests=false" ];

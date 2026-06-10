@@ -17,7 +17,7 @@ OUT="$ROOT/zig-out/f69-windows"
 [ -f "$EXE" ] || { echo "error: $EXE missing — run scripts/build-windows.sh first" >&2; exit 1; }
 [ -d "$DEPS_BIN" ] || { echo "error: $DEPS_BIN missing — run scripts/build-windows.sh first" >&2; exit 1; }
 
-OBJDUMP=$(nix shell nixpkgs#pkgsCross.mingwW64.buildPackages.binutils -c bash -c 'command -v x86_64-w64-mingw32-objdump')
+OBJDUMP=$(nix shell -f "$ROOT/nix/windows-tools.nix" mingwBinutils -c bash -c 'command -v x86_64-w64-mingw32-objdump')
 [ -n "$OBJDUMP" ] || { echo "error: could not resolve mingw objdump" >&2; exit 1; }
 
 # DLLs Windows itself provides — never bundle these.
@@ -60,5 +60,5 @@ TXT
 
 echo "== bundled (${#closure[@]} DLLs) =="; ls -1 "$OUT"
 ZIP="$ROOT/zig-out/f69-windows.zip"; rm -f "$ZIP"
-( cd "$ROOT/zig-out" && nix shell nixpkgs#zip -c zip -qr "$ZIP" f69-windows )
+( cd "$ROOT/zig-out" && nix shell -f "$ROOT/nix/windows-tools.nix" zip -c zip -qr "$ZIP" f69-windows )
 echo "== done: $ZIP ($(du -h "$ZIP" | cut -f1)) =="

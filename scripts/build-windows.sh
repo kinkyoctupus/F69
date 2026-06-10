@@ -6,7 +6,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 W=/tmp/f69-win; mkdir -p "$W"
 echo "== building mingw C-lib prefix =="
-NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1 nix build --impure -f "$ROOT/nix/windows-deps.nix" -o "$W/deps"
+# Pure: windows-deps.nix pins nixpkgs (nix/pinned.nix) and sets
+# allowUnsupportedSystem in-expression, so no --impure / channel needed.
+nix build -f "$ROOT/nix/windows-deps.nix" -o "$W/deps"
 # pkg-config name aliases (linkSystemLibrary name -> real .pc filename)
 mkdir -p "$W/pc"; cp -f "$W"/deps/lib/pkgconfig/*.pc "$W/pc/" 2>/dev/null || true
 alias_pc(){ [ -f "$W/pc/$2" ] && cp -f "$W/pc/$2" "$W/pc/$1"; }
