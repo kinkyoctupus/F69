@@ -814,12 +814,12 @@ test "layer2: detail screen renders + tab click switches tab (F0 interaction)" {
     tlog("L2-detail: after Journal click tab={s}", .{@tagName(h.state.detail_tab)});
     try std.testing.expect(h.state.detail_tab == .journal);
 
-    // Click the "Settings" tab → detail_tab flips to .settings (the config
-    // block moved here out of Overview).
-    try dvui.testing.moveTo("Settings");
+    // Click the "Tools" tab → detail_tab flips to .tools (version picker +
+    // engine tools; per-game settings now live in Overview).
+    try dvui.testing.moveTo("Tools");
     try dvui.testing.click(.left);
     _ = try dvui.testing.step(renderFrame);
-    try std.testing.expect(h.state.detail_tab == .settings);
+    try std.testing.expect(h.state.detail_tab == .tools);
     tlog("L2-detail: OK", .{});
 }
 

@@ -174,7 +174,7 @@ pub fn runMainLoop(
         if (std.c.getenv("F69_DOCK_OPEN") != null) state.dock_expanded = true;
         if (std.c.getenv("F69_OPEN_TAB")) |tab_z| {
             const tb = std.mem.span(tab_z);
-            if (std.mem.eql(u8, tb, "settings")) state.detail_tab = .settings;
+            if (std.mem.eql(u8, tb, "tools")) state.detail_tab = .tools;
         }
     }
     state.setBrowserPath(info.initial_browser_path);

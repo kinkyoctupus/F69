@@ -96,15 +96,7 @@ pub fn detailScreen(frame: *Frame) !bool {
                 ob.close();
             }
             _ = dvui.separator(@src(), .{ .expand = .horizontal });
-            // Tools
-            if (dvui.menuItemLabel(@src(), "Convert (Win\u{2192}Linux)", .{}, .{ .expand = .horizontal }) != null) {
-                actions.doConvertGame(frame, game);
-                ob.close();
-            }
-            if (dvui.menuItemLabel(@src(), "Fix compatibility", .{}, .{ .expand = .horizontal }) != null) {
-                doCompatFixForActiveInstall(frame, game);
-                ob.close();
-            }
+            // (Convert + Fix Compat + engine tools live in the Tools tab.)
             if (dvui.menuItemLabel(@src(), "Sync now", .{}, .{ .expand = .horizontal }) != null) {
                 actions.syncGame(frame, game);
                 ob.close();
@@ -154,9 +146,10 @@ pub fn detailScreen(frame: *Frame) !bool {
 
         renderRibbon(frame, game); // V3 filmstrip under the hero
         renderCompactMeta(frame, game); // V3 compact meta bar
-        // The full action set + interactive settings (status/rating/sandbox/
-        // pin/labels/tools) now live in the Overview tab (renderOverview) so
-        // the header stays the clean V3 hero + meta bar.
+        // Download / Install live in the main GUI (not a tab) — acquiring or
+        // updating a game is always one glance away.
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+        renderAcquireRow(frame, game);
     }
 
     if (game.tags.len > 0) {
@@ -180,11 +173,12 @@ pub fn detailScreen(frame: *Frame) !bool {
         if (components.tabButton("Overview", state.detail_tab == .overview)) state.detail_tab = .overview;
         if (components.tabButton("Changelog", state.detail_tab == .changelog)) state.detail_tab = .changelog;
         if (components.tabButton("Downloads", state.detail_tab == .downloads)) state.detail_tab = .downloads;
+        // Tools sits with the version-related tabs — it operates on the
+        // selected install (see renderToolsTab's version picker).
+        if (components.tabButton("Tools", state.detail_tab == .tools)) state.detail_tab = .tools;
         if (components.tabButton("Notes", state.detail_tab == .notes)) state.detail_tab = .notes;
         if (components.tabButton("Journal", state.detail_tab == .journal)) state.detail_tab = .journal;
         if (components.tabButton("Guides", state.detail_tab == .guides)) state.detail_tab = .guides;
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-        if (components.tabButton("Settings", state.detail_tab == .settings)) state.detail_tab = .settings;
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
@@ -203,7 +197,7 @@ pub fn detailScreen(frame: *Frame) !bool {
             .notes => renderNotesTab(frame, game),
             .guides => renderGuidesTab(frame, game),
             .journal => renderJournalTab(frame, game),
-            .settings => renderSettingsTab(frame, game),
+            .tools => renderToolsTab(frame, game),
         }
     }
 
@@ -881,35 +875,7 @@ fn renderGameConfig(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    // Engine tools — per-engine mod helpers. Non-destructive.
-    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz or game.engine == .renpy) {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .id_extra = row_id,
-            .expand = .horizontal,
-            .padding = .{ .x = 0, .y = 3, .w = 0, .h = 3 },
-        });
-        defer row.deinit();
-        row_id += 1;
-        dvui.label(@src(), "Tools", .{}, .{
-            .min_size_content = .{ .w = 120, .h = 20 },
-            .gravity_y = 0.5,
-            .color_text = style.labelDim(),
-        });
-        if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
-            if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{ .gravity_y = 0.5 })) {
-                actions.decryptRpgmAssets(frame, game.f95_thread_id);
-            }
-        }
-        if (game.engine == .renpy) {
-            if (components.iconButton(@src(), "Enable Ren'Py console", entypo.tools, .{ .gravity_y = 0.5 })) {
-                actions.enableRenpyConsole(frame, game.f95_thread_id);
-            }
-            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-            if (components.iconButton(@src(), "Extract .rpa", entypo.archive, .{ .gravity_y = 0.5 })) {
-                actions.extractRpaArchives(frame, game.f95_thread_id);
-            }
-        }
-    }
+    // (Engine tools moved to the Tools tab — renderEngineTools.)
 
     // Per-game universal-mod opt-outs — list the engine's universal mods with
     // a checkbox each (checked = applied to this game).
@@ -1562,24 +1528,29 @@ fn renderOverview(frame: *Frame, game: *library.Game) void {
     _ = dvui.separator(@src(), .{ .expand = .horizontal });
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
     renderDetailFacts(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 18 } });
+    _ = dvui.separator(@src(), .{ .expand = .horizontal });
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
+    // Per-game settings live here now (no separate Settings tab).
+    renderGameConfig(frame, game);
 }
 
 /// Settings / Manage tab — the per-game action set + configuration that used
 /// to crowd the Overview pane: launch & version management, file + tool
 /// actions, status/rating/sandbox/version-pin/labels/auto-update/custom-launch,
 /// and the facts grid.
-fn renderSettingsTab(frame: *Frame, game: *library.Game) void {
+/// Tools tab — operates on the SELECTED install. Version picker up top (so the
+/// tools below clearly apply to that version), then mkxp-z zoom + the engine
+/// tools (Convert / Fix Compat / Ren'Py console / Extract / Decrypt).
+fn renderToolsTab(frame: *Frame, game: *library.Game) void {
     const state = frame.state;
-    // Versions & acquisition (install picker + manage + Download).
-    renderActionRow(frame, game);
+    renderActionRow(frame, game); // install picker + manage
     renderMkxpZSettingsRow(frame, game); // mkxp-z window zoom (engine config)
     renderDetailStatusLine(frame, game);
     if (state.convert_help_open) renderConvertHelp();
     if (state.manual_install_open) renderManualInstallPanel(frame, game);
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    _ = dvui.separator(@src(), .{ .expand = .horizontal });
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 12 } });
-    renderGameConfig(frame, game);
+    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 14 } });
+    renderEngineTools(frame, game);
 }
 
 /// V3 compact meta bar — read-only `installed · dev · played` key/values, with
@@ -1622,11 +1593,8 @@ fn renderCompactMeta(frame: *Frame, game: *const library.Game) void {
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-    // ⛶ Sandbox → jump to the Settings tab where sandbox is configured.
-    if (components.iconButton(@src(), "Sandbox", entypo.box, .{ .gravity_y = 0.5 })) {
-        state.detail_tab = .settings;
-    }
-    _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
+    // (Sandbox is a per-game setting — it lives in the Overview settings, not
+    // here in the main GUI.)
 
     // ⊞ Mods (n) → per-game mods screen. n = enabled universal mods of this
     // engine that this game hasn't opted out of.
@@ -2140,10 +2108,56 @@ fn renderActionRow(frame: *Frame, game: *library.Game) void {
         }
     }
 
-    // Acquisition stays on this row; file/tool verbs moved to the meta-bar
-    // ⋯ More menu (renderMoreMenu).
+    // (Download / Install moved to the main-GUI acquire row; file/tool verbs
+    // to the top-bar ⋯; Convert + Fix Compat + engine tools to the Tools tab.)
+}
+
+/// Download + Install — acquisition. Lives in the detail main GUI (under the
+/// meta bar), not in a tab, so getting/updating a game is always one glance.
+fn renderAcquireRow(frame: *Frame, game: *library.Game) void {
+    var row = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+    defer row.deinit();
     renderDetailDownloadButton(frame, game);
     renderDetailInstallButton(frame, game);
+}
+
+/// Engine tools — operate on the SELECTED install (Tools tab, under the
+/// version picker): Win→Linux convert, host-compat fix, per-engine helpers.
+fn renderEngineTools(frame: *Frame, game: *library.Game) void {
+    const state = frame.state;
+    var row = dvui.flexbox(@src(), .{ .justify_content = .start }, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 4 },
+    });
+    defer row.deinit();
+    if (components.iconButton(@src(), "Convert (Win\u{2192}Linux)", entypo.cycle, .{})) {
+        actions.doConvertGame(frame, game);
+    }
+    if (components.iconOnly(@src(), "Help", entypo.help, .{
+        .style = if (state.convert_help_open) .highlight else .control,
+        .min_size_content = .{ .w = style.button_h, .h = style.button_h },
+    })) {
+        state.convert_help_open = !state.convert_help_open;
+    }
+    if (components.iconButton(@src(), "Fix Compat", entypo.tools, .{})) {
+        doCompatFixForActiveInstall(frame, game);
+    }
+    if (game.engine == .rpgm_mv or game.engine == .rpgm_mz) {
+        if (components.iconButton(@src(), "Decrypt RPGM assets", entypo.tools, .{})) {
+            actions.decryptRpgmAssets(frame, game.f95_thread_id);
+        }
+    }
+    if (game.engine == .renpy) {
+        if (components.iconButton(@src(), "Enable Ren'Py console", entypo.tools, .{})) {
+            actions.enableRenpyConsole(frame, game.f95_thread_id);
+        }
+        if (components.iconButton(@src(), "Extract .rpa", entypo.archive, .{})) {
+            actions.extractRpaArchives(frame, game.f95_thread_id);
+        }
+    }
 }
 
 /// 0.5×, 0.75×, … 4.0× — 15 entries in 0.25 steps. Default index = 6
