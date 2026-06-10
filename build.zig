@@ -405,8 +405,8 @@ pub fn build(b: *std.Build) void {
     //   rpm           → zig-out/rpm/f69.spec    Fedora/RHEL spec
     //   flake         → no fs output — invokes `nix flake check`
     //
-    // The portable steps re-invoke `zig build install -Doptimize=ReleaseSafe`
-    // as a sub-build so they always operate on a ReleaseSafe binary
+    // The portable steps re-invoke `zig build install -Doptimize=ReleaseFast`
+    // as a sub-build so they always operate on a ReleaseFast binary
     // regardless of the user's -Doptimize flag for the outer invocation.
     const version = readVersion(b) catch "0.0.0";
 
@@ -436,7 +436,7 @@ pub fn build(b: *std.Build) void {
         packages_step.dependOn(&dist.step);
     }
 
-    // Portable (full + slim) both need a ReleaseSafe binary on disk
+    // Portable (full + slim) both need a ReleaseFast binary on disk
     // BEFORE the bundling pass runs. Wire each as: sub-build → bundle.
     // has_side_effects suppresses cache for the sub-build because it
     // writes into the same zig-out/bin/ the outer step post-processes.
@@ -445,7 +445,7 @@ pub fn build(b: *std.Build) void {
         .{ .kind = DistKind.portable_slim, .name = "portable-slim", .desc = "Portable bundle WITHOUT libs (zig-out/portable-slim/)" },
     }) |t| {
         const sub_build = b.addSystemCommand(&.{"zig"});
-        sub_build.addArgs(&.{ "build", "install", "-Doptimize=ReleaseSafe", "-Dgui=true" });
+        sub_build.addArgs(&.{ "build", "install", "-Doptimize=ReleaseFast", "-Dgui=true" });
         sub_build.has_side_effects = true;
 
         const dist = DistStep.create(b, t.kind, version, enable_container);
@@ -969,7 +969,7 @@ fn makePortable(b: *std.Build, mode: PortableMode) !void {
     const cwd = std.Io.Dir.cwd();
     const bin_src = "zig-out/bin/f69";
     cwd.access(io, bin_src, .{}) catch {
-        std.log.err("portable: {s} not found — run `zig build install -Doptimize=ReleaseSafe -Dgui=true` first", .{bin_src});
+        std.log.err("portable: {s} not found — run `zig build install -Doptimize=ReleaseFast -Dgui=true` first", .{bin_src});
         return error.BinaryMissing;
     };
 
@@ -1811,14 +1811,14 @@ const PKGBUILD_TEMPLATE =
     \\# `$pkgdir` is ONLY set during package() — build() must compile only.
     \\build() {{
     \\    cd "$pkgname-$pkgver"
-    \\    zig build -Doptimize=ReleaseSafe -Dgui=true
+    \\    zig build -Doptimize=ReleaseFast -Dgui=true
     \\}}
     \\
     \\package() {{
     \\    cd "$pkgname-$pkgver"
     \\    zig build install \
     \\        --prefix "$pkgdir/usr" \
-    \\        -Doptimize=ReleaseSafe \
+    \\        -Doptimize=ReleaseFast \
     \\        -Dgui=true
     \\    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     \\    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
@@ -1886,10 +1886,10 @@ const DEBIAN_RULES =
     "# between phases — keeping the install-into-staging in the install\n" ++
     "# target is the safe pattern (same reason as the RPM .spec).\n" ++
     "override_dh_auto_build:\n" ++
-    "\tzig build -Doptimize=ReleaseSafe -Dgui=true\n" ++
+    "\tzig build -Doptimize=ReleaseFast -Dgui=true\n" ++
     "\n" ++
     "override_dh_auto_install:\n" ++
-    "\tzig build install --prefix debian/f69/usr -Doptimize=ReleaseSafe -Dgui=true\n" ++
+    "\tzig build install --prefix debian/f69/usr -Doptimize=ReleaseFast -Dgui=true\n" ++
     "\tinstall -Dm644 LICENSE debian/f69/usr/share/doc/f69/copyright\n";
 
 const DEBIAN_CHANGELOG =
@@ -1987,10 +1987,10 @@ const RPM_SPEC =
     \\# under %{{_datadir}}/f69/ instead of %{{_bindir}}/data/. Putting
     \\# 50 MB of Ruby stdlib under /usr/bin/ is non-FHS and trips
     \\# rpm's `check-files` (and the brp shebang mangler).
-    \\zig build -Doptimize=ReleaseSafe -Dgui=true -Dfhs-layout=true
+    \\zig build -Doptimize=ReleaseFast -Dgui=true -Dfhs-layout=true
     \\
     \\%install
-    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseSafe -Dgui=true -Dfhs-layout=true
+    \\zig build install --prefix %{{buildroot}}%{{_prefix}} -Doptimize=ReleaseFast -Dgui=true -Dfhs-layout=true
     \\# Strip baked-in RUNPATH — system installs resolve libs via
     \\# /etc/ld.so.cache, not via RPATH. pkg-config on Fedora sneaks
     \\# `/usr/lib64/pkgconfig/../../lib64` into the linker line, which
