@@ -104,6 +104,28 @@ pub fn libraryScreen(frame: *Frame) !bool {
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
+        // Sort control — applies to EVERY view. The Design-B top-bar rework
+        // dropped it and left sorting only on the list view's column headers,
+        // so grid + kanban had no way to change the sort. Column dropdown +
+        // asc/desc toggle, restored here.
+        {
+            const sort_labels = &[_][]const u8{ "Name", "Rating", "Weighted", "Votes", "Last updated", "Sync state", "Last played version" };
+            var sort_picked: usize = @intFromEnum(state.sort_column);
+            if (style.dropdown(@src(), sort_labels, .{ .choice = &sort_picked }, .{}, .{
+                .min_size_content = .{ .w = 170, .h = style.button_h },
+                .gravity_y = 0.5,
+                .tag = "lib-sort",
+            })) {
+                state.sort_column = @enumFromInt(sort_picked);
+            }
+            _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 4, .h = 1 } });
+            const dir_tvg = if (state.sort_dir == .asc) entypo.chevron_up else entypo.chevron_down;
+            if (components.iconOnly(@src(), "sort-dir", dir_tvg, .{ .style = .highlight, .gravity_y = 0.5, .tag = "lib-sort-dir" })) {
+                state.sort_dir = if (state.sort_dir == .asc) .desc else .asc;
+            }
+        }
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 12, .h = 1 } });
+
         // view toggle (grid / list / kanban) — segmented control in one
         // bordered group (design-B .viewtoggle); active = acc-wash bg + acc
         // text, not a solid block.

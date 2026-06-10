@@ -278,6 +278,14 @@ fn rpdlErrorMessage(name: []const u8) []const u8 {
 
 const MAX_DONOR_AUTO_RETRIES: u8 = 2;
 
+// A donor DDL is a *direct* HTTP download — it should never sit at 0 B/s.
+// When aria2 holds the connection in "downloading" but transfers nothing for
+// this long, the signed URL/CDN is dead (it never flips to `failed`, so the
+// failure-retry above never fires). We force a fresh-URL re-POST, sharing the
+// same MAX_DONOR_AUTO_RETRIES cap. Only true 0 B/s stalls count — a slow
+// trickle (>0 B/s) is left alone.
+const DONOR_STALL_RETRY_MS: i64 = 60_000;
+
 // `DonorJobsMap` / `DonorRetriesMap` aliased from `owned.zig` at the
 // top of the file. See module-doc comment in `src/ui/owned.zig` for
 // the type-shape rationale.
@@ -356,6 +364,12 @@ pub fn drainDonorTelemetry(frame: *Frame) void {
     const alloc = frame.lib.alloc;
     const now_ms = std.Io.Clock.Timestamp.now(frame.io, .real).raw.toMilliseconds();
 
+    // Stall-triggered fresh-URL retries are collected here and processed AFTER
+    // the loop — maybeRetryDonorJob / removeJob restructure the jobs map and
+    // would invalidate this iterator.
+    var stall_retry: [4]u64 = undefined;
+    var stall_retry_n: usize = 0;
+
     var it = frame.dl_mgr.jobs.iterator();
     while (it.next()) |entry| {
         const job = entry.value_ptr.*;
@@ -400,6 +414,15 @@ pub fn drainDonorTelemetry(frame: *Frame) void {
                 log.warn("donor tick job={d} STALLED at {d} bytes (aria2 status={s}, connections={d})", .{
                     job.id, job.bytes_done, @tagName(job.status), job.connections,
                 });
+            } else if (now_ms - t.stalled_since_ms.? >= DONOR_STALL_RETRY_MS and stall_retry_n < stall_retry.len) {
+                // Stalled at 0 B/s past the threshold — the URL is dead. Queue
+                // a fresh-URL retry (processed after the loop).
+                log.warn("donor tick job={d} stalled {d}ms at {d} bytes — forcing fresh-URL retry", .{
+                    job.id, now_ms - t.stalled_since_ms.?, job.bytes_done,
+                });
+                stall_retry[stall_retry_n] = job.id;
+                stall_retry_n += 1;
+                t.stalled_since_ms = null; // the old job is being replaced
             }
         } else if (t.stalled_since_ms) |since| {
             log.info("donor tick job={d} stall ended after {d} ms (speed={d} B/s)", .{
@@ -435,6 +458,15 @@ pub fn drainDonorTelemetry(frame: *Frame) void {
             t.last_log_ms = now_ms;
             t.last_bytes = job.bytes_done;
         }
+    }
+
+    // Replace stalled-dead donor downloads with a fresh signed URL. Done
+    // post-loop because both calls restructure the jobs map. removeJob stops
+    // aria2's dead connection + drops the row; maybeRetryDonorJob re-POSTs
+    // (or, at the cap, surfaces "retries exhausted").
+    for (stall_retry[0..stall_retry_n]) |jid| {
+        frame.dl_mgr.removeJob(jid);
+        _ = maybeRetryDonorJob(frame, jid);
     }
 }
 
