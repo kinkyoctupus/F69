@@ -629,7 +629,17 @@ pub fn guiFrame(frame: *Frame) !bool {
     const t0 = types.startLatency(frame.io);
     // Design-B shell: left icon rail (primary nav) + screen content.
     const result = blk: {
-        var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+        // Cap the shell's propagated min-height. A screen whose content is a
+        // `.auto` vertical scrollArea reports its FULL content height as its
+        // own min-size (ScrollContainerWidget.deinit); that would bubble up
+        // here, exceed the window, and squeeze the bottom activity dock
+        // (renderStatusBar) to zero height. `expand = .both` still fills the
+        // available viewport — the cap governs only layout claims, not the
+        // rendered size — so the dock ALWAYS reserves its 30px on every screen.
+        var shell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .both,
+            .max_size_content = dvui.Options.MaxSize.height(120),
+        });
         defer shell.deinit();
         screens.renderIconRail(frame);
         var content = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });

@@ -901,44 +901,49 @@ test "layer2: activity dock toggles the downloads drawer" {
     tlog("L2-dock: OK", .{});
 }
 
-test "layer2: activity dock stays on-screen on the detail page (regression)" {
-    tlog("START: L2-dock-detail", .{});
+test "layer2: activity dock stays on-screen on every screen (regression)" {
+    tlog("START: L2-dock-always", .{});
     const gpa = std.testing.allocator;
     var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    var env = try TestEnv.init(gpa, "layer2-dock-detail");
+    var env = try TestEnv.init(gpa, "layer2-dock-always");
     defer env.deinit();
     // Normal window height (not the artificially tall 1200 used elsewhere) —
-    // the detail page's hero + tall tab body must not push the bottom
-    // activity dock off the bottom of the window.
+    // no screen's tall scrollable content may push the bottom activity dock
+    // off the window. The dock must ALWAYS be visible with non-zero height.
     var t = try dvui.testing.init(.{ .allocator = gpa, .io = io, .window_size = .{ .w = 1280, .h = 800 } });
     defer t.deinit();
     ui.registerBundledFonts(t.window);
     var h = try ui.Harness.init(gpa, io, t.window, env.root);
     defer h.deinit();
 
+    // Seed a game so the detail screen has something to render.
     _ = try h.lib.insertIfMissing(&.{ .f95_thread_id = 7, .name = "Detail Game", .developer = "Dev", .engine = .renpy });
+    _ = try h.lib.createUniversalMod("Skip Splash", .renpy, "/mods/skip.zip", 100);
     try h.reloadGames();
 
     var fr = h.frame();
     g_frame = &fr;
     defer g_frame = null;
-    h.state.selected_thread = 7;
-    h.state.screen = .detail;
+    h.state.selected_thread = 7; // honoured only by the detail screen
 
-    _ = try dvui.testing.step(renderFrame);
-    _ = try dvui.testing.step(renderFrame);
-
-    // The dock must still render within the window bounds on the detail page.
-    // `visible` is true only if its border rect intersects the window clip, so
-    // a dock pushed off the bottom reports false; the tall content used to
-    // squeeze it to zero height (h=0). Both must hold.
-    const dock = try dvui.testing.tagGet("activity-dock");
-    tlog("L2-dock-detail: dock rect y={d} h={d} visible={}", .{ dock.rect.y, dock.rect.h, dock.visible });
-    try std.testing.expect(dock.visible);
-    try std.testing.expect(dock.rect.h > 0);
-    tlog("L2-dock-detail: OK", .{});
+    // Every primary screen — including the tall ones (detail hero + body,
+    // settings/downloads/diagnostics scroll bodies) — must keep the dock on
+    // screen. `visible` is true only if the dock's border rect intersects the
+    // window clip, so a dock pushed off the bottom reports false; the tall
+    // content used to squeeze it to zero height (h=0). Both must hold.
+    const screens = [_]ui.Screen{ .library, .detail, .settings, .downloads, .diagnostics, .universal_mods };
+    for (screens) |scr| {
+        h.state.screen = scr;
+        _ = try dvui.testing.step(renderFrame);
+        _ = try dvui.testing.step(renderFrame);
+        const dock = try dvui.testing.tagGet("activity-dock");
+        tlog("L2-dock-always: {s} dock y={d} h={d} visible={}", .{ @tagName(scr), dock.rect.y, dock.rect.h, dock.visible });
+        try std.testing.expect(dock.visible);
+        try std.testing.expect(dock.rect.h > 0);
+    }
+    tlog("L2-dock-always: OK", .{});
 }
 
 test "layer2: settings toggle click flips bound state (F10 interaction)" {
