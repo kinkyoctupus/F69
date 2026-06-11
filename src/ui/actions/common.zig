@@ -434,6 +434,88 @@ pub fn persistAutoCheckIfDirty(state: *State, path: []const u8, io: std.Io) void
     state.auto_check_persisted = cur;
 }
 
+/// Serialize the library view/sort/filter state into one compact
+/// space-separated numeric line. Order is fixed and parsed positionally
+/// by `applyLibPrefs`; appending a new field is backward-compatible
+/// (older files just stop early). Enum masks are the EnumSet's raw
+/// integer bitmask; `min_rating` is rating×100 (or -1 for "no filter").
+pub fn serializeLibPrefs(state: *const State, buf: []u8) []const u8 {
+    const f = &state.filters;
+    const rating_i: i64 = if (f.min_rating) |r| @intFromFloat(r * 100) else -1;
+    return std.fmt.bufPrint(buf, "{d} {d} {d} {d} {d} {d} {d} {d} {d} {d}", .{
+        @intFromEnum(state.view),
+        @intFromEnum(state.sort_column),
+        @intFromEnum(state.sort_dir),
+        @intFromEnum(f.sync_state),
+        @intFromEnum(f.installed),
+        rating_i,
+        @as(u64, f.engine.bits.mask),
+        @as(u64, f.status.bits.mask),
+        @as(u64, f.dev_status.bits.mask),
+        @as(u64, f.censored.bits.mask),
+    }) catch buf[0..0];
+}
+
+fn nextInt(it: *std.mem.TokenIterator(u8, .scalar), comptime T: type) ?T {
+    const tok = it.next() orelse return null;
+    return std.fmt.parseInt(T, tok, 10) catch null;
+}
+
+/// Parse the next token as a 0-based enum tag, bounds-checked against
+/// the enum's field count. Returns null on malformed / out-of-range
+/// input so a stale file (e.g. an enum that lost a variant) is ignored
+/// field-by-field rather than rejected wholesale.
+fn nextEnum(it: *std.mem.TokenIterator(u8, .scalar), comptime E: type) ?E {
+    const v = nextInt(it, u32) orelse return null;
+    if (v >= @typeInfo(E).@"enum".fields.len) return null;
+    return @enumFromInt(v);
+}
+
+/// Apply a line produced by `serializeLibPrefs` back onto `state`.
+/// Tolerant: a short or partly-malformed line applies what it can and
+/// leaves the rest at defaults. Does NOT touch the persisted mirror —
+/// callers seed that separately so the first frame doesn't rewrite.
+pub fn applyLibPrefs(state: *State, line: []const u8) void {
+    if (line.len == 0) return;
+    var it = std.mem.tokenizeScalar(u8, line, ' ');
+    state.view = nextEnum(&it, @TypeOf(state.view)) orelse return;
+    if (nextEnum(&it, @TypeOf(state.sort_column))) |v| state.sort_column = v;
+    if (nextEnum(&it, @TypeOf(state.sort_dir))) |v| state.sort_dir = v;
+    if (nextEnum(&it, @TypeOf(state.filters.sync_state))) |v| state.filters.sync_state = v;
+    if (nextEnum(&it, @TypeOf(state.filters.installed))) |v| state.filters.installed = v;
+    if (nextInt(&it, i64)) |r| {
+        state.filters.min_rating = if (r < 0) null else @as(f32, @floatFromInt(r)) / 100.0;
+    }
+    if (nextInt(&it, u64)) |m| state.filters.engine.bits.mask = @truncate(m);
+    if (nextInt(&it, u64)) |m| state.filters.status.bits.mask = @truncate(m);
+    if (nextInt(&it, u64)) |m| state.filters.dev_status.bits.mask = @truncate(m);
+    if (nextInt(&it, u64)) |m| state.filters.censored.bits.mask = @truncate(m);
+}
+
+/// Seed the persisted mirror from the current state — call once at
+/// startup after `applyLibPrefs` so `persistLibPrefsIfDirty` doesn't
+/// immediately rewrite the same bytes already on disk.
+pub fn seedLibPrefsMirror(state: *State) void {
+    const cur = serializeLibPrefs(state, &state.lib_prefs_persisted);
+    state.lib_prefs_persisted_len = cur.len;
+}
+
+/// Persist library view/sort/filter prefs when they diverge from the
+/// last-saved snapshot. Called every frame; the serialize+compare is
+/// cheap and short-circuits the disk write when nothing changed.
+pub fn persistLibPrefsIfDirty(state: *State, path: []const u8, io: std.Io) void {
+    var buf: [128]u8 = undefined;
+    const cur = serializeLibPrefs(state, &buf);
+    const prev = state.lib_prefs_persisted[0..state.lib_prefs_persisted_len];
+    if (std.mem.eql(u8, cur, prev)) return;
+    persistTextFile(io, path, cur) catch |e| {
+        log.warn("lib_prefs persist failed: {s}", .{@errorName(e)});
+        return;
+    };
+    @memcpy(state.lib_prefs_persisted[0..cur.len], cur);
+    state.lib_prefs_persisted_len = cur.len;
+}
+
 /// Persist `state.auto_convert` to disk when it diverges from the
 /// last-saved value. Called every frame; the comparison short-
 /// circuits unless the user actually flipped the toggle.

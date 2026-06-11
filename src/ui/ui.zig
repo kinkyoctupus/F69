@@ -184,6 +184,8 @@ pub fn runMainLoop(
     state.last_update_check_ts = info.initial_last_update_check_ts;
     state.auto_check = info.initial_auto_check;
     state.auto_check_persisted = info.initial_auto_check;
+    actions.applyLibPrefs(&state, info.initial_lib_prefs);
+    actions.seedLibPrefsMirror(&state);
     state.aria2_port_persisted = info.initial_aria2_port;
     state.auto_convert = info.initial_auto_convert;
     state.auto_convert_persisted = info.initial_auto_convert;
@@ -303,6 +305,7 @@ pub fn runMainLoop(
         win.content_scale = state.ui_scale;
         actions.persistUiScaleIfDirty(&state, info.ui_scale_path, io);
         actions.persistAutoCheckIfDirty(&state, info.auto_check_path, io);
+        actions.persistLibPrefsIfDirty(&state, info.lib_prefs_path, io);
         actions.persistAutoConvertIfDirty(&state, info.auto_convert_path, io);
         actions.persistAutoApplyCompatIfDirty(&state, info.auto_apply_compat_path, io);
         actions.persistSandboxDefaultIfDirty(&state, info.sandbox_default_path, io);

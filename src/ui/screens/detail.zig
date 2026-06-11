@@ -982,13 +982,19 @@ fn renderCustomLaunchRow(frame: *Frame, game: *const library.Game) void {
         .gravity_y = 0.5,
         .color_text = style.labelDim(),
     });
-    const te_exe = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_exec_buf } }, .{
+    const te_exe = style.textEntry(@src(), .{
+        .text = .{ .buffer = &state.launch_exec_buf },
+        .placeholder = "executable (e.g. wine game.exe)",
+    }, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = 170, .h = 26 },
     });
     te_exe.deinit();
     _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 6, .h = 1 } });
-    const te_args = style.textEntry(@src(), .{ .text = .{ .buffer = &state.launch_args_buf } }, .{
+    const te_args = style.textEntry(@src(), .{
+        .text = .{ .buffer = &state.launch_args_buf },
+        .placeholder = "arguments (e.g. --fullscreen --skip-intro)",
+    }, .{
         .gravity_y = 0.5,
         .min_size_content = .{ .w = 170, .h = 26 },
         .id_extra = 1,
@@ -3056,7 +3062,8 @@ fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
         }
     }.lt);
 
-    for (seen.items) |ver| {
+    var to_delete: ?i64 = null;
+    for (seen.items, 0..) |ver, vi| {
         var total_s: i64 = 0;
         var count: usize = 0;
         var last_end: ?i64 = null;
@@ -3095,16 +3102,34 @@ fn renderJournalTab(frame: *Frame, game: *const library.Game) void {
                 @mod(@divTrunc(total_s, 60), 60),
             },
         ) catch ver;
-        dvui.labelNoFmt(@src(), header, .{}, .{ .style = .highlight });
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 2 } });
+        dvui.labelNoFmt(@src(), header, .{}, .{ .style = .highlight, .id_extra = vi });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 2 }, .id_extra = vi });
 
         for (sessions) |s| {
             if (!std.mem.eql(u8, s.version, ver)) continue;
+            // One row box per session, keyed by the globally-unique session id
+            // (also fixes the dvui duplicate-widget-id error — every looped
+            // widget now carries a distinct id_extra).
+            const sid: usize = @intCast(s.id);
+            var srow = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = sid, .expand = .horizontal });
+            defer srow.deinit();
             var row_buf: [256]u8 = undefined;
             const row = formatSessionRow(&row_buf, s);
-            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = helpTextColor() });
+            dvui.labelNoFmt(@src(), row, .{}, .{ .color_text = helpTextColor(), .gravity_y = 0.5 });
+            _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+            if (components.iconButton(@src(), "Delete session", entypo.trash, .{ .id_extra = sid, .style = .err, .gravity_y = 0.5 })) {
+                to_delete = s.id;
+            }
         }
-        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 } });
+        _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 1, .h = 8 }, .id_extra = vi });
+    }
+
+    if (to_delete) |id| {
+        frame.lib.deletePlaySession(id) catch {
+            frame.state.notifyErr("Couldn't delete that play session.");
+        };
+        // The next frame re-reads listPlaySessions, so the row vanishes and
+        // the per-version header totals recompute automatically.
     }
 }
 

@@ -193,6 +193,11 @@ pub const RuntimeInfo = struct {
     /// for the format.
     auto_check_path: []const u8,
     initial_auto_check: state_mod.AutoCheckSettings,
+    /// `<data_root>/lib_prefs` — serialized library view/sort/filter
+    /// state. `initial_lib_prefs` is the saved line ("" when absent),
+    /// applied at startup via `actions.applyLibPrefs`.
+    lib_prefs_path: []const u8,
+    initial_lib_prefs: []const u8,
     /// `<data_root>/auto_convert` — single-line `true` / `false`.
     /// When true, post-install fires Convert as soon as the extract
     /// worker reports done. Default false.

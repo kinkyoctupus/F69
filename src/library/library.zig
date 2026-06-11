@@ -1149,6 +1149,14 @@ pub const Library = struct {
         alloc.free(s.version);
     }
 
+    /// Delete one play-session row (journal cleanup). Does NOT retroactively
+    /// adjust games.total_playtime_s / last_played_* — those are derived
+    /// running totals and self-heal on the next sync/launch; the journal
+    /// aggregates recompute from the remaining rows on the next read.
+    pub fn deletePlaySession(self: *Library, session_id: i64) errs.Error!void {
+        self.conn.inner.exec("DELETE FROM play_sessions WHERE id = ?", .{session_id}) catch return self.dbFail();
+    }
+
     pub const CloseSessionArgs = struct {
         session_id: i64,
         ended_at: i64,

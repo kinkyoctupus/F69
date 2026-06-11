@@ -765,6 +765,12 @@ pub const State = struct {
     /// Snapshot of the last value we wrote to disk — used to debounce
     /// the persist call when nothing actually changed.
     auto_check_persisted: AutoCheckSettings = .{},
+    /// `<data_root>/lib_prefs` — serialized library view/sort/filter
+    /// state (see `serializeLibPrefs`). The persisted snapshot is
+    /// compared against a fresh serialization each frame to debounce
+    /// disk writes; only the first `_len` bytes are meaningful.
+    lib_prefs_persisted: [128]u8 = [_]u8{0} ** 128,
+    lib_prefs_persisted_len: usize = 0,
     /// One-shot flag — flips to true after the on-startup auto check
     /// has fired (or been skipped because workers were busy). Stays
     /// true for the rest of the run so we don't repeatedly trigger

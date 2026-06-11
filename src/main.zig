@@ -432,6 +432,11 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(auto_check_path);
     const initial_auto_check: ui.AutoCheckSettings = loadAutoCheck(init.io, gpa, auto_check_path) catch .{};
 
+    const lib_prefs_path = try std.fmt.allocPrint(gpa, "{s}/lib_prefs", .{data_root});
+    defer gpa.free(lib_prefs_path);
+    // Lives for the program — read straight into the main loop's RuntimeInfo.
+    const initial_lib_prefs: []const u8 = (util_setting.readSingleLine(init.io, gpa, lib_prefs_path) catch null) orelse "";
+
     // Auto-convert toggle — `<data_root>/auto_convert` contains a
     // single `true` / `false`. Default false.
     const auto_convert_path = try std.fmt.allocPrint(gpa, "{s}/auto_convert", .{data_root});
@@ -570,6 +575,8 @@ pub fn main(init: std.process.Init) !void {
         .last_update_check_path = last_update_check_path,
         .initial_last_update_check_ts = initial_last_update_check_ts,
         .auto_check_path = auto_check_path,
+        .lib_prefs_path = lib_prefs_path,
+        .initial_lib_prefs = initial_lib_prefs,
         .initial_auto_check = initial_auto_check,
         .tags_master_path = tags_master_path,
         .aria2_port_path = aria2_port_path,

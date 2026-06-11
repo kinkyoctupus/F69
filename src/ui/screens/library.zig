@@ -1087,6 +1087,12 @@ const CARD_CHROME_H: f32 = 4 + 4 + 1 + 1 + 3 + 3;
 
 const NON_GRID_WIDTH: f32 = 240.0;
 
+/// The grid lives inside a scroll area whose vertical scrollbar claims this
+/// much width (dvui ScrollBarWidget default ~10px + a little breathing room).
+/// `gridLayout` must subtract it or the row of fixed-width cards is sized to
+/// the full width and the rightmost card gets clipped by the scrollbar gutter.
+const GRID_SCROLLBAR_W: f32 = 14.0;
+
 const COVER_H_PER_W: f32 = 120.0 / 280.0;
 
 const CARD_TEXT_CHROME_H: f32 = 50.0;
@@ -1100,7 +1106,7 @@ const GridLayout = struct {
 
 fn gridLayout() GridLayout {
     const win_w = dvui.windowRect().w;
-    const usable = @max(win_w - NON_GRID_WIDTH, MIN_CARD_W + CARD_CHROME_W);
+    const usable = @max(win_w - NON_GRID_WIDTH - GRID_SCROLLBAR_W, MIN_CARD_W + CARD_CHROME_W);
 
     const slot_w_max = MAX_CARD_W + CARD_CHROME_W;
     var cols: usize = @intFromFloat(@ceil(usable / slot_w_max));
