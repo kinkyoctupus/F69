@@ -15,3 +15,11 @@ results/
 # Build artifacts + local runtime state.
 dist/
 .claude/scheduled_tasks.lock
+
+# Fetched Zig package cache — reproducible from build.zig.zon (URL+hash)
+# via `zig build`. Only the hand-vendored nfde source is tracked (it has
+# no zon entry; build.zig compiles it directly).
+zig-pkg/*
+!zig-pkg/nfde/
+# Release notes live on the GitHub Releases page, not in-repo.
+RELEASE_NOTES_*.md
