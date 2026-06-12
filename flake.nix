@@ -197,6 +197,88 @@
           # Common offender: many older Unity titles link libcurl-gnutls
           curl
         ]);
+
+        # Build tools + native libs, shared between the f69 package and
+        # the f69-zig-deps fetch FOD so the FOD runs `zig build` under the
+        # exact same config — that's what makes it resolve dvui's lazy
+        # backend deps (SDL / freetype / tree-sitter). (The devShell keeps
+        # its own list with extras like zls / SDL2 / cacert / aria2.)
+        f69NativeBuildInputs = with pkgs; [
+          zig
+          pkg-config
+          wayland-scanner
+          wayland-protocols
+        ];
+        f69BuildInputs = with pkgs; [
+          sdl3
+          sqlite.dev
+          openssl
+          libavif-static
+          libavif-static.dev
+          dav1d-static
+          dav1d-static.dev
+          libarchive-static
+          libarchive-static.dev
+          zlib zlib.dev
+          bzip2-static bzip2-static.dev
+          xz xz.dev
+          zstd zstd.dev
+          lz4 lz4.dev
+          libxml2 libxml2.dev
+          acl acl.dev
+          nettle nettle.dev
+          dbus dbus.dev
+        ];
+
+        # Pre-fetched Zig package cache as a fixed-output derivation.
+        # FODs are the only derivations granted network access in the Nix
+        # sandbox, so the dependency tree gets pulled here once; the f69
+        # build then runs fully offline by copying this cache into
+        # ZIG_GLOBAL_CACHE_DIR/p. Replaces the old MVP "point the cache at
+        # a writable dir and hope the sandbox has network" hack — which
+        # broke once the sandbox blocked DNS (NameServerFailure on the
+        # git+https dependency URLs).
+        #
+        # We run the *real* build command (not `zig build --fetch`):
+        # `--fetch` only walks the top-level manifest and misses dvui's
+        # lazy backend deps (SDL / freetype / tree-sitter), while
+        # `--fetch=all` over-fetches unused cross-platform binaries that
+        # fail to download. The configured build resolves exactly the
+        # lazy deps this target needs during its configure pass — which
+        # completes before any compilation — so a later compile failure
+        # (harmless here, we discard the binary) doesn't matter. The full
+        # build env mirrors the f69 package so configure can run.
+        #
+        # Bump `outputHash` whenever the dependency set or any dep hash in
+        # build.zig.zon changes: set it to lib.fakeHash, build once, copy
+        # the "got:" hash from the mismatch error.
+        f69-zig-deps = pkgs.stdenv.mkDerivation {
+          pname = "f69-zig-deps";
+          version = "0.10.1";
+          src = ./.;
+          nativeBuildInputs = f69NativeBuildInputs ++ [ pkgs.cacert pkgs.git ];
+          buildInputs = f69BuildInputs;
+          dontConfigure = true;
+          dontBuild = true;
+          # Zig's package fetcher does its own TLS; hand it a CA bundle.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          GIT_SSL_CAINFO = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          installPhase = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+            zig build install \
+              -Doptimize=ReleaseSafe \
+              -Dgui=true \
+              --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR" || true
+            test -d "$ZIG_GLOBAL_CACHE_DIR/p" \
+              || { echo "no packages fetched — dependency fetch failed"; exit 1; }
+            mkdir -p "$out"
+            cp -r "$ZIG_GLOBAL_CACHE_DIR/p/." "$out/"
+          '';
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = "sha256-g2/4OvBEUWpQyYUf1iHNCdca8Aa6zpPKp/51pYMmU7s=";
+        };
       in {
         packages.renpy7-fhs-libs = renpy7-fhs-libs;
         packages.renpy8-fhs-libs = renpy8-fhs-libs;
@@ -211,55 +293,28 @@
         # closure small and the binary still benefits from the host's
         # NVIDIA / Mesa driver via the wrapper's hardcoded paths.
         #
-        # Build inputs duplicate the devShell's list; consolidating into
-        # a single attrset would be tidier but the devShell intentionally
-        # carries extras (zls, cacert, SDL2) that the package doesn't.
         packages.f69 = pkgs.stdenv.mkDerivation rec {
           pname = "f69";
           version = "0.9.0";
           src = ./.;
 
-          nativeBuildInputs = with pkgs; [
-            zig
-            pkg-config
-            wayland-scanner
-            wayland-protocols
-            makeWrapper
-          ];
+          nativeBuildInputs = f69NativeBuildInputs ++ [ pkgs.makeWrapper ];
+          buildInputs = f69BuildInputs;
 
-          buildInputs = with pkgs; [
-            sdl3
-            sqlite.dev
-            openssl
-            libavif-static
-            libavif-static.dev
-            dav1d-static
-            dav1d-static.dev
-            libarchive-static
-            libarchive-static.dev
-            zlib zlib.dev
-            bzip2-static bzip2-static.dev
-            xz xz.dev
-            zstd zstd.dev
-            lz4 lz4.dev
-            libxml2 libxml2.dev
-            acl acl.dev
-            nettle nettle.dev
-            dbus dbus.dev
-          ];
-
-          # Zig fetches build deps over the network on first build. Nix
-          # sandboxing blocks that unless we either pre-fetch into the
-          # cache or run impure. For an MVP, point ZIG_GLOBAL_CACHE_DIR
-          # at a writable per-build location. Downstream packagers
-          # following the proper Nix-Zig story will replace this with
-          # `fetchZigDeps` or a vendored `zig-pkg/`.
+          # Deps are pre-fetched by the `f69-zig-deps` FOD above (the only
+          # place granted network access in the sandbox). Seed the global
+          # cache from it so this build runs fully offline.
           dontConfigure = true;
           ZIG_GLOBAL_CACHE_DIR = "/build/.zig-cache";
 
+          preBuild = ''
+            mkdir -p "$ZIG_GLOBAL_CACHE_DIR/p"
+            cp -r "${f69-zig-deps}/." "$ZIG_GLOBAL_CACHE_DIR/p/"
+            chmod -R u+w "$ZIG_GLOBAL_CACHE_DIR"
+          '';
+
           buildPhase = ''
             runHook preBuild
-            mkdir -p $ZIG_GLOBAL_CACHE_DIR
             zig build install \
               --prefix $out \
               -Doptimize=ReleaseSafe \
