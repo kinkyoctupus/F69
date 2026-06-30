@@ -151,7 +151,8 @@ pub const Client = struct {
         // that doesn't share the forum's rate budget — serializing
         // them at 1.5 s/image turned a 10-screenshot sync into a
         // 17-second wait for no reason.
-        if (!isCdnUrl(url)) self.waitRateLimit();
+        const cdn = isCdnUrl(url);
+        if (!cdn) self.waitRateLimit();
 
         // Snapshot the cookie under its lock so a concurrent `setCookie`
         // can't free the slice mid-fetch. The dupe is freed below.
@@ -179,21 +180,85 @@ pub const Client = struct {
         }
         const extra_headers: []const std.http.Header = hdr_buf[0..hdr_n];
 
-        const result = self.http.fetch(.{
-            .location = .{ .url = url },
-            .response_writer = &aw.writer,
-            .headers = .{ .user_agent = .{ .override = USER_AGENT } },
-            .extra_headers = extra_headers,
-        }) catch |e| {
-            log.warn("GET network error ({s}): {s}", .{ @errorName(e), url });
+        // Always use a fresh per-call client with keep_alive=false.
+        //
+        // Two distinct Zig 0.16 std.http.Client bugs require this approach:
+        //
+        // Bug 1 (null connection): fetch() panics at line 1826 ("attempt to
+        // use null value") when a redirect releases the old connection and
+        // connect() reacquires the same stale pool entry. keep_alive=false
+        // prevents pooling, so every redirect opens a fresh socket.
+        //
+        // Bug 2 (null bodyErr): fetch() panics at line 1858 when a
+        // Content-Length response body read fails with ReadFailed but
+        // body_err was never set (only the chunked path sets body_err;
+        // contentLengthStream propagates ReadFailed without setting it).
+        // fetch() calls bodyErr().? unconditionally → panic. We work around
+        // this by bypassing fetch() entirely: use request()+receiveHead()
+        // and stream the body ourselves, mapping ReadFailed to NetworkError
+        // without touching the null body_err.
+        //
+        // self.http is kept for postForm (serialized forum POST, no body
+        // streaming from the CDN, so bug 2 is not triggered there).
+        var per_call: std.http.Client = .{ .allocator = self.alloc, .io = self.io };
+        defer per_call.deinit();
+
+        const uri = std.Uri.parse(url) catch {
+            log.warn("GET URI parse failed: {s}", .{url});
             return errs.Error.NetworkError;
         };
 
-        const code: u16 = @intFromEnum(result.status);
-        if (result.status != .ok) {
+        var req = per_call.request(.GET, uri, .{
+            .headers = .{ .user_agent = .{ .override = USER_AGENT } },
+            .extra_headers = extra_headers,
+            .keep_alive = false,
+        }) catch |e| {
+            log.warn("GET connect error ({s}): {s}", .{ @errorName(e), url });
+            return errs.Error.NetworkError;
+        };
+        defer req.deinit();
+
+        req.sendBodiless() catch |e| {
+            log.warn("GET send error ({s}): {s}", .{ @errorName(e), url });
+            return errs.Error.NetworkError;
+        };
+
+        // 8 KB is enough for any redirect URL we expect.
+        var redirect_buf: [8 * 1024]u8 = undefined;
+        var response = req.receiveHead(&redirect_buf) catch |e| {
+            log.warn("GET head error ({s}): {s}", .{ @errorName(e), url });
+            return errs.Error.NetworkError;
+        };
+
+        const code: u16 = @intFromEnum(response.head.status);
+        if (response.head.status != .ok) {
             log.warn("GET status {d}: {s}", .{ code, url });
             return classifyStatus(code);
         }
+
+        // Allocate decompression window if the server negotiated compression.
+        // For CDN image URLs this is typically .identity, but handle the
+        // general case so non-CDN GETs work correctly too.
+        const decompress_buf: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => self.alloc.alloc(u8, std.compress.zstd.default_window_len) catch
+                return errs.Error.OutOfMemory,
+            .deflate, .gzip => self.alloc.alloc(u8, std.compress.flate.max_window_len) catch
+                return errs.Error.OutOfMemory,
+            .compress => return errs.Error.NetworkError,
+        };
+        defer if (decompress_buf.len > 0) self.alloc.free(decompress_buf);
+
+        var transfer_buf: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const body_reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
+
+        // Stream the body without calling bodyErr().? (see Bug 2 above).
+        _ = body_reader.streamRemaining(&aw.writer) catch |e| {
+            log.warn("GET body error ({s}): {s}", .{ @errorName(e), url });
+            return errs.Error.NetworkError;
+        };
+
         const body = aw.toOwnedSlice() catch return errs.Error.OutOfMemory;
         log.debug("GET ok: {d} bytes from {s}", .{ body.len, url });
         return body;

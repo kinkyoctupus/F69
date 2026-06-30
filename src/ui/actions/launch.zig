@@ -1242,7 +1242,9 @@ pub fn findLinuxLauncher(io: std.Io, alloc: std.mem.Allocator, install_path: []c
         if (std.mem.endsWith(u8, entry.name, ".sh") or
             std.mem.endsWith(u8, entry.name, ".AppImage"))
         {
-            return std.fmt.bufPrint(buf, "{s}", .{entry.name}) catch null;
+            // Prefix with "./" so execvp treats it as cwd-relative.
+            // A bare "Alice.sh" (no '/') would be a PATH search and fail.
+            return std.fmt.bufPrint(buf, "./{s}", .{entry.name}) catch null;
         }
     }
 

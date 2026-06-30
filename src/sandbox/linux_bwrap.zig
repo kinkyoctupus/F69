@@ -268,8 +268,10 @@ pub fn buildArgv(
     }
 
     // ---- 12. The actual command ----
-    // Recipe may carry "./foo.sh" or "foo.sh"; both resolve against
-    // /game since we chdir'd into it. Pass through verbatim.
+    // Launcher must have a '/' in the path (e.g. "./foo.sh" or
+    // "sub/foo.sh") so execvp treats it as a cwd-relative path rather
+    // than a PATH search. findLinuxLauncher prepends "./" for root-
+    // level launchers; subdirectory launchers already satisfy this.
     try argv.append(alloc, cfg.executable);
     for (cfg.launch_args) |a| try argv.append(alloc, a);
 }
