@@ -52,6 +52,12 @@ pub const SandboxConfig = struct {
     /// Applied after HOME is set so a recipe that overrides HOME via
     /// env_extra wins. Empty = no overrides.
     env_extra: []const EnvOverride = &.{},
+    /// Shared Proton/Wine prefix directory. When non-empty:
+    ///   - bound rw at its host path inside the sandbox
+    ///   - STEAM_COMPAT_DATA_PATH is set to this path
+    /// All games that use the proton launcher share this prefix.
+    /// Empty = no shared prefix (script sets its own inside $HOME).
+    proton_prefix: []const u8 = "",
 };
 
 pub const SpawnResult = struct {

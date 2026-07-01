@@ -10,6 +10,7 @@ const library = @import("library");
 const installer = @import("installer");
 const file_picker = @import("util_file_picker");
 const types = @import("../types.zig");
+const mod_job_queue = @import("../mod_job_queue.zig");
 
 const Frame = types.Frame;
 const log = std.log.scoped(.umods);
@@ -87,9 +88,10 @@ pub fn doDeleteUniversalMod(frame: *Frame, id: i64, modfile_path: []const u8) vo
 }
 
 /// Distribute a universal mod to every eligible game (engine match, not
-/// opted out): registers its modfile as a managed modfile on each game (with
-/// auto-preset detection), so it shows up + applies through the normal
-/// per-game mod flow. Idempotent — re-running just no-ops on duplicates.
+/// opted out): registers its modfile as a managed modfile on each game and
+/// immediately queues a flat-extract install job for any game that already
+/// has an active install. Idempotent — re-running just no-ops on duplicates
+/// (the archive is already registered; no second install is queued).
 pub fn applyUniversalMod(frame: *Frame, mod_id: i64, engine: library.Engine, modfile_path: []const u8) void {
     const alloc = frame.lib.alloc;
     const ma = installer.mod_archives;
@@ -100,8 +102,15 @@ pub fn applyUniversalMod(frame: *Frame, mod_id: i64, engine: library.Engine, mod
         const res = ma.addForGame(alloc, frame.io, frame.info.mod_archives_dir, g.f95_thread_id, modfile_path) catch continue;
         switch (res) {
             .added => |m| {
-                ma.freeModfile(alloc, m);
+                defer ma.freeModfile(alloc, m);
                 applied += 1;
+                const install_opt = frame.lib.latestInstallForGame(g.f95_thread_id) catch null;
+                if (install_opt) |inst| {
+                    defer frame.lib.freeInstall(inst);
+                    queueFlatInstall(frame, g.f95_thread_id, &m, inst) catch |e| {
+                        log.warn("failed to queue install for game {d}: {s}", .{ g.f95_thread_id, @errorName(e) });
+                    };
+                }
             },
             .duplicate => |d| {
                 ma.freeModfile(alloc, d.existing);
@@ -110,7 +119,25 @@ pub fn applyUniversalMod(frame: *Frame, mod_id: i64, engine: library.Engine, mod
         }
     }
     var buf: [96]u8 = undefined;
-    frame.state.notifyOk(std.fmt.bufPrint(&buf, "Universal mod available on {d} game(s).", .{applied}) catch "Applied.");
+    frame.state.notifyOk(std.fmt.bufPrint(&buf, "Universal mod queued for {d} game(s).", .{applied}) catch "Applied.");
+}
+
+/// Enqueue a recipe-less flat-extract install job. The worker falls through
+/// to `applyModArchive` when `findMod` returns null for the sha256 id.
+fn queueFlatInstall(
+    frame: *Frame,
+    game_thread_id: u64,
+    m: *const installer.mod_archives.Modfile,
+    install: library.Install,
+) !void {
+    const alloc = frame.lib.alloc;
+    const archive_path = try installer.mod_archives.modfilePathAlloc(alloc, frame.info.mod_archives_dir, game_thread_id, m.disk_name);
+    errdefer alloc.free(archive_path);
+    const recipe_id = try alloc.dupe(u8, m.id);
+    errdefer alloc.free(recipe_id);
+    const display = try alloc.dupe(u8, m.filename);
+    errdefer alloc.free(display);
+    _ = try frame.mod_jobs.enqueue(.install, game_thread_id, 0, recipe_id, display, archive_path, .none, install.id[0..]);
 }
 
 fn copyFile(io: Io, alloc: std.mem.Allocator, src: []const u8, dest: []const u8) !void {

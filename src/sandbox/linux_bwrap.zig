@@ -247,6 +247,24 @@ pub fn buildArgv(
         "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf",
     });
 
+    // ---- 9.5. Steam / Proton binds ----
+    // Needed so a proton_launcher.sh inside the game can find Proton
+    // via find_proton() without leaving the sandbox. Bound read-only
+    // so the game can't modify the Steam installation itself.
+    if (cfg.host.home) |h| {
+        const steam_share = try std.fmt.allocPrint(alloc, "{s}/.local/share/Steam", .{h});
+        try argv.appendSlice(alloc, &.{ "--ro-bind-try", steam_share, steam_share });
+        const steam_dot = try std.fmt.allocPrint(alloc, "{s}/.steam", .{h});
+        try argv.appendSlice(alloc, &.{ "--ro-bind-try", steam_dot, steam_dot });
+    }
+
+    // Shared Proton/Wine prefix — bound rw so Proton can write the
+    // prefix (registry, drive_c, etc.) and STEAM_COMPAT_DATA_PATH is
+    // exported so proton_launcher.sh picks it up via ${VAR:-fallback}.
+    if (cfg.proton_prefix.len > 0) {
+        try argv.appendSlice(alloc, &.{ "--bind", cfg.proton_prefix, cfg.proton_prefix });
+    }
+
     // ---- 10. Recipe-supplied extras ----
     for (cfg.bind_extra) |p| {
         try argv.appendSlice(alloc, &.{ "--ro-bind-try", p, p });
@@ -257,6 +275,9 @@ pub fn buildArgv(
         "--setenv", "HOME", cfg.sandbox_home,
         "--chdir",  "/game",
     });
+    if (cfg.proton_prefix.len > 0) {
+        try argv.appendSlice(alloc, &.{ "--setenv", "STEAM_COMPAT_DATA_PATH", cfg.proton_prefix });
+    }
     // Compat-recipe / caller-supplied env overrides. Emitted after
     // HOME so a recipe can override HOME explicitly if it really
     // needs to.
@@ -508,4 +529,36 @@ test "buildArgv: sandbox HOME + install dir + executable + chdir" {
     try testing.expectEqualStrings("--debug", t.argv.items[n - 1]);
     try testing.expectEqualStrings("--cheat", t.argv.items[n - 2]);
     try testing.expectEqualStrings("./play.sh", t.argv.items[n - 3]);
+}
+
+test "buildArgv: proton_prefix binds rw and sets STEAM_COMPAT_DATA_PATH" {
+    var cfg = test_cfg_base;
+    cfg.proton_prefix = "/data/proton-prefix";
+    var t = TestArgv.init();
+    defer t.deinit();
+    try buildArgv(&t.argv, t.arena.allocator(), "bwrap", .arch, cfg);
+
+    try testing.expect(containsBindTrio(t.argv.items, "--bind", "/data/proton-prefix", "/data/proton-prefix"));
+    var found_env = false;
+    var i: usize = 0;
+    while (i + 2 < t.argv.items.len) : (i += 1) {
+        if (std.mem.eql(u8, t.argv.items[i], "--setenv") and
+            std.mem.eql(u8, t.argv.items[i + 1], "STEAM_COMPAT_DATA_PATH") and
+            std.mem.eql(u8, t.argv.items[i + 2], "/data/proton-prefix")) {
+            found_env = true;
+            break;
+        }
+    }
+    try testing.expect(found_env);
+}
+
+test "buildArgv: Steam dirs bound ro when host.home is set" {
+    var cfg = test_cfg_base;
+    cfg.host = .{ .home = "/home/user" };
+    var t = TestArgv.init();
+    defer t.deinit();
+    try buildArgv(&t.argv, t.arena.allocator(), "bwrap", .arch, cfg);
+
+    try testing.expect(containsBindTrio(t.argv.items, "--ro-bind-try", "/home/user/.local/share/Steam", "/home/user/.local/share/Steam"));
+    try testing.expect(containsBindTrio(t.argv.items, "--ro-bind-try", "/home/user/.steam", "/home/user/.steam"));
 }

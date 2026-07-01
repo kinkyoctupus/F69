@@ -4,7 +4,7 @@
 // / nwjs-ffmpeg-prebuilt) and extracts in place.
 //
 // Layout:
-//   <cache>/f69/convert/sdks/renpy-7.5.3/   ← extracted renpy-7.5.3-sdk.tar.gz
+//   <cache>/f69/convert/sdks/renpy-7.5.3/   ← extracted renpy-7.5.3-sdk.tar.bz2
 //   <cache>/f69/convert/sdks/nwjs-0.83.0/   ← extracted nwjs-v0.83.0-linux-x64.tar.gz
 //
 // `renpy-` / `nwjs-` prefixes keep the directory walkable in a single
@@ -16,6 +16,7 @@ const log = std.log.scoped(.sdk_cache);
 const errs = @import("errors.zig");
 const dom = @import("domain.zig");
 const util_http = @import("util_http");
+const util_proc = @import("util_proc");
 
 /// Cap on a single SDK download. Ren'Py SDKs run ~95 MiB compressed
 /// (~250 MiB uncompressed); nwjs ~50 MiB compressed. 1 GiB is the
@@ -63,9 +64,8 @@ pub const Cache = struct {
     }
 
     /// Download + extract the `<engine_tag>-<version>` SDK from its
-    /// public mirror. URL resolved via `sdkUrl()`. Decompresses gzip
-    /// in-process (no shell-out), extracts the tar stream into
-    /// `<sdks_dir>/<engine_tag>-<version>/`.
+    /// public mirror. Tries the primary URL first; falls back to the
+    /// alternate archive format on 404 (e.g. renpy: .tar.bz2 → .tar.gz).
     ///
     /// Caller frees the returned absolute path on success.
     ///
@@ -79,44 +79,19 @@ pub const Cache = struct {
             else => return e,
         }
 
-        const url = try sdkUrl(self.alloc, engine_tag, version);
-        defer self.alloc.free(url);
-
         const dest_dir = try self.expectedPath(engine_tag, version);
         errdefer self.alloc.free(dest_dir);
 
-        log.info("fetching {s}-{s} from {s}", .{ engine_tag, version, url });
-
-        // 1. Download the .tar.gz body into memory. Large but bounded
-        // by MAX_SDK_BYTES; nwjs/renpy SDKs fit comfortably.
         const extra_headers = [_]util_http.Header{
-            .{ .name = "accept", .value = "application/gzip, application/octet-stream, */*" },
+            .{ .name = "accept", .value = "application/x-bzip2, application/gzip, application/octet-stream, */*" },
         };
 
         // The `errdefer self.alloc.free(dest_dir)` above handles every
-        // error-return path below — DON'T also free explicitly, or the
-        // DebugAllocator's double-free guard fires.
-        const resp = util_http.fetch(self.alloc, self.io, url, .{
-            .extra_headers = &extra_headers,
-            .max_response_bytes = MAX_SDK_BYTES,
-        }) catch |e| {
-            log.warn("SDK fetch network error: {s}", .{@errorName(e)});
-            return errs.Error.NetworkError;
-        };
-        defer self.alloc.free(resp.body);
+        // error-return path below — don't free it explicitly.
+        const sdk = try self.downloadSdkBody(engine_tag, version, &extra_headers);
+        defer self.alloc.free(sdk.body);
+        log.info("SDK download done: {d} bytes", .{sdk.body.len});
 
-        if (resp.status != 200) {
-            log.warn("SDK fetch status {d} for {s}", .{ resp.status, url });
-            return switch (resp.status) {
-                404 => errs.Error.NotFound,
-                else => errs.Error.NetworkError,
-            };
-        }
-
-        const compressed = resp.body;
-        log.info("SDK download done: {d} bytes compressed", .{compressed.len});
-
-        // 2. Decompress (gzip) + extract tar into dest_dir.
         std.Io.Dir.cwd().createDirPath(self.io, dest_dir) catch {
             return errs.Error.SdkLayoutInvalid;
         };
@@ -125,10 +100,10 @@ pub const Cache = struct {
         };
         defer dest.close(self.io);
 
-        const arch_fmt = sdkArchiveFormat(engine_tag);
-        const extract_result = switch (arch_fmt) {
-            .tar_gz => extractTarGz(self.alloc, self.io, compressed, dest, sdkStripComponents(engine_tag)),
-            .zip => extractZipBuffered(self.alloc, self.io, compressed, dest_dir),
+        const extract_result = switch (sdk.format) {
+            .tar_gz => extractTarGz(self.alloc, self.io, sdk.body, dest, sdkStripComponents(engine_tag)),
+            .tar_bz2 => extractTarBz2(self.alloc, self.io, sdk.body, dest_dir, sdkStripComponents(engine_tag)),
+            .zip => extractZipBuffered(self.alloc, self.io, sdk.body, dest_dir),
         };
         extract_result catch |e| {
             log.warn("SDK extract failed: {s}", .{@errorName(e)});
@@ -139,13 +114,68 @@ pub const Cache = struct {
         log.info("SDK installed at {s}", .{dest_dir});
         return dest_dir;
     }
+
+    fn downloadSdkBody(
+        self: *Cache,
+        engine_tag: []const u8,
+        version: []const u8,
+        extra_headers: []const util_http.Header,
+    ) errs.Error!SdkDownload {
+        const primary_url = try sdkUrl(self.alloc, engine_tag, version);
+        defer self.alloc.free(primary_url);
+
+        log.info("fetching {s}-{s} from {s}", .{ engine_tag, version, primary_url });
+        const resp = util_http.fetch(self.alloc, self.io, primary_url, .{
+            .extra_headers = extra_headers,
+            .max_response_bytes = MAX_SDK_BYTES,
+        }) catch |e| {
+            log.warn("SDK fetch network error: {s}", .{@errorName(e)});
+            return errs.Error.NetworkError;
+        };
+
+        if (resp.status == 200) {
+            return .{ .body = resp.body, .format = sdkArchiveFormat(engine_tag) };
+        }
+        self.alloc.free(resp.body);
+
+        if (resp.status != 404) {
+            log.warn("SDK fetch status {d} for {s}", .{ resp.status, primary_url });
+            return errs.Error.NetworkError;
+        }
+
+        // Primary returned 404 — try alternate archive format if available.
+        const fb = try sdkFallbackUrl(self.alloc, engine_tag, version) orelse {
+            log.warn("SDK not found at {s} (no fallback)", .{primary_url});
+            return errs.Error.NotFound;
+        };
+        defer self.alloc.free(fb.url);
+
+        log.info("primary 404; retrying {s}", .{fb.url});
+        const resp2 = util_http.fetch(self.alloc, self.io, fb.url, .{
+            .extra_headers = extra_headers,
+            .max_response_bytes = MAX_SDK_BYTES,
+        }) catch |e| {
+            log.warn("SDK fallback network error: {s}", .{@errorName(e)});
+            return errs.Error.NetworkError;
+        };
+
+        if (resp2.status == 200) return .{ .body = resp2.body, .format = fb.format };
+        self.alloc.free(resp2.body);
+        log.warn("SDK fallback status {d} for {s}", .{ resp2.status, fb.url });
+        return switch (resp2.status) {
+            404 => errs.Error.NotFound,
+            else => errs.Error.NetworkError,
+        };
+    }
 };
+
+const SdkDownload = struct { body: []u8, format: ArchiveFormat };
 
 /// Pure. Build the canonical download URL for an `(engine_tag, version)`
 /// pair. Allocator-owned slice.
 ///
 /// Patterns:
-///   renpy       → https://www.renpy.org/dl/<v>/renpy-<v>-sdk.tar.gz
+///   renpy       → https://www.renpy.org/dl/<v>/renpy-<v>-sdk.tar.bz2
 ///   nwjs        → https://dl.nwjs.io/v<v>/nwjs-v<v>-linux-x64.tar.gz
 ///   nwjs-ffmpeg → https://github.com/nwjs-ffmpeg-prebuilt/
 ///                 nwjs-ffmpeg-prebuilt/releases/download/<v>/<v>-linux-x64.zip
@@ -153,7 +183,7 @@ pub const Cache = struct {
 /// New engine tags get added here; returns `UnknownEngine` otherwise.
 pub fn sdkUrl(alloc: std.mem.Allocator, engine_tag: []const u8, version: []const u8) errs.Error![]u8 {
     if (std.mem.eql(u8, engine_tag, "renpy")) {
-        return std.fmt.allocPrint(alloc, "https://www.renpy.org/dl/{s}/renpy-{s}-sdk.tar.gz", .{ version, version }) catch errs.Error.OutOfMemory;
+        return std.fmt.allocPrint(alloc, "https://www.renpy.org/dl/{s}/renpy-{s}-sdk.tar.bz2", .{ version, version }) catch errs.Error.OutOfMemory;
     }
     if (std.mem.eql(u8, engine_tag, "nwjs")) {
         return std.fmt.allocPrint(alloc, "https://dl.nwjs.io/v{s}/nwjs-v{s}-linux-x64.tar.gz", .{ version, version }) catch errs.Error.OutOfMemory;
@@ -162,6 +192,32 @@ pub fn sdkUrl(alloc: std.mem.Allocator, engine_tag: []const u8, version: []const
         return std.fmt.allocPrint(alloc, "https://github.com/nwjs-ffmpeg-prebuilt/nwjs-ffmpeg-prebuilt/releases/download/{s}/{s}-linux-x64.zip", .{ version, version }) catch errs.Error.OutOfMemory;
     }
     return errs.Error.UnknownEngine;
+}
+
+/// Allocator-owned fallback URL + format to try when the primary URL
+/// returns 404. Returns null when no fallback exists for the engine.
+///
+/// Fallback pairs (primary → fallback):
+///   renpy:  .tar.bz2 → .tar.gz   (older releases shipped .tar.gz)
+///   nwjs:   .tar.gz  → .tar.bz2  (future-proofing)
+pub fn sdkFallbackUrl(
+    alloc: std.mem.Allocator,
+    engine_tag: []const u8,
+    version: []const u8,
+) errs.Error!?struct { url: []u8, format: ArchiveFormat } {
+    if (std.mem.eql(u8, engine_tag, "renpy")) {
+        return .{
+            .url = std.fmt.allocPrint(alloc, "https://www.renpy.org/dl/{s}/renpy-{s}-sdk.tar.gz", .{ version, version }) catch return errs.Error.OutOfMemory,
+            .format = .tar_gz,
+        };
+    }
+    if (std.mem.eql(u8, engine_tag, "nwjs")) {
+        return .{
+            .url = std.fmt.allocPrint(alloc, "https://dl.nwjs.io/v{s}/nwjs-v{s}-linux-x64.tar.bz2", .{ version, version }) catch return errs.Error.OutOfMemory,
+            .format = .tar_bz2,
+        };
+    }
+    return null;
 }
 
 /// Pure. The official tarballs nest everything under a top-level
@@ -176,13 +232,13 @@ pub fn sdkStripComponents(engine_tag: []const u8) u32 {
 
 /// Pure. Archive format used for the canonical URL of each engine tag.
 pub fn sdkArchiveFormat(engine_tag: []const u8) ArchiveFormat {
-    if (std.mem.eql(u8, engine_tag, "renpy")) return .tar_gz;
+    if (std.mem.eql(u8, engine_tag, "renpy")) return .tar_bz2;
     if (std.mem.eql(u8, engine_tag, "nwjs")) return .tar_gz;
     if (std.mem.eql(u8, engine_tag, "nwjs-ffmpeg")) return .zip;
     return .tar_gz;
 }
 
-pub const ArchiveFormat = enum { tar_gz, zip };
+pub const ArchiveFormat = enum { tar_gz, tar_bz2, zip };
 
 /// std.zip needs a `*File.Reader` because the central directory lives
 /// at the end of the archive — we can't stream-decode like tar. Buffer
@@ -239,6 +295,38 @@ fn extractTarGz(
     try std.tar.extract(io, dest, &dec.reader, .{ .strip_components = strip_components });
 }
 
+/// Zig 0.16 stdlib has no bzip2 decompressor. Write the body to a temp
+/// file and shell out to system `tar -xjf` (j = bzip2). `tar` is always
+/// present on Linux. The temp file is deleted regardless of outcome.
+fn extractTarBz2(
+    alloc: std.mem.Allocator,
+    io: Io,
+    body: []const u8,
+    dest_dir: []const u8,
+    strip_components: u32,
+) !void {
+    var tmp_buf: [1024]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}/.fetch.tmp.tar.bz2", .{dest_dir});
+
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, tmp, .{ .truncate = true });
+        defer f.close(io);
+        var wbuf: [64 * 1024]u8 = undefined;
+        var fw = f.writer(io, &wbuf);
+        try fw.interface.writeAll(body);
+        try fw.interface.flush();
+    }
+    defer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    var strip_buf: [8]u8 = undefined;
+    const strip_str = try std.fmt.bufPrint(&strip_buf, "{d}", .{strip_components});
+
+    const argv = [_][]const u8{ "tar", "-xjf", tmp, "-C", dest_dir, "--strip-components", strip_str };
+    const result = util_proc.run(alloc, io, &argv, .{ .stderr = .inherit }) catch return error.ExtractFailed;
+    defer alloc.free(result.stdout);
+    if (result.exit_code != 0) return error.ExtractFailed;
+}
+
 // ============================================================
 //  tests
 // ============================================================
@@ -286,7 +374,28 @@ test "Cache.expectedPath: format" {
 test "sdkUrl: renpy pattern" {
     const u = try sdkUrl(testing.allocator, "renpy", "7.5.3");
     defer testing.allocator.free(u);
-    try testing.expectEqualStrings("https://www.renpy.org/dl/7.5.3/renpy-7.5.3-sdk.tar.gz", u);
+    try testing.expectEqualStrings("https://www.renpy.org/dl/7.5.3/renpy-7.5.3-sdk.tar.bz2", u);
+}
+
+test "sdkFallbackUrl: renpy falls back to tar.gz" {
+    const fb = try sdkFallbackUrl(testing.allocator, "renpy", "7.5.3");
+    try testing.expect(fb != null);
+    defer testing.allocator.free(fb.?.url);
+    try testing.expectEqualStrings("https://www.renpy.org/dl/7.5.3/renpy-7.5.3-sdk.tar.gz", fb.?.url);
+    try testing.expectEqual(ArchiveFormat.tar_gz, fb.?.format);
+}
+
+test "sdkFallbackUrl: nwjs falls back to tar.bz2" {
+    const fb = try sdkFallbackUrl(testing.allocator, "nwjs", "0.83.0");
+    try testing.expect(fb != null);
+    defer testing.allocator.free(fb.?.url);
+    try testing.expectEqualStrings("https://dl.nwjs.io/v0.83.0/nwjs-v0.83.0-linux-x64.tar.bz2", fb.?.url);
+    try testing.expectEqual(ArchiveFormat.tar_bz2, fb.?.format);
+}
+
+test "sdkFallbackUrl: nwjs-ffmpeg has no fallback" {
+    const fb = try sdkFallbackUrl(testing.allocator, "nwjs-ffmpeg", "0.83.0");
+    try testing.expect(fb == null);
 }
 
 test "sdkUrl: nwjs pattern" {
@@ -302,7 +411,7 @@ test "sdkUrl: nwjs-ffmpeg pattern" {
 }
 
 test "sdkArchiveFormat: per-tag" {
-    try testing.expectEqual(ArchiveFormat.tar_gz, sdkArchiveFormat("renpy"));
+    try testing.expectEqual(ArchiveFormat.tar_bz2, sdkArchiveFormat("renpy"));
     try testing.expectEqual(ArchiveFormat.tar_gz, sdkArchiveFormat("nwjs"));
     try testing.expectEqual(ArchiveFormat.zip, sdkArchiveFormat("nwjs-ffmpeg"));
 }

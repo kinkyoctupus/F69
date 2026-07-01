@@ -237,6 +237,26 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
     // fallback NoSandbox elsewhere); the host path uses the always-
     // available `frame.host_launcher` with an empty `sandbox_home`
     // so the game sees the real `$HOME`.
+
+    // Shared Proton/Wine prefix: all Windows games launched via a .sh
+    // Proton wrapper share one prefix directory so the Wine registry
+    // and drive_c stay consistent. Created on first launch.
+    var proton_prefix_buf: [640]u8 = undefined;
+    var proton_prefix: []const u8 = "";
+    if (want_sandbox) {
+        const pp = std.fmt.bufPrint(&proton_prefix_buf, "{s}/proton-prefix", .{frame.info.data_root}) catch "";
+        if (pp.len > 0) {
+            std.Io.Dir.cwd().createDirPath(frame.io, pp) catch |e| {
+                log.warn("failed to create shared proton prefix {s}: {s}", .{ pp, @errorName(e) });
+            };
+            // Only pass the prefix if the directory now exists — bwrap's
+            // --bind (no -try variant) aborts the sandbox if missing.
+            if ((std.Io.Dir.cwd().access(frame.io, pp, .{}) catch null) != null) {
+                proton_prefix = pp;
+            }
+        }
+    }
+
     const cfg = sandbox_mod.SandboxConfig{
         .network = net,
         .bind_extra = bind_extra,
@@ -246,6 +266,7 @@ pub fn doLaunchGame(frame: *Frame, game: *const library.Game) void {
         .launch_args = custom_args,
         .host = frame.info.host,
         .env_extra = launch_envs,
+        .proton_prefix = proton_prefix,
     };
     const backend_name: []const u8 = if (want_sandbox) frame.sandbox.backendName() else "host";
     const result = (if (want_sandbox)
